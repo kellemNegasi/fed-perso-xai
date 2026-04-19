@@ -264,27 +264,34 @@ class FrozenTabularPreprocessor:
         raw_to_transformed: dict[str, list[str]] = {column: [] for column in self.kept_raw_feature_names}
         for record in self.feature_lineage:
             raw_to_transformed.setdefault(record.raw_feature, []).append(record.transformed_feature)
+        dropped_by_reason = {
+            "constant": [
+                record for record in dropped_columns if record["reason"] == "constant"
+            ],
+            "all_missing": [
+                record for record in dropped_columns if record["reason"] == "all_missing"
+            ],
+        }
 
         return {
-            "schema_version": "stage1_feature_metadata_v2",
+            "schema_version": "stage1_feature_metadata_v3",
             "raw_columns_expected": self.expected_raw_feature_names,
             "raw_columns_kept": self.kept_raw_feature_names,
             "raw_columns_dropped": [record["raw_feature"] for record in dropped_columns],
             "dropped_columns": dropped_columns,
             "drop_reasons": {
                 "constant_columns_removed": [
-                    record["raw_feature"] for record in dropped_columns if record["reason"] == "constant"
+                    record["raw_feature"] for record in dropped_by_reason["constant"]
                 ],
                 "all_missing_columns_removed": [
-                    record["raw_feature"]
-                    for record in dropped_columns
-                    if record["reason"] == "all_missing"
+                    record["raw_feature"] for record in dropped_by_reason["all_missing"]
                 ],
             },
             "numeric_columns": self.numeric_columns,
             "categorical_columns": self.categorical_columns,
             "imputed_columns": self.imputed_columns,
             "transformed_feature_names": self.feature_names,
+            "stable_transformed_feature_order": self.feature_names,
             "transformed_to_raw_feature_map": transformed_to_raw,
             "raw_to_transformed_feature_map": raw_to_transformed,
             "encoder_category_vocabularies": self.encoder_category_vocabularies,
@@ -300,6 +307,22 @@ class FrozenTabularPreprocessor:
                 for record in self.feature_lineage
             ],
             "feature_type_overrides": self.feature_type_overrides,
+            "preprocessing_diagnostics": {
+                "dropped_column_summary": {
+                    "total_dropped": len(dropped_columns),
+                    "constant_columns": [
+                        record["raw_feature"] for record in dropped_by_reason["constant"]
+                    ],
+                    "all_missing_columns": [
+                        record["raw_feature"] for record in dropped_by_reason["all_missing"]
+                    ],
+                },
+                "dropped_columns_by_reason": {
+                    reason: rows for reason, rows in dropped_by_reason.items() if rows
+                },
+                "kept_raw_feature_order": self.kept_raw_feature_names,
+                "transformed_feature_order": self.feature_names,
+            },
             "schema_diagnostics": {
                 "raw_column_count": len(self.expected_raw_feature_names),
                 "kept_column_count": len(self.kept_raw_feature_names),

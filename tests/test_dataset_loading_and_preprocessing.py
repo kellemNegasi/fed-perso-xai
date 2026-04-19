@@ -57,9 +57,20 @@ def test_preprocessor_handles_pathological_columns_and_records_diagnostics(tmp_p
     ]
     assert metadata["drop_reasons"]["constant_columns_removed"] == ["constant_flag"]
     assert metadata["drop_reasons"]["all_missing_columns_removed"] == ["all_missing"]
+    constant_record = metadata["preprocessing_diagnostics"]["dropped_columns_by_reason"]["constant"][0]
+    all_missing_record = metadata["preprocessing_diagnostics"]["dropped_columns_by_reason"]["all_missing"][0]
+    assert constant_record["raw_feature"] == "constant_flag"
+    assert constant_record["reason"] == "constant"
+    assert constant_record["missing_count"] == 0
+    assert constant_record["non_null_unique_count"] == 1
+    assert all_missing_record["raw_feature"] == "all_missing"
+    assert all_missing_record["reason"] == "all_missing"
+    assert all_missing_record["missing_count"] == 4
+    assert all_missing_record["non_null_unique_count"] == 0
     assert "income" in metadata["imputed_columns"]
     assert "job" in metadata["imputed_columns"]
     assert "is_manager" in metadata["categorical_columns"]
+    assert metadata["stable_transformed_feature_order"] == metadata["transformed_feature_names"]
     assert diagnostics["unknown_categories"]["job"]["values"] == ["executive"]
     assert metadata["encoder_category_vocabularies"]["job"] == ["admin", "tech"]
 
@@ -70,3 +81,37 @@ def test_preprocessor_handles_pathological_columns_and_records_diagnostics(tmp_p
 
     with pytest.raises(ValueError):
         loaded.transform(frame.assign(extra_column=1))
+
+
+def test_preprocessor_drops_constant_columns_before_transformer_fit() -> None:
+    frame = pd.DataFrame(
+        {
+            "age": [20, 21, 22, 23],
+            "city": ["a", "b", "a", "b"],
+            "constant_numeric": [5, 5, 5, 5],
+        }
+    )
+    preprocessor = FrozenTabularPreprocessor.fit(frame, PreprocessingConfig())
+    metadata = preprocessor.feature_metadata()
+
+    assert "constant_numeric" not in preprocessor.kept_raw_feature_names
+    assert metadata["drop_reasons"]["constant_columns_removed"] == ["constant_numeric"]
+    assert metadata["preprocessing_diagnostics"]["kept_raw_feature_order"] == ["age", "city"]
+
+
+def test_preprocessor_drops_all_missing_columns_before_transformer_fit() -> None:
+    frame = pd.DataFrame(
+        {
+            "age": [20, 21, 22, 23],
+            "segment": ["a", "b", "a", "b"],
+            "all_missing_code": [None, None, None, None],
+        }
+    )
+    preprocessor = FrozenTabularPreprocessor.fit(frame, PreprocessingConfig())
+    metadata = preprocessor.feature_metadata()
+
+    assert "all_missing_code" not in preprocessor.kept_raw_feature_names
+    assert metadata["drop_reasons"]["all_missing_columns_removed"] == ["all_missing_code"]
+    assert metadata["preprocessing_diagnostics"]["transformed_feature_order"] == metadata[
+        "transformed_feature_names"
+    ]

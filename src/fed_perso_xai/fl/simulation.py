@@ -11,16 +11,22 @@ from typing import Any
 
 import numpy as np
 
+FLOWER_IMPORT_ERROR_MESSAGE = (
+    "Flower support is not installed. Install the optional federated extras with "
+    "`pip install -e .[fl]` for debug runtime support or `pip install -e .[ray]` "
+    "for Ray-backed simulation."
+)
+
 try:
     import flwr as fl
     from flwr.clientapp import ClientApp
     from flwr.server import ServerApp, ServerAppComponents, ServerConfig
-except ImportError as exc:  # pragma: no cover - exercised via federated entrypoints
-    raise ImportError(
-        "Flower support is not installed. Install the optional federated extras with "
-        "`pip install -e .[fl]` for debug runtime support or `pip install -e .[ray]` "
-        "for Ray-backed simulation."
-    ) from exc
+except ImportError:  # pragma: no cover - exercised via optional dependency paths
+    fl = None  # type: ignore[assignment]
+    ClientApp = None  # type: ignore[assignment]
+    ServerApp = None  # type: ignore[assignment]
+    ServerAppComponents = None  # type: ignore[assignment]
+    ServerConfig = None  # type: ignore[assignment]
 
 from fed_perso_xai.evaluation.metrics import (
     aggregate_weighted_metrics,
@@ -77,6 +83,7 @@ class SimulationArtifacts:
 def plan_flower_runtime(config: FederatedTrainingConfig) -> FlowerRuntimePlan:
     """Resolve the Flower runtime before federated training starts."""
 
+    require_flower_support()
     requested_backend = _canonicalize_backend(config.simulation_backend)
     ray_available = importlib.util.find_spec("ray") is not None
     warnings: list[str] = []
@@ -125,6 +132,7 @@ def run_federated_training(
 ) -> tuple[SimulationArtifacts, dict[str, Any]]:
     """Run federated training and persist final metrics and parameters."""
 
+    require_flower_support()
     if not client_datasets:
         raise ValueError("client_datasets must not be empty.")
 
@@ -252,6 +260,7 @@ def _run_flower_simulation(
     strategy_factory: StrategyFactory,
     initial_parameters: list[np.ndarray],
 ) -> list[np.ndarray]:
+    require_flower_support()
     data_by_id = {dataset.client_id: dataset for dataset in client_datasets}
 
     def client_fn(context: fl.common.Context):
@@ -297,6 +306,7 @@ def _run_debug_sequential_runtime(
     strategy_factory: StrategyFactory,
     initial_parameters: list[np.ndarray],
 ) -> list[np.ndarray]:
+    require_flower_support()
     strategy = strategy_factory.create(initial_parameters, recorder)
     clients = [
         FederatedLogisticRegressionClient(
@@ -494,3 +504,16 @@ def _canonicalize_backend(requested_backend: str) -> str:
 def _sample_size(total_clients: int, fraction: float, minimum: int) -> int:
     sample_size = int(np.ceil(total_clients * fraction))
     return max(1, min(total_clients, max(minimum, sample_size)))
+
+
+def flower_support_available() -> bool:
+    """Return whether Flower is importable in the current environment."""
+
+    return fl is not None
+
+
+def require_flower_support() -> None:
+    """Raise a clear error when Flower support is unavailable."""
+
+    if fl is None:  # pragma: no cover - depends on optional deps
+        raise ImportError(FLOWER_IMPORT_ERROR_MESSAGE)

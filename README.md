@@ -39,15 +39,21 @@ python3 -m pip install -e .
 
 Optional dependency groups:
 
-- `.[dev]`: test tooling
-- `.[fl]`: Flower support for federated code paths and the explicit debug sequential runtime
-- `.[ray]`: Flower simulation extras with Ray for the primary federated runtime
+- `.[dev]`: test and local development tooling
+- `.[fl]`: Flower support for federated code paths, including the explicit debug sequential runtime
+- `.[ray]`: Ray-backed Flower simulation support for the primary federated runtime
 
 Typical setups:
 
 ```bash
 python3 -m pip install -e ".[dev,fl]"
 python3 -m pip install -e ".[dev,ray]"
+```
+
+If you only need data preparation and centralized training, the base install is sufficient:
+
+```bash
+python3 -m pip install -e .
 ```
 
 `main.py` remains available for convenience:
@@ -163,6 +169,8 @@ Important artifacts:
   - `split_metadata.json`
   - `partition_metadata.json`
 
+`run_manifest.json` is the top-level pointer for the run and records the run id, mode, timestamp, important configuration, reproducibility fields, and the relative paths to the persisted artifacts in that run directory.
+
 ### 3. Train Federated Baseline
 
 Primary runtime, using real Flower simulation with Ray:
@@ -248,9 +256,10 @@ Feature metadata includes:
 
 - raw columns expected, kept, and dropped
 - dropped-column reasons
+- grouped diagnostics for dropped constant and all-missing columns
 - numeric and categorical column groups
 - imputed columns
-- removed constant and all-missing columns
+- stable transformed feature ordering
 - transformed feature names
 - transformed-to-raw and raw-to-transformed maps
 - feature lineage records
@@ -278,6 +287,9 @@ The report includes:
 - centralized pooled-client-test metrics when available
 - federated weighted client-test metrics
 - federated pooled client-test metrics
+- absolute metric differences for shared metrics
+- metric availability notes when a metric is missing from one split
+- source run directories and manifests
 - federated per-client metric summaries
 - split provenance
 - class-balance summaries

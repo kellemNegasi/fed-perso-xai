@@ -36,7 +36,9 @@ from fed_perso_xai.utils.paths import (
 from fed_perso_xai.utils.provenance import (
     build_reproducibility_metadata,
     build_run_id,
+    current_utc_timestamp,
     relative_artifact_path,
+    resolve_git_commit_hash,
 )
 
 
@@ -112,6 +114,7 @@ def train_centralized_from_prepared(
     summary = {
         "run_id": run_id,
         "experiment_type": "centralized",
+        "mode": "centralized",
         "dataset_name": config.dataset_name,
         "result_dir": str(result_dir),
         "config": config.to_dict(),
@@ -129,8 +132,10 @@ def train_centralized_from_prepared(
     manifest = _build_run_manifest(
         root_dir=result_dir,
         run_id=run_id,
-        experiment_type="centralized",
+        mode="centralized",
         dataset_name=config.dataset_name,
+        config=config.to_dict(),
+        seed_values={"global_seed": config.seed},
         artifact_paths={
             "config_snapshot": config_path,
             "metrics": metrics_path,
@@ -159,7 +164,14 @@ def train_federated_from_prepared(
 
     try:
         from fed_perso_xai.fl.client import ClientData
-        from fed_perso_xai.fl.simulation import run_federated_training
+        from fed_perso_xai.fl.simulation import require_flower_support, run_federated_training
+    except ImportError as exc:  # pragma: no cover - depends on optional deps
+        raise RuntimeError(
+            "Federated training requires Flower support. Install `fed-perso-xai[fl]` "
+            "for the debug runtime or `fed-perso-xai[ray]` for Ray-backed simulation."
+        ) from exc
+    try:
+        require_flower_support()
     except ImportError as exc:  # pragma: no cover - depends on optional deps
         raise RuntimeError(
             "Federated training requires Flower support. Install `fed-perso-xai[fl]` "
@@ -224,6 +236,7 @@ def train_federated_from_prepared(
         run_id=run_id,
     )
     summary["run_id"] = run_id
+    summary["mode"] = "federated"
     summary["run_manifest_path"] = str(result_dir / "run_manifest.json")
     metrics_path = artifacts.metrics_path
     metrics_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -231,8 +244,10 @@ def train_federated_from_prepared(
     manifest = _build_run_manifest(
         root_dir=result_dir,
         run_id=run_id,
-        experiment_type="federated",
+        mode="federated",
         dataset_name=config.dataset_name,
+        config=config.to_dict(),
+        seed_values={"global_seed": config.seed},
         artifact_paths={
             "config_snapshot": config_path,
             "metrics": metrics_path,
@@ -274,9 +289,24 @@ def compare_centralized_and_federated(
 
     centralized_summary = json.loads(centralized_metrics_path.read_text(encoding="utf-8"))
     federated_summary = json.loads(federated_metrics_path.read_text(encoding="utf-8"))
+    centralized_manifest = _load_run_manifest(
+        centralized_run_dir(config.paths, config.dataset_name, config.seed) / "run_manifest.json"
+    )
+    federated_manifest = _load_run_manifest(
+        federated_run_dir(
+            config.paths,
+            config.dataset_name,
+            config.num_clients,
+            config.alpha,
+            config.seed,
+        )
+        / "run_manifest.json"
+    )
     report = build_baseline_comparison(
         centralized_summary=centralized_summary,
         federated_summary=federated_summary,
+        centralized_manifest=centralized_manifest,
+        federated_manifest=federated_manifest,
     )
     report["config"] = config.to_dict()
     result_dir = comparison_run_dir(
@@ -333,19 +363,56 @@ def _build_run_manifest(
     *,
     root_dir: Path,
     run_id: str,
-    experiment_type: str,
+    mode: str,
     dataset_name: str,
+    config: dict[str, Any],
+    seed_values: dict[str, Any],
     artifact_paths: dict[str, Path],
 ) -> dict[str, Any]:
+    predictions = {
+        name: relative_artifact_path(path, root_dir)
+        for name, path in artifact_paths.items()
+        if name.startswith("predictions_") and path.exists()
+    }
+    metadata_paths = {
+        name: relative_artifact_path(path, root_dir)
+        for name, path in artifact_paths.items()
+        if name.endswith("_metadata") and path.exists()
+    }
     return {
-        "manifest_version": "stage1_run_manifest_v1",
+        "manifest_version": "stage1_run_manifest_v2",
         "run_id": run_id,
-        "experiment_type": experiment_type,
+        "mode": mode,
         "dataset_name": dataset_name,
+        "timestamp": current_utc_timestamp(),
+        "git_commit_hash": resolve_git_commit_hash(root_dir),
+        "seed_values": seed_values,
+        "important_config": _extract_important_config_values(mode=mode, config=config),
         "artifacts": {
-            name: relative_artifact_path(path, root_dir)
-            for name, path in artifact_paths.items()
-            if path.exists()
+            "config_snapshot": _relative_if_exists(artifact_paths.get("config_snapshot"), root_dir),
+            "model_artifact": _relative_if_exists(artifact_paths.get("model"), root_dir),
+            "preprocessor_artifact": _relative_if_exists(artifact_paths.get("preprocessor"), root_dir),
+            "feature_metadata_artifact": _relative_if_exists(
+                artifact_paths.get("feature_metadata"),
+                root_dir,
+            ),
+            "metrics_artifact": _relative_if_exists(artifact_paths.get("metrics"), root_dir),
+            "predictions_artifacts": predictions,
+            "metadata_artifacts": metadata_paths,
+            "additional_artifacts": {
+                name: relative_artifact_path(path, root_dir)
+                for name, path in artifact_paths.items()
+                if name not in {
+                    "config_snapshot",
+                    "model",
+                    "preprocessor",
+                    "feature_metadata",
+                    "metrics",
+                    *predictions.keys(),
+                    *metadata_paths.keys(),
+                }
+                and path.exists()
+            },
         },
     }
 
@@ -354,3 +421,40 @@ def _copy_if_exists(source: Path, destination: Path) -> None:
     if source.exists():
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+
+
+def _relative_if_exists(path: Path | None, root_dir: Path) -> str | None:
+    if path is None or not path.exists():
+        return None
+    return relative_artifact_path(path, root_dir)
+
+
+def _extract_important_config_values(*, mode: str, config: dict[str, Any]) -> dict[str, Any]:
+    important = {
+        "seed": config["seed"],
+        "dataset_name": config["dataset_name"],
+        "model": config["model"],
+    }
+    if mode == "centralized":
+        important["evaluate_on_pooled_client_test"] = config["evaluate_on_pooled_client_test"]
+        return important
+
+    important.update(
+        {
+            "num_clients": config["num_clients"],
+            "alpha": config["alpha"],
+            "rounds": config["rounds"],
+            "fit_fraction": config["fit_fraction"],
+            "evaluate_fraction": config["evaluate_fraction"],
+            "min_available_clients": config["min_available_clients"],
+            "simulation_backend": config["simulation_backend"],
+            "debug_fallback_on_error": config["debug_fallback_on_error"],
+        }
+    )
+    return important
+
+
+def _load_run_manifest(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))

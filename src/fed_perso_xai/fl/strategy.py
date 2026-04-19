@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
+FLOWER_IMPORT_ERROR_MESSAGE = (
+    "Flower support is not installed. Install the optional federated extras with "
+    "`pip install -e .[fl]` for debug runtime support or `pip install -e .[ray]` "
+    "for Ray-backed simulation."
+)
+
 try:
     import flwr as fl
-except ImportError as exc:  # pragma: no cover - exercised via federated entrypoints
-    raise ImportError(
-        "Flower support is not installed. Install the optional federated extras with "
-        "`pip install -e .[fl]` for debug runtime support or `pip install -e .[ray]` "
-        "for Ray-backed simulation."
-    ) from exc
+except ImportError:  # pragma: no cover - exercised via optional dependency paths
+    fl = None  # type: ignore[assignment]
 
 from fed_perso_xai.evaluation.metrics import aggregate_weighted_metrics
 from fed_perso_xai.utils.config import FederatedTrainingConfig
@@ -36,33 +38,43 @@ class StrategyFactory(Protocol):
         self,
         initial_parameters: list[np.ndarray],
         recorder: FederatedRunRecorder,
-    ) -> fl.server.strategy.Strategy:
+    ) -> Any:
         """Build a Flower strategy."""
 
 
-class TrackingFedAvg(fl.server.strategy.FedAvg):
-    """FedAvg strategy that records round history and final parameters."""
+if fl is not None:
 
-    def __init__(self, *args, recorder: FederatedRunRecorder, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.recorder = recorder
+    class TrackingFedAvg(fl.server.strategy.FedAvg):
+        """FedAvg strategy that records round history and final parameters."""
 
-    def aggregate_fit(self, server_round, results, failures):  # type: ignore[override]
-        parameters, metrics = super().aggregate_fit(server_round, results, failures)
-        while len(self.recorder.round_history) < server_round:
-            self.recorder.round_history.append({"round": len(self.recorder.round_history) + 1})
-        self.recorder.round_history[server_round - 1]["fit_metrics"] = metrics
-        if parameters is not None:
-            self.recorder.final_parameters = fl.common.parameters_to_ndarrays(parameters)
-        return parameters, metrics
+        def __init__(self, *args, recorder: FederatedRunRecorder, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.recorder = recorder
 
-    def aggregate_evaluate(self, server_round, results, failures):  # type: ignore[override]
-        loss, metrics = super().aggregate_evaluate(server_round, results, failures)
-        while len(self.recorder.round_history) < server_round:
-            self.recorder.round_history.append({"round": len(self.recorder.round_history) + 1})
-        self.recorder.round_history[server_round - 1]["evaluate_loss"] = loss
-        self.recorder.round_history[server_round - 1]["evaluate_metrics"] = metrics
-        return loss, metrics
+        def aggregate_fit(self, server_round, results, failures):  # type: ignore[override]
+            parameters, metrics = super().aggregate_fit(server_round, results, failures)
+            while len(self.recorder.round_history) < server_round:
+                self.recorder.round_history.append({"round": len(self.recorder.round_history) + 1})
+            self.recorder.round_history[server_round - 1]["fit_metrics"] = metrics
+            if parameters is not None:
+                self.recorder.final_parameters = fl.common.parameters_to_ndarrays(parameters)
+            return parameters, metrics
+
+        def aggregate_evaluate(self, server_round, results, failures):  # type: ignore[override]
+            loss, metrics = super().aggregate_evaluate(server_round, results, failures)
+            while len(self.recorder.round_history) < server_round:
+                self.recorder.round_history.append({"round": len(self.recorder.round_history) + 1})
+            self.recorder.round_history[server_round - 1]["evaluate_loss"] = loss
+            self.recorder.round_history[server_round - 1]["evaluate_metrics"] = metrics
+            return loss, metrics
+
+else:
+
+    class TrackingFedAvg:
+        """Placeholder used when Flower is not installed."""
+
+        def __init__(self, *args, **kwargs) -> None:
+            raise ImportError(FLOWER_IMPORT_ERROR_MESSAGE)
 
 
 @dataclass(frozen=True)
@@ -75,7 +87,9 @@ class FedAvgStrategyFactory:
         self,
         initial_parameters: list[np.ndarray],
         recorder: FederatedRunRecorder,
-    ) -> fl.server.strategy.Strategy:
+    ) -> Any:
+        if fl is None:  # pragma: no cover - depends on optional deps
+            raise ImportError(FLOWER_IMPORT_ERROR_MESSAGE)
         minimum_clients = min(self.training_config.min_available_clients, self.training_config.num_clients)
         return TrackingFedAvg(
             recorder=recorder,
@@ -91,8 +105,8 @@ class FedAvgStrategyFactory:
 
 
 def _aggregate_scalar_metrics(
-    metrics: list[tuple[int, dict[str, fl.common.Scalar]]],
-) -> dict[str, fl.common.Scalar]:
+    metrics: list[tuple[int, dict[str, Any]]],
+) -> dict[str, Any]:
     numeric_rows: list[tuple[int, dict[str, float]]] = []
     for num_examples, row in metrics:
         numeric_row = {

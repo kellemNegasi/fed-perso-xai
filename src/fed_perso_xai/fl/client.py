@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
+FLOWER_IMPORT_ERROR_MESSAGE = (
+    "Flower support is not installed. Install the optional federated extras with "
+    "`pip install -e .[fl]` for debug runtime support or `pip install -e .[ray]` "
+    "for Ray-backed simulation."
+)
+
 try:
     import flwr as fl
-except ImportError as exc:  # pragma: no cover - exercised via federated entrypoints
-    raise ImportError(
-        "Flower support is not installed. Install the optional federated extras with "
-        "`pip install -e .[fl]` for debug runtime support or `pip install -e .[ray]` "
-        "for Ray-backed simulation."
-    ) from exc
+except ImportError:  # pragma: no cover - exercised via optional dependency paths
+    fl = None  # type: ignore[assignment]
 
 from fed_perso_xai.evaluation.metrics import compute_classification_metrics
 from fed_perso_xai.models.logistic_regression import LogisticRegressionModel
@@ -33,53 +36,68 @@ class ClientData:
     row_ids_test: np.ndarray
 
 
-class FederatedLogisticRegressionClient(fl.client.NumPyClient):
-    """Flower NumPy client backed by the explicit NumPy logistic regression model."""
+if fl is not None:
 
-    def __init__(
-        self,
-        data: ClientData,
-        model_config: LogisticRegressionConfig,
-        seed: int,
-    ) -> None:
-        self.data = data
-        self.seed = seed
-        self.model = LogisticRegressionModel(
-            n_features=data.X_train.shape[1],
-            learning_rate=model_config.learning_rate,
-            batch_size=model_config.batch_size,
-            local_epochs=model_config.epochs,
-            l2_regularization=model_config.l2_regularization,
-        )
+    class FederatedLogisticRegressionClient(fl.client.NumPyClient):
+        """Flower NumPy client backed by the explicit NumPy logistic regression model."""
 
-    def get_parameters(self, config: dict[str, fl.common.Scalar]) -> list[np.ndarray]:
-        return self.model.get_parameters()
+        def __init__(
+            self,
+            data: ClientData,
+            model_config: LogisticRegressionConfig,
+            seed: int,
+        ) -> None:
+            self.data = data
+            self.seed = seed
+            self.model = LogisticRegressionModel(
+                n_features=data.X_train.shape[1],
+                learning_rate=model_config.learning_rate,
+                batch_size=model_config.batch_size,
+                local_epochs=model_config.epochs,
+                l2_regularization=model_config.l2_regularization,
+            )
 
-    def fit(
-        self,
-        parameters: list[np.ndarray],
-        config: dict[str, fl.common.Scalar],
-    ) -> tuple[list[np.ndarray], int, dict[str, fl.common.Scalar]]:
-        self.model.set_parameters(parameters)
-        train_loss = self.model.fit(
-            self.data.X_train,
-            self.data.y_train,
-            seed=self.seed + self.data.client_id,
-        )
-        metrics: dict[str, fl.common.Scalar] = {
-            "train_loss": float(train_loss),
-            "client_id": str(self.data.client_id),
-        }
-        return self.model.get_parameters(), int(self.data.y_train.shape[0]), metrics
+        def get_parameters(self, config: dict[str, Any]) -> list[np.ndarray]:
+            return self.model.get_parameters()
 
-    def evaluate(
-        self,
-        parameters: list[np.ndarray],
-        config: dict[str, fl.common.Scalar],
-    ) -> tuple[float, int, dict[str, fl.common.Scalar]]:
-        self.model.set_parameters(parameters)
-        loss = self.model.loss(self.data.X_test, self.data.y_test)
-        probabilities = self.model.predict_proba(self.data.X_test)
-        metrics = compute_classification_metrics(self.data.y_test, probabilities, loss)
-        metrics["client_id"] = str(self.data.client_id)
-        return float(loss), int(self.data.y_test.shape[0]), metrics
+        def fit(
+            self,
+            parameters: list[np.ndarray],
+            config: dict[str, Any],
+        ) -> tuple[list[np.ndarray], int, dict[str, Any]]:
+            self.model.set_parameters(parameters)
+            train_loss = self.model.fit(
+                self.data.X_train,
+                self.data.y_train,
+                seed=self.seed + self.data.client_id,
+            )
+            metrics: dict[str, Any] = {
+                "train_loss": float(train_loss),
+                "client_id": str(self.data.client_id),
+            }
+            return self.model.get_parameters(), int(self.data.y_train.shape[0]), metrics
+
+        def evaluate(
+            self,
+            parameters: list[np.ndarray],
+            config: dict[str, Any],
+        ) -> tuple[float, int, dict[str, Any]]:
+            self.model.set_parameters(parameters)
+            loss = self.model.loss(self.data.X_test, self.data.y_test)
+            probabilities = self.model.predict_proba(self.data.X_test)
+            metrics = compute_classification_metrics(self.data.y_test, probabilities, loss)
+            metrics["client_id"] = str(self.data.client_id)
+            return float(loss), int(self.data.y_test.shape[0]), metrics
+
+else:
+
+    class FederatedLogisticRegressionClient:
+        """Placeholder used when Flower is not installed."""
+
+        def __init__(
+            self,
+            data: ClientData,
+            model_config: LogisticRegressionConfig,
+            seed: int,
+        ) -> None:
+            raise ImportError(FLOWER_IMPORT_ERROR_MESSAGE)

@@ -19,6 +19,8 @@ def build_baseline_comparison(
     *,
     centralized_summary: dict[str, Any],
     federated_summary: dict[str, Any],
+    centralized_manifest: dict[str, Any] | None = None,
+    federated_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a predictive comparison report between centralized and federated runs."""
 
@@ -39,17 +41,21 @@ def build_baseline_comparison(
         for section_name in DEFAULT_COMPARISON_ORDER:
             section = split_sections.get(section_name)
             row[section_name] = None if section is None else section["metrics"].get(metric_name)
-        row["delta_weighted_minus_centralized"] = _safe_delta(
+        row["absolute_difference_weighted_vs_centralized"] = _safe_absolute_difference(
             row["federated_client_test_weighted"],
             row["centralized_global_eval"],
         )
-        row["delta_pooled_minus_centralized"] = _safe_delta(
+        row["absolute_difference_pooled_vs_centralized"] = _safe_absolute_difference(
             row["federated_client_test_pooled"],
             row["centralized_global_eval"],
         )
-        row["delta_centralized_pooled_minus_global_eval"] = _safe_delta(
+        row["absolute_difference_centralized_pooled_vs_global_eval"] = _safe_absolute_difference(
             row["centralized_pooled_client_test"],
             row["centralized_global_eval"],
+        )
+        row["metric_availability_notes"] = _build_metric_availability_notes(
+            metric_name=metric_name,
+            row=row,
         )
         metric_rows.append(row)
 
@@ -58,6 +64,23 @@ def build_baseline_comparison(
         "dataset_name": centralized_summary["dataset_name"],
         "centralized_run": centralized_summary["result_dir"],
         "federated_run": federated_summary["result_dir"],
+        "source_references": {
+            "centralized": {
+                "run_directory": centralized_summary["result_dir"],
+                "run_manifest_path": centralized_summary.get("run_manifest_path"),
+                "run_manifest": centralized_manifest,
+            },
+            "federated": {
+                "run_directory": federated_summary["result_dir"],
+                "run_manifest_path": federated_summary.get("run_manifest_path"),
+                "run_manifest": federated_manifest,
+            },
+        },
+        "headline_metrics": {
+            "centralized_global_holdout_metrics": split_sections["centralized_global_eval"]["metrics"],
+            "federated_weighted_metrics": split_sections["federated_client_test_weighted"]["metrics"],
+            "federated_pooled_metrics": split_sections["federated_client_test_pooled"]["metrics"],
+        },
         "metric_schema": metric_names,
         "split_reports": split_sections,
         "predictive_metric_comparison": metric_rows,
@@ -130,3 +153,24 @@ def _safe_delta(left: Any, right: Any) -> float | None:
     if left is None or right is None:
         return None
     return float(left) - float(right)
+
+
+def _safe_absolute_difference(left: Any, right: Any) -> float | None:
+    delta = _safe_delta(left, right)
+    if delta is None:
+        return None
+    return abs(delta)
+
+
+def _build_metric_availability_notes(*, metric_name: str, row: dict[str, Any]) -> list[str]:
+    notes: list[str] = []
+    label_map = {
+        "centralized_global_eval": "centralized_global_holdout",
+        "centralized_pooled_client_test": "centralized_pooled_client_test",
+        "federated_client_test_weighted": "federated_client_test_weighted",
+        "federated_client_test_pooled": "federated_client_test_pooled",
+    }
+    for section_name, label in label_map.items():
+        if row.get(section_name) is None:
+            notes.append(f"Metric '{metric_name}' is unavailable for {label}.")
+    return notes

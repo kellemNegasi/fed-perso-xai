@@ -31,8 +31,9 @@ def test_prepare_data_writes_shared_and_client_artifacts(mock_openml, tmp_path) 
     assert result.prepared_artifacts.split_metadata_path.exists()
 
     feature_metadata = json.loads(result.prepared_artifacts.feature_metadata_path.read_text(encoding="utf-8"))
-    assert feature_metadata["schema_version"] == "stage1_feature_metadata_v2"
+    assert feature_metadata["schema_version"] == "stage1_feature_metadata_v3"
     assert "feature_lineage" in feature_metadata
+    assert "preprocessing_diagnostics" in feature_metadata
     split_metadata = json.loads(result.prepared_artifacts.split_metadata_path.read_text(encoding="utf-8"))
     assert split_metadata["global_eval"]["transform_diagnostics"]["split_name"] == "global_eval"
 

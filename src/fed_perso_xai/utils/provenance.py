@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import importlib.metadata
 import platform
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +55,44 @@ def build_reproducibility_metadata(*, seed: int) -> dict[str, Any]:
     }
 
 
+def current_utc_timestamp() -> str:
+    """Return the current UTC timestamp in ISO 8601 format."""
+
+    return datetime.now(UTC).isoformat()
+
+
+def resolve_git_commit_hash(start_path: Path) -> str | None:
+    """Return the current Git commit hash for the nearest repository, if available."""
+
+    repository_root = _find_repository_root(start_path.resolve())
+    if repository_root is None:
+        repository_root = _find_repository_root(Path.cwd())
+    if repository_root is None:
+        return None
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    commit_hash = result.stdout.strip()
+    return commit_hash or None
+
+
 def relative_artifact_path(path: Path, root_dir: Path) -> str:
     """Return a stable relative path for manifest entries."""
 
     return str(path.relative_to(root_dir))
+
+
+def _find_repository_root(start_path: Path) -> Path | None:
+    current = start_path if start_path.is_dir() else start_path.parent
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
