@@ -1,26 +1,66 @@
-"""Flower training runner with a sequential fallback when Ray is unavailable."""
+"""Flower runtime integration for stage-1 federated experiments."""
 
 from __future__ import annotations
 
+import importlib.metadata
+import importlib.util
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import flwr as fl
 import numpy as np
-from flwr.common import Code, EvaluateRes, FitRes, Status
-from flwr.server.client_proxy import ClientProxy
+
+try:
+    import flwr as fl
+    from flwr.clientapp import ClientApp
+    from flwr.server import ServerApp, ServerAppComponents, ServerConfig
+except ImportError as exc:  # pragma: no cover - exercised via federated entrypoints
+    raise ImportError(
+        "Flower support is not installed. Install the optional federated extras with "
+        "`pip install -e .[fl]` for debug runtime support or `pip install -e .[ray]` "
+        "for Ray-backed simulation."
+    ) from exc
 
 from fed_perso_xai.evaluation.metrics import (
     aggregate_weighted_metrics,
     compute_pooled_classification_metrics,
+    summarize_class_balance,
+    summarize_probability_distribution,
     sweep_classification_thresholds,
 )
+from fed_perso_xai.evaluation.predictions import (
+    build_prediction_artifact,
+    save_prediction_artifact,
+)
 from fed_perso_xai.fl.client import ClientData, FederatedLogisticRegressionClient
-from fed_perso_xai.fl.strategy import FedAvgStrategyFactory, StrategyFactory
-from fed_perso_xai.models.logistic_regression import initialize_parameters
+from fed_perso_xai.fl.strategy import (
+    FedAvgStrategyFactory,
+    FederatedRunRecorder,
+    StrategyFactory,
+)
+from fed_perso_xai.models.logistic_regression import LogisticRegressionModel, initialize_parameters
 from fed_perso_xai.utils.config import FederatedTrainingConfig
+
+
+BACKEND_ALIASES = {
+    "auto": "auto",
+    "ray": "ray",
+    "debug-sequential": "debug-sequential",
+    "sequential_fallback": "debug-sequential",
+}
+
+
+@dataclass(frozen=True)
+class FlowerRuntimePlan:
+    """Resolved runtime plan for a federated experiment."""
+
+    requested_backend: str
+    resolved_backend: str
+    ray_available: bool
+    flwr_version: str
+    is_debug_runtime: bool
+    warnings: list[str]
 
 
 @dataclass(frozen=True)
@@ -30,28 +70,49 @@ class SimulationArtifacts:
     result_dir: Path
     metrics_path: Path
     model_path: Path
+    predictions_path: Path
+    runtime_path: Path
 
 
-class InMemoryClientProxy(ClientProxy):
-    """Minimal proxy used by the sequential fallback to satisfy Flower types."""
+def plan_flower_runtime(config: FederatedTrainingConfig) -> FlowerRuntimePlan:
+    """Resolve the Flower runtime before federated training starts."""
 
-    def __init__(self, cid: str) -> None:
-        super().__init__(cid=cid)
+    requested_backend = _canonicalize_backend(config.simulation_backend)
+    ray_available = importlib.util.find_spec("ray") is not None
+    warnings: list[str] = []
 
-    def get_properties(self, ins, timeout, group_id):  # type: ignore[override]
-        raise NotImplementedError
+    if requested_backend == "auto":
+        if not ray_available:
+            raise RuntimeError(
+                "Flower simulation requires Ray, but Ray is not installed. "
+                "Install `fed-perso-xai[ray]` for the primary simulation path or "
+                "rerun with `--simulation-backend debug-sequential` for the debug-only "
+                "development fallback."
+            )
+        resolved_backend = "ray"
+    elif requested_backend == "ray":
+        if not ray_available:
+            raise RuntimeError(
+                "The requested Flower runtime backend is `ray`, but Ray is not installed. "
+                "Install `fed-perso-xai[ray]` or use `--simulation-backend debug-sequential` "
+                "for the explicit debug fallback."
+            )
+        resolved_backend = "ray"
+    else:
+        resolved_backend = "debug-sequential"
+        warnings.append(
+            "Using the debug sequential runtime. This is not a real Flower simulation "
+            "and should only be used for local development or CI fallback checks."
+        )
 
-    def get_parameters(self, ins, timeout, group_id):  # type: ignore[override]
-        raise NotImplementedError
-
-    def fit(self, ins, timeout, group_id):  # type: ignore[override]
-        raise NotImplementedError
-
-    def evaluate(self, ins, timeout, group_id):  # type: ignore[override]
-        raise NotImplementedError
-
-    def reconnect(self, ins, timeout, group_id):  # type: ignore[override]
-        raise NotImplementedError
+    return FlowerRuntimePlan(
+        requested_backend=requested_backend,
+        resolved_backend=resolved_backend,
+        ray_available=ray_available,
+        flwr_version=importlib.metadata.version("flwr"),
+        is_debug_runtime=resolved_backend == "debug-sequential",
+        warnings=warnings,
+    )
 
 
 def run_federated_training(
@@ -59,55 +120,194 @@ def run_federated_training(
     client_datasets: list[ClientData],
     config: FederatedTrainingConfig,
     result_dir: Path,
+    run_id: str,
     strategy_factory: StrategyFactory | None = None,
 ) -> tuple[SimulationArtifacts, dict[str, Any]]:
     """Run federated training and persist final metrics and parameters."""
 
-    n_features = client_datasets[0].X_train.shape[1]
-    initial_parameters = initialize_parameters(n_features)
-    strategy = (strategy_factory or FedAvgStrategyFactory(config)).create(initial_parameters)
+    if not client_datasets:
+        raise ValueError("client_datasets must not be empty.")
+
+    result_dir.mkdir(parents=True, exist_ok=True)
+    runtime_plan = plan_flower_runtime(config)
+    initial_parameters = initialize_parameters(client_datasets[0].X_train.shape[1])
+    recorder = FederatedRunRecorder(backend=runtime_plan.resolved_backend)
+    factory = strategy_factory or FedAvgStrategyFactory(config)
+    final_parameters, actual_backend, runtime_warnings = _execute_runtime(
+        client_datasets=client_datasets,
+        config=config,
+        runtime_plan=runtime_plan,
+        recorder=recorder,
+        strategy_factory=factory,
+        initial_parameters=initial_parameters,
+    )
+
+    summary, predictions_path = _evaluate_and_persist_results(
+        client_datasets=client_datasets,
+        config=config,
+        result_dir=result_dir,
+        recorder=recorder,
+        final_parameters=final_parameters,
+        run_id=run_id,
+        actual_backend=actual_backend,
+    )
+    runtime_report = {
+        "requested_backend": runtime_plan.requested_backend,
+        "planned_backend": runtime_plan.resolved_backend,
+        "actual_backend": actual_backend,
+        "ray_available": runtime_plan.ray_available,
+        "flwr_version": runtime_plan.flwr_version,
+        "is_debug_runtime": actual_backend == "debug-sequential",
+        "warnings": runtime_plan.warnings + runtime_warnings,
+        "rounds_completed": len(recorder.round_history),
+    }
+    runtime_path = result_dir / "runtime_report.json"
+    runtime_path.write_text(json.dumps(runtime_report, indent=2), encoding="utf-8")
+
+    metrics_path = result_dir / "metrics_summary.json"
+    model_path = result_dir / "model_parameters.npz"
+    summary["runtime"] = runtime_report
+    summary["simulation_backend"] = actual_backend
+    metrics_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    np.savez_compressed(
+        model_path,
+        weights=np.asarray(final_parameters[0], dtype=np.float64),
+        bias=np.asarray(final_parameters[1], dtype=np.float64),
+    )
+    return (
+        SimulationArtifacts(
+            result_dir=result_dir,
+            metrics_path=metrics_path,
+            model_path=model_path,
+            predictions_path=predictions_path,
+            runtime_path=runtime_path,
+        ),
+        summary,
+    )
+
+
+def _execute_runtime(
+    *,
+    client_datasets: list[ClientData],
+    config: FederatedTrainingConfig,
+    runtime_plan: FlowerRuntimePlan,
+    recorder: FederatedRunRecorder,
+    strategy_factory: StrategyFactory,
+    initial_parameters: list[np.ndarray],
+) -> tuple[list[np.ndarray], str, list[str]]:
+    runtime_warnings: list[str] = []
+
+    if runtime_plan.resolved_backend == "debug-sequential":
+        recorder.backend = "debug-sequential"
+        return (
+            _run_debug_sequential_runtime(
+                client_datasets=client_datasets,
+                config=config,
+                recorder=recorder,
+                strategy_factory=strategy_factory,
+                initial_parameters=initial_parameters,
+            ),
+            "debug-sequential",
+            runtime_warnings,
+        )
+
+    try:
+        recorder.backend = "ray"
+        final_parameters = _run_flower_simulation(
+            client_datasets=client_datasets,
+            config=config,
+            recorder=recorder,
+            strategy_factory=strategy_factory,
+            initial_parameters=initial_parameters,
+        )
+        return final_parameters, "ray", runtime_warnings
+    except Exception as exc:
+        if not config.debug_fallback_on_error:
+            raise RuntimeError(
+                "Flower Ray simulation failed. The debug sequential runtime was not used "
+                "because `debug_fallback_on_error` is disabled. Re-run with "
+                "`--debug-fallback-on-error` only if you explicitly want the development "
+                "fallback, or inspect the Flower/Ray runtime failure."
+            ) from exc
+        runtime_warnings.append(
+            "Flower Ray simulation failed and the run continued with the explicit "
+            "debug sequential fallback because `debug_fallback_on_error` was enabled."
+        )
+        recorder.backend = "debug-sequential"
+        final_parameters = _run_debug_sequential_runtime(
+            client_datasets=client_datasets,
+            config=config,
+            recorder=recorder,
+            strategy_factory=strategy_factory,
+            initial_parameters=initial_parameters,
+        )
+        return final_parameters, "debug-sequential", runtime_warnings
+
+
+def _run_flower_simulation(
+    *,
+    client_datasets: list[ClientData],
+    config: FederatedTrainingConfig,
+    recorder: FederatedRunRecorder,
+    strategy_factory: StrategyFactory,
+    initial_parameters: list[np.ndarray],
+) -> list[np.ndarray]:
+    data_by_id = {dataset.client_id: dataset for dataset in client_datasets}
+
+    def client_fn(context: fl.common.Context):
+        partition_id = int(context.node_config.get("partition-id", context.node_id))
+        client = FederatedLogisticRegressionClient(
+            data=data_by_id[partition_id],
+            model_config=config.model,
+            seed=config.seed,
+        )
+        return client.to_client()
+
+    def server_fn(context: fl.common.Context):
+        strategy = strategy_factory.create(initial_parameters, recorder)
+        return ServerAppComponents(
+            strategy=strategy,
+            config=ServerConfig(num_rounds=config.rounds),
+        )
+
+    client_app = ClientApp(client_fn)
+    server_app = ServerApp(server_fn=server_fn)
+    backend_config = {
+        "client_resources": dict(config.simulation_resources),
+        "init_args": {"ignore_reinit_error": True},
+    }
+    fl.simulation.run_simulation(
+        server_app=server_app,
+        client_app=client_app,
+        num_supernodes=config.num_clients,
+        backend_name="ray",
+        backend_config=backend_config,
+        verbose_logging=False,
+    )
+    if recorder.final_parameters is None:
+        raise RuntimeError("Flower simulation completed without final parameters.")
+    return recorder.final_parameters
+
+
+def _run_debug_sequential_runtime(
+    *,
+    client_datasets: list[ClientData],
+    config: FederatedTrainingConfig,
+    recorder: FederatedRunRecorder,
+    strategy_factory: StrategyFactory,
+    initial_parameters: list[np.ndarray],
+) -> list[np.ndarray]:
+    strategy = strategy_factory.create(initial_parameters, recorder)
     clients = [
         FederatedLogisticRegressionClient(
             data=dataset,
-            n_features=n_features,
-            learning_rate=config.learning_rate,
-            batch_size=config.batch_size,
-            local_epochs=config.local_epochs,
-            l2_regularization=config.l2_regularization,
+            model_config=config.model,
             seed=config.seed,
         )
         for dataset in client_datasets
     ]
-    summary = _run_sequential_fallback(
-        clients=clients,
-        config=config,
-        strategy=strategy,
-    )
-
-    result_dir.mkdir(parents=True, exist_ok=True)
-    metrics_path = result_dir / "metrics_summary.json"
-    model_path = result_dir / "model_parameters.npz"
-    metrics_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    np.savez_compressed(
-        model_path,
-        weights=np.asarray(summary["final_parameters"][0], dtype=np.float64),
-        bias=np.asarray(summary["final_parameters"][1], dtype=np.float64),
-    )
-    return SimulationArtifacts(result_dir=result_dir, metrics_path=metrics_path, model_path=model_path), summary
-
-
-def _run_sequential_fallback(
-    *,
-    clients: list[FederatedLogisticRegressionClient],
-    config: FederatedTrainingConfig,
-    strategy: fl.server.strategy.Strategy,
-) -> dict[str, Any]:
-    """Use Flower strategy objects with in-process clients when Ray is unavailable."""
-
+    parameters = initial_parameters
     rng = np.random.default_rng(config.seed)
-    parameters = clients[0].get_parameters({})
-    round_history: list[dict[str, Any]] = []
-    proxies = [InMemoryClientProxy(cid=str(index)) for index, _ in enumerate(clients)]
 
     for server_round in range(1, config.rounds + 1):
         fit_sample_size = _sample_size(
@@ -116,24 +316,23 @@ def _run_sequential_fallback(
             minimum=min(config.min_available_clients, len(clients)),
         )
         fit_indices = rng.choice(len(clients), size=fit_sample_size, replace=False)
-        fit_results: list[tuple[ClientProxy, FitRes]] = []
+        fit_results = []
         for client_index in fit_indices:
             updated_parameters, num_examples, metrics = clients[client_index].fit(parameters, {})
             fit_results.append(
                 (
-                    proxies[client_index],
-                    FitRes(
-                        status=Status(code=Code.OK, message="ok"),
+                    None,
+                    fl.common.FitRes(
+                        status=fl.common.Status(code=fl.common.Code.OK, message="ok"),
                         parameters=fl.common.ndarrays_to_parameters(updated_parameters),
                         num_examples=num_examples,
                         metrics=metrics,
                     ),
                 )
             )
-
-        aggregated_parameters, fit_metrics = strategy.aggregate_fit(server_round, fit_results, [])
+        aggregated_parameters, _ = strategy.aggregate_fit(server_round, fit_results, [])
         if aggregated_parameters is None:
-            raise RuntimeError("Flower strategy returned no aggregated parameters.")
+            raise RuntimeError("Debug sequential runtime could not aggregate client updates.")
         parameters = fl.common.parameters_to_ndarrays(aggregated_parameters)
 
         evaluate_sample_size = _sample_size(
@@ -142,64 +341,83 @@ def _run_sequential_fallback(
             minimum=min(config.min_available_clients, len(clients)),
         )
         evaluate_indices = rng.choice(len(clients), size=evaluate_sample_size, replace=False)
-        evaluate_results: list[tuple[ClientProxy, EvaluateRes]] = []
+        evaluate_results = []
         for client_index in evaluate_indices:
             loss, num_examples, metrics = clients[client_index].evaluate(parameters, {})
             evaluate_results.append(
                 (
-                    proxies[client_index],
-                    EvaluateRes(
-                        status=Status(code=Code.OK, message="ok"),
+                    None,
+                    fl.common.EvaluateRes(
+                        status=fl.common.Status(code=fl.common.Code.OK, message="ok"),
                         loss=loss,
                         num_examples=num_examples,
                         metrics=metrics,
                     ),
                 )
             )
+        strategy.aggregate_evaluate(server_round, evaluate_results, [])
 
-        aggregated_loss, evaluate_metrics = strategy.aggregate_evaluate(
-            server_round,
-            evaluate_results,
-            [],
-        )
-        round_history.append(
-            {
-                "round": server_round,
-                "fit_metrics": fit_metrics,
-                "evaluate_loss": aggregated_loss,
-                "evaluate_metrics": evaluate_metrics,
-            }
-        )
+    recorder.final_parameters = parameters
+    return parameters
 
+
+def _evaluate_and_persist_results(
+    *,
+    client_datasets: list[ClientData],
+    config: FederatedTrainingConfig,
+    result_dir: Path,
+    recorder: FederatedRunRecorder,
+    final_parameters: list[np.ndarray],
+    run_id: str,
+    actual_backend: str,
+) -> tuple[dict[str, Any], Path]:
     per_client: list[dict[str, Any]] = []
     aggregated_inputs: list[tuple[int, dict[str, float]]] = []
     pooled_probabilities: list[np.ndarray] = []
     pooled_labels: list[np.ndarray] = []
-    for client in clients:
-        loss, num_examples, metrics = client.evaluate(parameters, {})
-        client.model.set_parameters(parameters)
-        probabilities = client.model.predict_proba(client.data.X_test)
-        row = {
-            "client_id": client.data.client_id,
-            "num_examples": num_examples,
-            **{key: float(value) for key, value in metrics.items() if key != "client_id"},
-        }
-        per_client.append(row)
-        aggregated_inputs.append(
-            (
-                num_examples,
-                {key: float(value) for key, value in metrics.items() if key != "client_id"},
-            )
+    pooled_row_ids: list[np.ndarray] = []
+    pooled_client_ids: list[np.ndarray] = []
+
+    for dataset in client_datasets:
+        model = LogisticRegressionModel(
+            n_features=dataset.X_test.shape[1],
+            learning_rate=config.model.learning_rate,
+            batch_size=config.model.batch_size,
+            local_epochs=config.model.epochs,
+            l2_regularization=config.model.l2_regularization,
         )
+        model.set_parameters(final_parameters)
+        probabilities = model.predict_proba(dataset.X_test)
+        loss = model.loss(dataset.X_test, dataset.y_test)
+        metrics = compute_pooled_classification_metrics(
+            y_true=dataset.y_test,
+            y_prob=probabilities,
+            loss=loss,
+        )
+        per_client.append(
+            {
+                "client_id": dataset.client_id,
+                "split_name": "client_test",
+                "num_examples": int(dataset.y_test.shape[0]),
+                "class_balance": summarize_class_balance(dataset.y_test),
+                "probability_summary": summarize_probability_distribution(probabilities),
+                "metrics": metrics,
+            }
+        )
+        aggregated_inputs.append((int(dataset.y_test.shape[0]), metrics))
         pooled_probabilities.append(probabilities)
-        pooled_labels.append(client.data.y_test)
+        pooled_labels.append(dataset.y_test)
+        pooled_row_ids.append(dataset.row_ids_test)
+        pooled_client_ids.append(
+            np.full(dataset.y_test.shape[0], dataset.client_id, dtype=np.int64)
+        )
 
     aggregated_metrics = aggregate_weighted_metrics(aggregated_inputs)
     pooled_y_true = np.concatenate(pooled_labels, axis=0)
     pooled_y_prob = np.concatenate(pooled_probabilities, axis=0)
     pooled_loss = float(
         np.average(
-            [row["loss"] for row in per_client],
+            [row["metrics"]["loss"] for row in per_client],
             weights=[row["num_examples"] for row in per_client],
         )
     )
@@ -208,21 +426,69 @@ def _run_sequential_fallback(
         y_prob=pooled_y_prob,
         loss=pooled_loss,
     )
-    threshold_sweep = sweep_classification_thresholds(
+    threshold_sweep = sweep_classification_thresholds(y_true=pooled_y_true, y_prob=pooled_y_prob)
+    predictions = build_prediction_artifact(
+        run_id=run_id,
+        dataset_name=config.dataset_name,
+        split_name="client_test",
         y_true=pooled_y_true,
         y_prob=pooled_y_prob,
+        row_ids=np.concatenate(pooled_row_ids, axis=0),
+        client_ids=np.concatenate(pooled_client_ids, axis=0),
     )
-    return {
+    predictions_path = save_prediction_artifact(result_dir / "predictions_client_test.npz", predictions)
+
+    summary = {
+        "run_id": run_id,
+        "experiment_type": "federated",
         "dataset_name": config.dataset_name,
-        "simulation_backend": "sequential_flower_fallback",
+        "result_dir": str(result_dir),
         "config": config.to_dict(),
-        "round_history": round_history,
+        "round_history": recorder.round_history,
+        "evaluation": {
+            "client_test_weighted": {
+                "split_name": "client_test_weighted",
+                "provenance": {
+                    "source": "weighted_client_evaluation",
+                    "client_count": len(client_datasets),
+                    "backend": actual_backend,
+                },
+                "class_balance": summarize_class_balance(pooled_y_true),
+                "probability_summary": summarize_probability_distribution(pooled_y_prob),
+                "metrics": aggregated_metrics,
+            },
+            "client_test_pooled": {
+                "split_name": "client_test",
+                "provenance": {
+                    "source": "pooled_client_predictions",
+                    "client_count": len(client_datasets),
+                    "backend": actual_backend,
+                },
+                "class_balance": summarize_class_balance(pooled_y_true),
+                "probability_summary": summarize_probability_distribution(pooled_y_prob),
+                "metrics": pooled_metrics,
+                "predictions_path": str(predictions_path),
+            },
+            "per_client": per_client,
+        },
         "per_client": per_client,
         "aggregated_weighted": aggregated_metrics,
         "aggregated_pooled": pooled_metrics,
         "threshold_analysis": threshold_sweep,
-        "final_parameters": [parameters[0].tolist(), parameters[1].tolist()],
+        "final_parameters": [final_parameters[0].tolist(), final_parameters[1].tolist()],
+        "predictions_path": str(predictions_path),
     }
+    return summary, predictions_path
+
+
+def _canonicalize_backend(requested_backend: str) -> str:
+    try:
+        return BACKEND_ALIASES[requested_backend]
+    except KeyError as exc:
+        supported = ", ".join(sorted(BACKEND_ALIASES))
+        raise ValueError(
+            f"Unsupported simulation backend '{requested_backend}'. Supported backends: {supported}."
+        ) from exc
 
 
 def _sample_size(total_clients: int, fraction: float, minimum: int) -> int:

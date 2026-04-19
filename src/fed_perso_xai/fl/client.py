@@ -1,14 +1,23 @@
-"""Flower NumPy client for the stage-1 baseline."""
+"""Flower client adapters for the stage-1 federated baseline."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-import flwr as fl
 import numpy as np
+
+try:
+    import flwr as fl
+except ImportError as exc:  # pragma: no cover - exercised via federated entrypoints
+    raise ImportError(
+        "Flower support is not installed. Install the optional federated extras with "
+        "`pip install -e .[fl]` for debug runtime support or `pip install -e .[ray]` "
+        "for Ray-backed simulation."
+    ) from exc
 
 from fed_perso_xai.evaluation.metrics import compute_classification_metrics
 from fed_perso_xai.models.logistic_regression import LogisticRegressionModel
+from fed_perso_xai.utils.config import LogisticRegressionConfig
 
 
 @dataclass(frozen=True)
@@ -18,31 +27,29 @@ class ClientData:
     client_id: int
     X_train: np.ndarray
     y_train: np.ndarray
+    row_ids_train: np.ndarray
     X_test: np.ndarray
     y_test: np.ndarray
+    row_ids_test: np.ndarray
 
 
 class FederatedLogisticRegressionClient(fl.client.NumPyClient):
-    """Flower client backed by the explicit NumPy logistic regression model."""
+    """Flower NumPy client backed by the explicit NumPy logistic regression model."""
 
     def __init__(
         self,
         data: ClientData,
-        n_features: int,
-        learning_rate: float,
-        batch_size: int,
-        local_epochs: int,
-        l2_regularization: float,
+        model_config: LogisticRegressionConfig,
         seed: int,
     ) -> None:
         self.data = data
         self.seed = seed
         self.model = LogisticRegressionModel(
-            n_features=n_features,
-            learning_rate=learning_rate,
-            batch_size=batch_size,
-            local_epochs=local_epochs,
-            l2_regularization=l2_regularization,
+            n_features=data.X_train.shape[1],
+            learning_rate=model_config.learning_rate,
+            batch_size=model_config.batch_size,
+            local_epochs=model_config.epochs,
+            l2_regularization=model_config.l2_regularization,
         )
 
     def get_parameters(self, config: dict[str, fl.common.Scalar]) -> list[np.ndarray]:

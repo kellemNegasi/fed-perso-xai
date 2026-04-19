@@ -1,8 +1,9 @@
-"""On-disk persistence for processed client datasets."""
+"""Prepared-data and client-partition persistence helpers."""
 
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,16 +11,40 @@ from typing import Any
 import numpy as np
 
 from fed_perso_xai.data.partitioning import ClientSplit, summarize_labels
-from fed_perso_xai.utils.paths import client_dir, partition_root
+from fed_perso_xai.utils.config import DataPreparationConfig
+from fed_perso_xai.utils.paths import client_dir, partition_root, prepared_dir
+
+
+@dataclass(frozen=True)
+class SavedPreparedArtifacts:
+    """Paths to the prepared-data artifacts shared across experiments."""
+
+    root_dir: Path
+    config_path: Path
+    dataset_metadata_path: Path
+    split_metadata_path: Path
+    feature_metadata_path: Path
+    preprocessor_path: Path
+    global_train_path: Path
+    global_eval_path: Path
+    pooled_client_test_path: Path | None
 
 
 @dataclass(frozen=True)
 class SavedDatasetArtifacts:
-    """Pointers to saved dataset artifacts."""
+    """Pointers to saved client-partition artifacts."""
 
     root_dir: Path
-    metadata_path: Path
-    global_eval_path: Path | None
+    partition_metadata_path: Path
+
+
+@dataclass(frozen=True)
+class ArraySplit:
+    """Loaded array split with optional row identifiers."""
+
+    X: np.ndarray
+    y: np.ndarray
+    row_ids: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -27,10 +52,59 @@ class ClientDiskDataset:
     """Loaded arrays for one saved client."""
 
     client_id: int
-    X_train: np.ndarray
-    y_train: np.ndarray
-    X_test: np.ndarray
-    y_test: np.ndarray
+    train: ArraySplit
+    test: ArraySplit
+
+
+def save_prepared_dataset(
+    *,
+    config: DataPreparationConfig,
+    dataset_metadata: dict[str, Any],
+    split_metadata: dict[str, Any],
+    feature_metadata: dict[str, Any],
+    preprocessor_path: Path,
+    global_train: ArraySplit,
+    global_eval: ArraySplit,
+    pooled_client_test: ArraySplit | None = None,
+) -> SavedPreparedArtifacts:
+    """Persist prepared centralized-ready artifacts."""
+
+    root_dir = prepared_dir(config.paths, config.dataset_name, config.seed)
+    root_dir.mkdir(parents=True, exist_ok=True)
+
+    config_path = root_dir / "prepare_config.json"
+    dataset_metadata_path = root_dir / "dataset_metadata.json"
+    split_metadata_path = root_dir / "split_metadata.json"
+    feature_metadata_path = root_dir / "feature_metadata.json"
+    target_preprocessor_path = root_dir / "preprocessor.joblib"
+    global_train_path = root_dir / "global_train.npz"
+    global_eval_path = root_dir / "global_eval.npz"
+
+    config_path.write_text(json.dumps(config.to_dict(), indent=2), encoding="utf-8")
+    dataset_metadata_path.write_text(json.dumps(dataset_metadata, indent=2), encoding="utf-8")
+    split_metadata_path.write_text(json.dumps(split_metadata, indent=2), encoding="utf-8")
+    feature_metadata_path.write_text(json.dumps(feature_metadata, indent=2), encoding="utf-8")
+    if preprocessor_path.resolve() != target_preprocessor_path.resolve():
+        shutil.copy2(preprocessor_path, target_preprocessor_path)
+    _save_array_split(global_train_path, global_train)
+    _save_array_split(global_eval_path, global_eval)
+
+    pooled_client_test_path: Path | None = None
+    if pooled_client_test is not None:
+        pooled_client_test_path = root_dir / "pooled_client_test.npz"
+        _save_array_split(pooled_client_test_path, pooled_client_test)
+
+    return SavedPreparedArtifacts(
+        root_dir=root_dir,
+        config_path=config_path,
+        dataset_metadata_path=dataset_metadata_path,
+        split_metadata_path=split_metadata_path,
+        feature_metadata_path=feature_metadata_path,
+        preprocessor_path=target_preprocessor_path,
+        global_train_path=global_train_path,
+        global_eval_path=global_eval_path,
+        pooled_client_test_path=pooled_client_test_path,
+    )
 
 
 def save_federated_dataset(
@@ -40,12 +114,12 @@ def save_federated_dataset(
     num_clients: int,
     alpha: float,
     seed: int,
-    feature_names: list[str],
-    preprocessing_info: dict[str, Any],
+    prepared_root: Path,
+    preprocessor_path: Path,
+    feature_metadata_path: Path,
     client_splits: list[ClientSplit],
-    global_eval: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> SavedDatasetArtifacts:
-    """Persist all client datasets and metadata under the required layout."""
+    """Persist all client datasets and partition metadata under the required layout."""
 
     root_dir = partition_root(output_root, num_clients, alpha)
     root_dir.mkdir(parents=True, exist_ok=True)
@@ -53,35 +127,24 @@ def save_federated_dataset(
     for split in client_splits:
         output_dir = client_dir(output_root, num_clients, alpha, split.client_id)
         output_dir.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
+        _save_array_split(
             output_dir / "train.npz",
-            X=split.X_train.astype(np.float32, copy=False),
-            y=split.y_train.astype(np.int64, copy=False),
+            ArraySplit(X=split.X_train, y=split.y_train, row_ids=split.row_ids_train),
         )
-        np.savez_compressed(
+        _save_array_split(
             output_dir / "test.npz",
-            X=split.X_test.astype(np.float32, copy=False),
-            y=split.y_test.astype(np.int64, copy=False),
+            ArraySplit(X=split.X_test, y=split.y_test, row_ids=split.row_ids_test),
         )
 
-    global_eval_path: Path | None = None
-    if global_eval is not None:
-        global_eval_path = root_dir / "global_eval.npz"
-        np.savez_compressed(
-            global_eval_path,
-            X=global_eval[0].astype(np.float32, copy=False),
-            y=global_eval[1].astype(np.int64, copy=False),
-        )
-
-    metadata_path = root_dir / "metadata.json"
+    partition_metadata_path = root_dir / "partition_metadata.json"
     metadata = {
         "dataset_name": dataset_name,
         "num_clients": num_clients,
         "alpha": alpha,
         "seed": seed,
-        "feature_names": feature_names,
-        "feature_count": len(feature_names),
-        "preprocessing": preprocessing_info,
+        "prepared_root": str(prepared_root),
+        "preprocessor_path": str(preprocessor_path),
+        "feature_metadata_path": str(feature_metadata_path),
         "clients": [
             {
                 "client_id": split.client_id,
@@ -93,31 +156,55 @@ def save_federated_dataset(
             for split in client_splits
         ],
     }
-    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    return SavedDatasetArtifacts(
-        root_dir=root_dir,
-        metadata_path=metadata_path,
-        global_eval_path=global_eval_path,
+    partition_metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    (root_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    return SavedDatasetArtifacts(root_dir=root_dir, partition_metadata_path=partition_metadata_path)
+
+
+def load_array_split(path: Path) -> ArraySplit:
+    """Load an array split artifact."""
+
+    data = np.load(path, allow_pickle=False)
+    row_ids = np.asarray(data["row_ids"], dtype=str) if "row_ids" in data else np.asarray([], dtype=str)
+    return ArraySplit(
+        X=np.asarray(data["X"], dtype=np.float64),
+        y=np.asarray(data["y"], dtype=np.int64),
+        row_ids=row_ids,
     )
 
 
-def load_client_datasets(
-    root_dir: Path,
-    num_clients: int,
-) -> list[ClientDiskDataset]:
+def load_client_datasets(root_dir: Path, num_clients: int) -> list[ClientDiskDataset]:
     """Load all saved client partitions from disk."""
 
-    clients: list[ClientDiskDataset] = []
-    for client_id in range(num_clients):
-        train_data = np.load(root_dir / f"client_{client_id}" / "train.npz")
-        test_data = np.load(root_dir / f"client_{client_id}" / "test.npz")
-        clients.append(
-            ClientDiskDataset(
-                client_id=client_id,
-                X_train=np.asarray(train_data["X"], dtype=np.float64),
-                y_train=np.asarray(train_data["y"], dtype=np.int64),
-                X_test=np.asarray(test_data["X"], dtype=np.float64),
-                y_test=np.asarray(test_data["y"], dtype=np.int64),
-            )
+    return [
+        ClientDiskDataset(
+            client_id=client_id,
+            train=load_array_split(root_dir / f"client_{client_id}" / "train.npz"),
+            test=load_array_split(root_dir / f"client_{client_id}" / "test.npz"),
         )
-    return clients
+        for client_id in range(num_clients)
+    ]
+
+
+def copy_shared_artifacts(prepared_root: Path, destination_dir: Path) -> None:
+    """Copy the fitted preprocessor and feature metadata into a result directory."""
+
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    for filename in (
+        "preprocessor.joblib",
+        "feature_metadata.json",
+        "dataset_metadata.json",
+        "split_metadata.json",
+    ):
+        source = prepared_root / filename
+        if source.exists():
+            shutil.copy2(source, destination_dir / filename)
+
+
+def _save_array_split(path: Path, split: ArraySplit) -> None:
+    np.savez_compressed(
+        path,
+        X=split.X.astype(np.float32, copy=False),
+        y=split.y.astype(np.int64, copy=False),
+        row_ids=np.asarray(split.row_ids, dtype=str),
+    )

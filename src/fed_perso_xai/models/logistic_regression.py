@@ -1,8 +1,9 @@
-"""Explicit NumPy logistic regression for Flower parameter exchange."""
+"""Explicit NumPy logistic regression for centralized and federated training."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -87,3 +88,19 @@ class LogisticRegressionModel:
         )
         regularization = 0.5 * self.l2_regularization * np.sum(self.weights**2)
         return float(data_loss + regularization)
+
+    def save(self, path: Path) -> Path:
+        """Persist the trained model parameters."""
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            path,
+            weights=self.weights.astype(np.float64, copy=False),
+            bias=self.bias.astype(np.float64, copy=False),
+            n_features=np.asarray([self.n_features], dtype=np.int64),
+            learning_rate=np.asarray([self.learning_rate], dtype=np.float64),
+            batch_size=np.asarray([self.batch_size], dtype=np.int64),
+            local_epochs=np.asarray([self.local_epochs], dtype=np.int64),
+            l2_regularization=np.asarray([self.l2_regularization], dtype=np.float64),
+        )
+        return path

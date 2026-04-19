@@ -1,39 +1,84 @@
 # fed-perso-xai
 
-`fed-perso-xai` is the stage-1 baseline for federated Perso-XAI. This repository currently implements only the predictive-model training stage:
+`fed-perso-xai` is the stage-1 baseline for the larger federated Perso-XAI project. This repository is intentionally limited to predictive-model training with logistic regression, but its data, evaluation, and artifact contracts are shaped for later explanation-generation and recommender stages.
 
-- OpenML-backed tabular dataset loading for Adult Income and Bank Marketing
-- frozen global preprocessing for consistent feature dimensionality across clients
-- Dirichlet client partitioning with per-client train/test splits saved as `.npz`
-- Flower-based federated logistic regression with weighted evaluation reporting
+Implemented now:
 
-The later Perso-XAI stages are not implemented here yet. The code is organized so explanation generation, explanation metrics, and recommender/clustering modules can be added as independent pipeline stages without rewriting the data or training baseline.
+- dataset preparation for supported tabular datasets
+- frozen preprocessing fitted once on the global raw training pool
+- centralized logistic-regression training
+- Flower-based federated simulation as the primary federated path
+- explicit prediction, metrics, manifest, and provenance artifacts
+- centralized-versus-federated comparison reporting
 
-**Structure**
+Not implemented yet:
 
-- `src/fed_perso_xai/data`: dataset loading, preprocessing, partitioning, serialization
-- `src/fed_perso_xai/models`: explicit NumPy logistic regression
-- `src/fed_perso_xai/fl`: Flower client, strategy factory, sequential simulation fallback
-- `src/fed_perso_xai/evaluation`: per-client metrics and weighted aggregation
-- `src/fed_perso_xai/orchestration`: stage-oriented pipeline runners
-- `tests`: smoke and unit coverage for stage-1 behavior
+- explanation generation
+- explanation metrics
+- recommender training
+- pairwise comparison or preference learning
+- clustering
+- secure aggregation
 
-**Install**
+## Repository Layout
+
+- `src/fed_perso_xai/data`: dataset specs, loaders, preprocessing, partitioning, serialization
+- `src/fed_perso_xai/models`: stage-1 logistic-regression baseline
+- `src/fed_perso_xai/fl`: Flower client, strategy, and simulation runtime integration
+- `src/fed_perso_xai/evaluation`: predictive metrics, prediction artifacts, comparison reports
+- `src/fed_perso_xai/orchestration`: prepare-data and training entrypoints
+- `tests`: smoke and contract tests for stage-1
+
+## Installation
+
+Base installation for data preparation, centralized training, and artifact inspection:
 
 ```bash
 python3 -m pip install -e .
 ```
 
-**Prepare Data**
+Optional dependency groups:
 
-This command:
+- `.[dev]`: test tooling
+- `.[fl]`: Flower support for federated code paths and the explicit debug sequential runtime
+- `.[ray]`: Flower simulation extras with Ray for the primary federated runtime
 
-- downloads or loads the selected OpenML dataset
-- creates a global raw-data train pool and held-out global evaluation pool
-- fits a single preprocessing schema on the global raw-data train pool
-- transforms the global train pool once and partitions it across clients
-- creates each client's local train/test split
-- writes client arrays and metadata to disk
+Typical setups:
+
+```bash
+python3 -m pip install -e ".[dev,fl]"
+python3 -m pip install -e ".[dev,ray]"
+```
+
+`main.py` remains available for convenience:
+
+```bash
+python3 main.py --help
+```
+
+## Supported Datasets
+
+- `adult_income`
+- `bank_marketing`
+
+Both are loaded from OpenML, normalized to binary labels `{0,1}`, and passed through the shared tabular preprocessing pipeline.
+
+## Adding A New Dataset
+
+The intended extension path is to define a new `DatasetSpec`, optionally register a dataset-specific cleaning hook, and then reuse the existing orchestration.
+
+A new dataset usually needs:
+
+1. a `DatasetSpec` with `key`, `display_name`, `openml_data_id`, `target_column`, and `target_transform`
+2. optional `cleaning_hook` for dataset-specific cleanup before generic preprocessing
+3. optional `feature_type_overrides`
+4. optional `required_columns`
+
+The preparation, centralized training, federated training, and comparison flows are meant to continue working without editing their core logic.
+
+## Stage-1 Workflow
+
+### 1. Prepare Data
 
 ```bash
 python3 -m fed_perso_xai prepare-data \
@@ -43,22 +88,84 @@ python3 -m fed_perso_xai prepare-data \
   --seed 42
 ```
 
-Saved client partitions follow the required layout under the configured output root:
+This step:
+
+- loads raw data
+- creates the global raw train/eval split
+- fits the frozen preprocessor on the raw global training pool only
+- saves transformed global train/eval arrays
+- partitions the transformed training pool into clients
+- creates each client train/test split
+- writes split and partition metadata for downstream runs
+
+Prepared artifacts are written under:
 
 ```text
-datasets/10_clients/alpha_1/client_0/train.npz
-datasets/10_clients/alpha_1/client_0/test.npz
-...
-datasets/10_clients/alpha_1/client_9/train.npz
-datasets/10_clients/alpha_1/client_9/test.npz
+prepared/<dataset>/seed_<seed>/
 ```
 
-Additional artifacts written under the partition root:
+Key prepared artifacts:
 
-- `metadata.json`: dataset name, preprocessing schema summary, feature names, class distributions
-- `global_eval.npz`: optional centralized holdout transformed with the same frozen schema
+- `prepare_config.json`
+- `dataset_metadata.json`
+- `split_metadata.json`
+- `feature_metadata.json`
+- `preprocessor.joblib`
+- `global_train.npz`
+- `global_eval.npz`
+- `pooled_client_test.npz`
+- `partition_metadata.json`
 
-**Train Federated Baseline**
+Client partitions are written under:
+
+```text
+datasets/<K>_clients/alpha_<alpha>/
+```
+
+with:
+
+```text
+client_<id>/train.npz
+client_<id>/test.npz
+partition_metadata.json
+```
+
+### 2. Train Centralized Baseline
+
+```bash
+python3 -m fed_perso_xai train-centralized \
+  --dataset adult_income \
+  --seed 42 \
+  --epochs 5 \
+  --batch-size 64 \
+  --learning-rate 0.05
+```
+
+Outputs are written under:
+
+```text
+centralized/<dataset>/seed_<seed>/
+```
+
+Important artifacts:
+
+- `run_manifest.json`
+- `config_snapshot.json`
+- `reproducibility_metadata.json`
+- `metrics_summary.json`
+- `model_parameters.npz`
+- `predictions_global_eval.npz`
+- `predictions_pooled_client_test.npz` when enabled
+- copied shared artifacts:
+  - `preprocessor.joblib`
+  - `feature_metadata.json`
+  - `dataset_metadata.json`
+  - `split_metadata.json`
+  - `partition_metadata.json`
+
+### 3. Train Federated Baseline
+
+Primary runtime, using real Flower simulation with Ray:
 
 ```bash
 python3 -m fed_perso_xai train-federated \
@@ -66,33 +173,133 @@ python3 -m fed_perso_xai train-federated \
   --num-clients 10 \
   --alpha 1.0 \
   --rounds 20 \
-  --local-epochs 5 \
+  --epochs 5 \
   --batch-size 64 \
   --learning-rate 0.05 \
+  --seed 42 \
+  --simulation-backend ray
+```
+
+Auto mode resolves to the primary Flower path when Ray is installed:
+
+```bash
+python3 -m fed_perso_xai train-federated \
+  --dataset adult_income \
+  --num-clients 10 \
+  --alpha 1.0 \
+  --seed 42 \
+  --simulation-backend auto
+```
+
+Debug-only sequential runtime:
+
+```bash
+python3 -m fed_perso_xai train-federated \
+  --dataset adult_income \
+  --num-clients 10 \
+  --alpha 1.0 \
+  --seed 42 \
+  --simulation-backend debug-sequential
+```
+
+Runtime policy:
+
+- real Flower simulation is the intended federated path
+- `auto` does not silently downgrade to sequential execution when Ray is missing
+- `debug-sequential` is explicit and reported as a development fallback
+- `--debug-fallback-on-error` enables an explicit fallback if a Ray simulation fails and you still want the debug runtime
+
+Federated outputs are written under:
+
+```text
+federated/<dataset>/<K>_clients/alpha_<alpha>/seed_<seed>/
+```
+
+Important artifacts:
+
+- `run_manifest.json`
+- `config_snapshot.json`
+- `reproducibility_metadata.json`
+- `runtime_report.json`
+- `metrics_summary.json`
+- `model_parameters.npz`
+- `predictions_client_test.npz`
+- copied shared artifacts:
+  - `preprocessor.joblib`
+  - `feature_metadata.json`
+  - `dataset_metadata.json`
+  - `split_metadata.json`
+  - `partition_metadata.json`
+
+## Artifact Contract
+
+Prediction artifacts include at least:
+
+- `run_id`
+- `dataset_name`
+- `split_name`
+- `y_true`
+- `y_pred`
+- `y_prob`
+- `row_ids`
+- `client_ids` when applicable
+
+Feature metadata includes:
+
+- raw columns expected, kept, and dropped
+- dropped-column reasons
+- numeric and categorical column groups
+- imputed columns
+- removed constant and all-missing columns
+- transformed feature names
+- transformed-to-raw and raw-to-transformed maps
+- feature lineage records
+- encoder vocabularies
+- schema diagnostics
+- unknown-category handling policy
+
+Each training run emits a `run_manifest.json` tying together the major artifacts so later explanation-generation, evaluation, and recommender stages can consume them without redefining the contract.
+
+## Comparison Reports
+
+`compare-baselines` compares predictive modeling outputs only:
+
+```bash
+python3 -m fed_perso_xai compare-baselines \
+  --dataset adult_income \
+  --num-clients 10 \
+  --alpha 1.0 \
   --seed 42
 ```
 
-Training writes results under `results/<dataset>/<K>_clients/alpha_<alpha>/seed_<seed>/`:
+The report includes:
 
-- `metrics_summary.json`
-- `model_parameters.npz`
+- centralized global-eval metrics
+- centralized pooled-client-test metrics when available
+- federated weighted client-test metrics
+- federated pooled client-test metrics
+- federated per-client metric summaries
+- split provenance
+- class-balance summaries
+- probability summaries
+- metric deltas across modes
 
-The metrics summary includes:
+The report structure is intended to accept future explanation or recommender metrics as additional sections instead of requiring a redesign.
 
-- per-client loss, accuracy, precision, recall, F1, and ROC-AUC when defined
-- weighted aggregated metrics across client test splits
-- round-level history from the stage-1 federated baseline
+## Tests
 
-**Design Notes**
+Run the stage-1 test suite with:
 
-- Logistic regression is implemented explicitly in NumPy so Flower parameter exchange is simple and inspectable.
-- The current environment does not include Ray, so the baseline uses a Flower-native sequential fallback built around `FedAvg`. The strategy seam is isolated so a future run can switch to native Flower simulation or a custom secure/clustered strategy.
-- Secure aggregation and clustering are intentionally not implemented yet. The `StrategyFactory` abstraction in `fl/strategy.py` is the extension point for later secure or clustered reducers inspired by `lcc-lib`.
-- Explanation generation, metric computation beyond predictive evaluation, and personalized recommendation are intentionally separate future pipeline stages.
+```bash
+python3 -m pytest -q
+```
 
-**Known Limitations**
+Current tests cover:
 
-- Only binary tabular classification is supported in stage 1.
-- Only Adult Income and Bank Marketing are wired in.
-- Native Flower simulation with Ray is not enabled unless `ray` is installed alongside Flower.
-- OpenML downloads require network access on first use unless the cache is already populated.
+- dataset registry extensibility with a synthetic dataset spec
+- preprocessing robustness for constant, all-missing, unseen-category, and boolean/categorical cases
+- prepared artifact generation
+- partitioning reproducibility
+- centralized and federated artifact compatibility
+- comparison report generation
+- real Flower simulation smoke execution when the `ray` extra is installed

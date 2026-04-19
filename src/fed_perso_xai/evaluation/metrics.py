@@ -67,7 +67,7 @@ def compute_pooled_classification_metrics(
     metrics.update(
         {
             "num_examples": float(y_true.shape[0]),
-            "true_positive_rate": float(np.mean(y_true)),
+            "positive_class_rate": float(np.mean(y_true)),
             "predicted_positive_rate": float(np.mean(y_pred)),
             "tn": float(tn),
             "fp": float(fp),
@@ -76,6 +76,53 @@ def compute_pooled_classification_metrics(
         }
     )
     return metrics
+
+
+def summarize_class_balance(y_true: np.ndarray) -> dict[str, Any]:
+    """Return a JSON-friendly class-balance summary."""
+
+    y_true = np.asarray(y_true, dtype=np.int64)
+    unique, counts = np.unique(y_true, return_counts=True)
+    count_map = {str(int(label)): int(count) for label, count in zip(unique, counts, strict=False)}
+    positive_count = int(np.sum(y_true == 1))
+    negative_count = int(np.sum(y_true == 0))
+    total = int(y_true.shape[0])
+    return {
+        "num_examples": total,
+        "counts": count_map,
+        "positive_count": positive_count,
+        "negative_count": negative_count,
+        "positive_rate": float(positive_count / total) if total else float("nan"),
+    }
+
+
+def summarize_probability_distribution(y_prob: np.ndarray) -> dict[str, float]:
+    """Return summary statistics for predicted probabilities."""
+
+    y_prob = np.asarray(y_prob, dtype=np.float64)
+    if y_prob.size == 0:
+        return {
+            "mean": float("nan"),
+            "std": float("nan"),
+            "min": float("nan"),
+            "max": float("nan"),
+            "p05": float("nan"),
+            "p25": float("nan"),
+            "p50": float("nan"),
+            "p75": float("nan"),
+            "p95": float("nan"),
+        }
+    return {
+        "mean": float(np.mean(y_prob)),
+        "std": float(np.std(y_prob)),
+        "min": float(np.min(y_prob)),
+        "max": float(np.max(y_prob)),
+        "p05": float(np.quantile(y_prob, 0.05)),
+        "p25": float(np.quantile(y_prob, 0.25)),
+        "p50": float(np.quantile(y_prob, 0.50)),
+        "p75": float(np.quantile(y_prob, 0.75)),
+        "p95": float(np.quantile(y_prob, 0.95)),
+    }
 
 
 def sweep_classification_thresholds(

@@ -1,14 +1,22 @@
-"""Filesystem path helpers for datasets and training artifacts."""
+"""Filesystem path helpers for prepared data and experiment outputs."""
 
 from __future__ import annotations
 
 from pathlib import Path
+
+from fed_perso_xai.utils.config import ArtifactPaths
 
 
 def format_alpha(alpha: float) -> str:
     """Format a Dirichlet alpha for stable directory naming."""
 
     return str(float(alpha))
+
+
+def prepared_dir(paths: ArtifactPaths, dataset_name: str, seed: int) -> Path:
+    """Return the directory containing shared prepared-data artifacts."""
+
+    return paths.prepared_root / dataset_name / f"seed_{seed}"
 
 
 def partition_root(base_dir: Path, num_clients: int, alpha: float) -> Path:
@@ -23,17 +31,41 @@ def client_dir(base_dir: Path, num_clients: int, alpha: float, client_id: int) -
     return partition_root(base_dir, num_clients, alpha) / f"client_{client_id}"
 
 
-def training_run_dir(
-    results_root: Path,
+def centralized_run_dir(paths: ArtifactPaths, dataset_name: str, seed: int) -> Path:
+    """Return the result directory for one centralized baseline run."""
+
+    return paths.centralized_root / dataset_name / f"seed_{seed}"
+
+
+def federated_run_dir(
+    paths: ArtifactPaths,
     dataset_name: str,
     num_clients: int,
     alpha: float,
     seed: int,
 ) -> Path:
-    """Return the result directory for one training run."""
+    """Return the result directory for one federated baseline run."""
 
     return (
-        results_root
+        paths.federated_root
+        / dataset_name
+        / f"{num_clients}_clients"
+        / f"alpha_{format_alpha(alpha)}"
+        / f"seed_{seed}"
+    )
+
+
+def comparison_run_dir(
+    paths: ArtifactPaths,
+    dataset_name: str,
+    num_clients: int,
+    alpha: float,
+    seed: int,
+) -> Path:
+    """Return the output directory for baseline comparison reports."""
+
+    return (
+        paths.comparison_root
         / dataset_name
         / f"{num_clients}_clients"
         / f"alpha_{format_alpha(alpha)}"

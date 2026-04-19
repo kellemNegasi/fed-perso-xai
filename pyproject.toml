@@ -5,11 +5,23 @@ description = "Stage-1 federated Perso-XAI baseline for tabular predictive model
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "flwr>=1.29.0",
+    "joblib>=1.3",
     "numpy>=2.0",
     "pandas>=2.0",
     "PyYAML>=6.0",
     "scikit-learn>=1.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+fl = [
+    "flwr>=1.29.0",
+]
+ray = [
+    "flwr[simulation]>=1.29.0",
+    "packaging<26.0",
 ]
 
 [project.scripts]

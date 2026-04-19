@@ -16,8 +16,10 @@ class ClientSplit:
     client_id: int
     X_train: np.ndarray
     y_train: np.ndarray
+    row_ids_train: np.ndarray
     X_test: np.ndarray
     y_test: np.ndarray
+    row_ids_test: np.ndarray
 
     @property
     def train_size(self) -> int:
@@ -78,6 +80,7 @@ def dirichlet_partition_labels(
 def split_client_partition(
     X: np.ndarray,
     y: np.ndarray,
+    row_ids: np.ndarray,
     client_id: int,
     test_size: float,
     seed: int,
@@ -96,8 +99,10 @@ def split_client_partition(
         client_id=client_id,
         X_train=X[train_idx],
         y_train=y[train_idx],
+        row_ids_train=row_ids[train_idx],
         X_test=X[test_idx],
         y_test=y[test_idx],
+        row_ids_test=row_ids[test_idx],
     )
 
 
