@@ -1,0 +1,30 @@
+[project]
+name = "fed-perso-xai"
+version = "0.1.0"
+description = "Stage-1 federated Perso-XAI baseline for tabular predictive modeling"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "flwr>=1.29.0",
+    "numpy>=2.0",
+    "pandas>=2.0",
+    "PyYAML>=6.0",
+    "scikit-learn>=1.4",
+]
+
+[project.scripts]
+fed-perso-xai = "fed_perso_xai.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
