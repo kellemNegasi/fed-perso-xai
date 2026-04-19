@@ -89,7 +89,7 @@ DEFAULT_DATASET_REGISTRY = DatasetRegistry(
         DatasetSpec(
             key="adult_income",
             display_name="Adult Income",
-            openml_data_id=4535,
+            openml_data_id=1590,
             target_transform=_adult_income_transform,
             target_column="class",
             cleaning_hook=_replace_common_missing_tokens,

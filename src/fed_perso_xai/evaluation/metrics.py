@@ -17,7 +17,7 @@ from sklearn.metrics import (
 
 
 METRIC_NAMES = ("loss", "accuracy", "precision", "recall", "f1", "roc_auc")
-DEFAULT_CLASSIFICATION_THRESHOLD = 0.5
+DEFAULT_CLASSIFICATION_THRESHOLD = 0.35
 
 
 def compute_classification_metrics(
