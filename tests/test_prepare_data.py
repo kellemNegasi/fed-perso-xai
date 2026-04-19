@@ -34,12 +34,15 @@ def test_prepare_data_writes_shared_and_client_artifacts(mock_openml, tmp_path) 
     assert feature_metadata["schema_version"] == "stage1_feature_metadata_v3"
     assert "feature_lineage" in feature_metadata
     assert "preprocessing_diagnostics" in feature_metadata
+    assert feature_metadata["preprocessing_fitting_mode"] == "global_shared"
     split_metadata = json.loads(result.prepared_artifacts.split_metadata_path.read_text(encoding="utf-8"))
     assert split_metadata["global_eval"]["transform_diagnostics"]["split_name"] == "global_eval"
+    assert split_metadata["global_eval"]["preprocessing_fitting_mode"] == "global_shared"
 
     partition_root = result.federated_artifacts.root_dir
     assert (partition_root / "client_0" / "train.npz").exists()
     assert (partition_root / "client_0" / "test.npz").exists()
+    assert partition_root == tmp_path / "datasets" / "adult_income" / "3_clients" / "alpha_1.0" / "seed_11"
     metadata = json.loads(result.federated_artifacts.partition_metadata_path.read_text(encoding="utf-8"))
     assert metadata["prepared_root"] == str(prepared_root)
     assert metadata["clients"][0]["train_size"] > 0

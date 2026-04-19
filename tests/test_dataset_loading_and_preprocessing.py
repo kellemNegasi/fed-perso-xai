@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from fed_perso_xai.data.catalog import DatasetSpec
 from fed_perso_xai.data.loaders import load_supported_dataset
 from fed_perso_xai.data.preprocessing import FrozenTabularPreprocessor
 from fed_perso_xai.utils.config import PreprocessingConfig
@@ -115,3 +116,71 @@ def test_preprocessor_drops_all_missing_columns_before_transformer_fit() -> None
     assert metadata["preprocessing_diagnostics"]["transformed_feature_order"] == metadata[
         "transformed_feature_names"
     ]
+
+
+def test_dataset_loading_requires_explicit_target_resolution(monkeypatch, tmp_path) -> None:
+    frame = pd.DataFrame(
+        {
+            "feature_a": [1, 2, 3, 4],
+            "feature_b": [10, 11, 12, 13],
+            "wrong_last_column": [0, 1, 0, 1],
+        }
+    )
+    spec = DatasetSpec(
+        key="misconfigured_dataset",
+        display_name="Misconfigured Dataset",
+        openml_data_id=999,
+        target_transform=lambda value: int(value),
+        target_column="missing_target",
+    )
+
+    def fake_fetch_openml(*args, **kwargs):
+        return type("Bunch", (), {"frame": frame, "target": None})()
+
+    monkeypatch.setattr("fed_perso_xai.data.loaders.fetch_openml", fake_fetch_openml)
+
+    with pytest.raises(ValueError, match="Could not resolve the target column"):
+        from fed_perso_xai.data.loaders import load_openml_dataset
+
+        load_openml_dataset(spec, cache_dir=tmp_path / "cache")
+
+
+def test_dataset_loading_requests_configured_openml_target_column(monkeypatch, tmp_path) -> None:
+    frame = pd.DataFrame(
+        {
+            "feature_a": [1, 2, 3, 4],
+            "feature_b": [10, 11, 12, 13],
+            "class": [">50K", "<=50K", ">50K", "<=50K"],
+        },
+        index=[f"row-{idx}" for idx in range(4)],
+    )
+    captured_kwargs: dict[str, object] = {}
+    spec = DatasetSpec(
+        key="adult_income_like",
+        display_name="Adult Income Like",
+        openml_data_id=999,
+        target_transform=lambda value: int(str(value).strip() == ">50K"),
+        target_column="class",
+    )
+
+    def fake_fetch_openml(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return type(
+            "Bunch",
+            (),
+            {
+                "frame": frame.drop(columns=["class"]),
+                "target": frame["class"].rename("class"),
+                "details": {"name": "adult-income-like", "version": "1"},
+            },
+        )()
+
+    monkeypatch.setattr("fed_perso_xai.data.loaders.fetch_openml", fake_fetch_openml)
+
+    from fed_perso_xai.data.loaders import load_openml_dataset
+
+    dataset = load_openml_dataset(spec, cache_dir=tmp_path / "cache")
+
+    assert captured_kwargs["target_column"] == "class"
+    assert dataset.X.columns.tolist() == ["feature_a", "feature_b"]
+    assert dataset.y.tolist() == [1, 0, 1, 0]

@@ -343,6 +343,7 @@ class FrozenTabularPreprocessor:
                 ],
             },
             "unknown_category_policy": "ignore_and_zero_encode_with_reporting",
+            "preprocessing_fitting_mode": self.config.fitting_mode,
             "numeric_imputation_strategy": self.config.numeric_imputation_strategy,
             "categorical_imputation_strategy": self.config.categorical_imputation_strategy,
         }

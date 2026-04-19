@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 
 from fed_perso_xai.data.catalog import DEFAULT_DATASET_REGISTRY
+from fed_perso_xai.fl.strategy import DEFAULT_STRATEGY_REGISTRY
+from fed_perso_xai.models.registry import DEFAULT_MODEL_REGISTRY
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
 from fed_perso_xai.orchestration.training import (
     compare_centralized_and_federated,
@@ -25,14 +27,15 @@ from fed_perso_xai.utils.config import (
 )
 from fed_perso_xai.utils.logging import configure_logging
 
-
-DATASET_CHOICES = DEFAULT_DATASET_REGISTRY.list_keys()
 FEDERATED_BACKEND_CHOICES = ["auto", "ray", "debug-sequential", "sequential_fallback"]
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level CLI parser."""
 
+    dataset_choices = DEFAULT_DATASET_REGISTRY.list_keys()
+    model_choices = DEFAULT_MODEL_REGISTRY.list_keys()
+    strategy_choices = DEFAULT_STRATEGY_REGISTRY.list_keys()
     parser = argparse.ArgumentParser(description="Federated Perso-XAI stage-1 baseline.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -40,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         "prepare-data",
         help="Load, preprocess, partition, and persist a supported dataset.",
     )
-    _add_common_dataset_args(prepare_parser)
+    _add_common_dataset_args(prepare_parser, dataset_choices)
     _add_shared_path_args(prepare_parser)
     prepare_parser.add_argument("--global-eval-size", type=float, default=0.2)
     prepare_parser.add_argument("--client-test-size", type=float, default=0.2)
@@ -51,20 +54,21 @@ def build_parser() -> argparse.ArgumentParser:
         "train-centralized",
         help="Train the centralized logistic-regression baseline.",
     )
-    centralized_parser.add_argument("--dataset", required=True, choices=DATASET_CHOICES)
+    centralized_parser.add_argument("--dataset", required=True, choices=dataset_choices)
     centralized_parser.add_argument("--seed", type=int, default=42)
     _add_shared_path_args(centralized_parser)
-    _add_model_args(centralized_parser)
+    _add_model_args(centralized_parser, model_choices)
     centralized_parser.add_argument("--skip-pooled-client-test", action="store_true")
 
     train_parser = subparsers.add_parser(
         "train-federated",
         help="Train a Flower-based federated logistic regression model.",
     )
-    _add_common_dataset_args(train_parser)
+    _add_common_dataset_args(train_parser, dataset_choices)
     _add_shared_path_args(train_parser)
     train_parser.add_argument("--rounds", type=int, default=10)
-    _add_model_args(train_parser)
+    _add_model_args(train_parser, model_choices)
+    train_parser.add_argument("--strategy", choices=strategy_choices, default="fedavg")
     train_parser.add_argument("--fit-fraction", type=float, default=1.0)
     train_parser.add_argument("--evaluate-fraction", type=float, default=1.0)
     train_parser.add_argument("--min-available-clients", type=int, default=2)
@@ -83,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
         "compare-baselines",
         help="Compare centralized and federated predictive outputs.",
     )
-    _add_common_dataset_args(compare_parser)
+    _add_common_dataset_args(compare_parser, dataset_choices)
     _add_shared_path_args(compare_parser)
     return parser
 
@@ -128,6 +132,7 @@ def main() -> None:
         config = CentralizedTrainingConfig(
             dataset_name=args.dataset,
             seed=args.seed,
+            model_name=args.model,
             paths=_build_artifact_paths(args),
             model=_build_model_config(args),
             evaluate_on_pooled_client_test=not args.skip_pooled_client_test,
@@ -137,9 +142,11 @@ def main() -> None:
             json.dumps(
                 {
                     "result_dir": str(result_dir),
-                    "global_eval_metrics": summary["global_eval"]["metrics"],
+                    "global_eval_metrics": summary["evaluation"]["predictive"]["splits"]["global_eval"]["metrics"],
                     "pooled_client_test_metrics": (
-                        None if summary["pooled_client_test"] is None else summary["pooled_client_test"]["metrics"]
+                        summary["evaluation"]["predictive"]["splits"]
+                        .get("pooled_client_test", {})
+                        .get("metrics")
                     ),
                 },
                 indent=2,
@@ -151,10 +158,12 @@ def main() -> None:
         config = FederatedTrainingConfig(
             dataset_name=args.dataset,
             seed=args.seed,
+            model_name=args.model,
             paths=_build_artifact_paths(args),
             model=_build_model_config(args),
             num_clients=args.num_clients,
             alpha=args.alpha,
+            strategy_name=args.strategy,
             rounds=args.rounds,
             fit_fraction=args.fit_fraction,
             evaluate_fraction=args.evaluate_fraction,
@@ -168,7 +177,9 @@ def main() -> None:
                 {
                     "metrics_path": str(artifacts.metrics_path),
                     "model_path": str(artifacts.model_path),
-                    "aggregated_weighted": summary["aggregated_weighted"],
+                    "aggregated_weighted": summary["evaluation"]["predictive"]["splits"][
+                        "client_test_weighted"
+                    ]["metrics"],
                 },
                 indent=2,
             )
@@ -198,8 +209,8 @@ def main() -> None:
     raise ValueError(f"Unhandled command '{args.command}'.")
 
 
-def _add_common_dataset_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--dataset", required=True, choices=DATASET_CHOICES)
+def _add_common_dataset_args(parser: argparse.ArgumentParser, dataset_choices: list[str]) -> None:
+    parser.add_argument("--dataset", required=True, choices=dataset_choices)
     parser.add_argument("--num-clients", type=int, required=True)
     parser.add_argument("--alpha", type=float, required=True)
     parser.add_argument("--seed", type=int, default=42)
@@ -214,7 +225,8 @@ def _add_shared_path_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cache-dir", type=Path, default=Path("data/cache/openml"))
 
 
-def _add_model_args(parser: argparse.ArgumentParser) -> None:
+def _add_model_args(parser: argparse.ArgumentParser, model_choices: list[str]) -> None:
+    parser.add_argument("--model", choices=model_choices, default="logistic_regression")
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=0.05)

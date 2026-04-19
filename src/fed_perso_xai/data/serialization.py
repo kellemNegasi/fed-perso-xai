@@ -121,11 +121,18 @@ def save_federated_dataset(
 ) -> SavedDatasetArtifacts:
     """Persist all client datasets and partition metadata under the required layout."""
 
-    root_dir = partition_root(output_root, num_clients, alpha)
+    root_dir = partition_root(output_root, dataset_name, num_clients, alpha, seed)
     root_dir.mkdir(parents=True, exist_ok=True)
 
     for split in client_splits:
-        output_dir = client_dir(output_root, num_clients, alpha, split.client_id)
+        output_dir = client_dir(
+            output_root,
+            dataset_name,
+            num_clients,
+            alpha,
+            seed,
+            split.client_id,
+        )
         output_dir.mkdir(parents=True, exist_ok=True)
         _save_array_split(
             output_dir / "train.npz",

@@ -117,8 +117,13 @@ def test_centralized_and_federated_training_outputs_are_compatible(mock_openml, 
     assert centralized_predictions.dataset_name == "adult_income"
     assert federated_predictions.run_id == federated_summary["run_id"]
     assert federated_predictions.client_ids.shape[0] == federated_predictions.y_true.shape[0]
-    assert centralized_summary["evaluation"]["global_eval"]["metrics"]["accuracy"] >= 0.0
-    assert federated_summary["evaluation"]["client_test_pooled"]["metrics"]["accuracy"] >= 0.0
+    assert (
+        centralized_summary["evaluation"]["predictive"]["splits"]["global_eval"]["metrics"]["accuracy"] >= 0.0
+    )
+    assert (
+        federated_summary["evaluation"]["predictive"]["splits"]["client_test_pooled"]["metrics"]["accuracy"]
+        >= 0.0
+    )
 
     centralized_manifest = json.loads(
         (paths.centralized_root / "adult_income" / "seed_21" / "run_manifest.json").read_text(
@@ -137,6 +142,37 @@ def test_centralized_and_federated_training_outputs_are_compatible(mock_openml, 
     )
     assert "predictions_global_eval" in centralized_manifest["artifacts"]["predictions_artifacts"]
     assert "runtime_report" in federated_manifest["artifacts"]["additional_artifacts"]
+
+
+def test_federated_training_rejects_partition_metadata_mismatch(mock_openml, tmp_path) -> None:
+    mock_openml("adult_income")
+    paths = _build_paths(tmp_path)
+    prepare_federated_dataset(
+        DataPreparationConfig(
+            dataset_name="adult_income",
+            seed=21,
+            paths=paths,
+            partition=PartitionConfig(num_clients=3, alpha=1.0, min_client_samples=2, max_retries=20),
+        )
+    )
+    metadata_path = paths.partition_root / "adult_income" / "3_clients" / "alpha_1.0" / "seed_21" / "partition_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["seed"] = 999
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not match the requested run"):
+        train_federated_from_prepared(
+            FederatedTrainingConfig(
+                dataset_name="adult_income",
+                seed=21,
+                paths=paths,
+                model=LogisticRegressionConfig(epochs=2, batch_size=4, learning_rate=0.1),
+                num_clients=3,
+                alpha=1.0,
+                rounds=2,
+                simulation_backend="debug-sequential",
+            )
+        )
 
 
 @pytest.mark.skipif(
@@ -180,18 +216,24 @@ def test_compare_baselines_reporting() -> None:
             "result_dir": "centralized/adult_income/seed_33",
             "run_manifest_path": "centralized/adult_income/seed_33/run_manifest.json",
             "evaluation": {
-                "global_eval": {
-                    "split_name": "global_eval",
-                    "class_balance": {"num_examples": 12},
-                    "probability_summary": {"mean": 0.5},
-                    "metrics": {"loss": 0.3, "accuracy": 0.8, "roc_auc": 0.9},
+                "predictive": {
+                    "splits": {
+                        "global_eval": {
+                            "split_name": "global_eval",
+                            "class_balance": {"num_examples": 12},
+                            "probability_summary": {"mean": 0.5},
+                            "metrics": {"loss": 0.3, "accuracy": 0.8, "roc_auc": 0.9},
+                        },
+                        "pooled_client_test": {
+                            "split_name": "pooled_client_test",
+                            "class_balance": {"num_examples": 9},
+                            "probability_summary": {"mean": 0.55},
+                            "metrics": {"loss": 0.35, "accuracy": 0.78},
+                        },
+                    },
+                    "per_client": [],
                 },
-                "pooled_client_test": {
-                    "split_name": "pooled_client_test",
-                    "class_balance": {"num_examples": 9},
-                    "probability_summary": {"mean": 0.55},
-                    "metrics": {"loss": 0.35, "accuracy": 0.78},
-                },
+                "extensions": {"explanations": {"metrics": {}, "artifacts": {}}, "downstream": {"metrics": {}, "artifacts": {}}},
             },
         },
         federated_summary={
@@ -201,23 +243,28 @@ def test_compare_baselines_reporting() -> None:
             "run_manifest_path": "federated/adult_income/3_clients/alpha_1.0/seed_33/run_manifest.json",
             "runtime": {"actual_backend": "debug-sequential"},
             "evaluation": {
-                "client_test_weighted": {
-                    "split_name": "client_test_weighted",
-                    "class_balance": {"num_examples": 9},
-                    "probability_summary": {"mean": 0.51},
-                    "metrics": {"loss": 0.4, "accuracy": 0.75},
+                "predictive": {
+                    "splits": {
+                        "client_test_weighted": {
+                            "split_name": "client_test_weighted",
+                            "class_balance": {"num_examples": 9},
+                            "probability_summary": {"mean": 0.51},
+                            "metrics": {"loss": 0.4, "accuracy": 0.75},
+                        },
+                        "client_test_pooled": {
+                            "split_name": "client_test",
+                            "class_balance": {"num_examples": 9},
+                            "probability_summary": {"mean": 0.52},
+                            "metrics": {"loss": 0.38, "accuracy": 0.77, "roc_auc": 0.88},
+                        },
+                    },
+                    "per_client": [
+                        {"client_id": 0, "num_examples": 3, "metrics": {"loss": 0.5, "accuracy": 0.7}},
+                        {"client_id": 1, "num_examples": 3, "metrics": {"loss": 0.4, "accuracy": 0.8}},
+                        {"client_id": 2, "num_examples": 3, "metrics": {"loss": 0.3, "accuracy": 0.75}},
+                    ],
                 },
-                "client_test_pooled": {
-                    "split_name": "client_test",
-                    "class_balance": {"num_examples": 9},
-                    "probability_summary": {"mean": 0.52},
-                    "metrics": {"loss": 0.38, "accuracy": 0.77, "roc_auc": 0.88},
-                },
-                "per_client": [
-                    {"client_id": 0, "num_examples": 3, "metrics": {"loss": 0.5, "accuracy": 0.7}},
-                    {"client_id": 1, "num_examples": 3, "metrics": {"loss": 0.4, "accuracy": 0.8}},
-                    {"client_id": 2, "num_examples": 3, "metrics": {"loss": 0.3, "accuracy": 0.75}},
-                ],
+                "extensions": {"explanations": {"metrics": {}, "artifacts": {}}, "downstream": {"metrics": {}, "artifacts": {}}},
             },
         },
         centralized_manifest={

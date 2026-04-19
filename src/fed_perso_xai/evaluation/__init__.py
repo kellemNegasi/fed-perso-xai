@@ -1,6 +1,12 @@
 """Metric computation, predictions, and baseline comparison helpers."""
 
 from .comparison import build_baseline_comparison, write_comparison_report
+from .contracts import (
+    ClientEvaluationReport,
+    ExtensionEvaluationBundle,
+    PredictiveEvaluationBundle,
+    SplitEvaluationReport,
+)
 from .metrics import (
     aggregate_weighted_metrics,
     compute_classification_metrics,
@@ -17,7 +23,11 @@ from .predictions import (
 )
 
 __all__ = [
+    "ClientEvaluationReport",
+    "ExtensionEvaluationBundle",
     "PredictionArtifact",
+    "PredictiveEvaluationBundle",
+    "SplitEvaluationReport",
     "aggregate_weighted_metrics",
     "build_baseline_comparison",
     "build_prediction_artifact",

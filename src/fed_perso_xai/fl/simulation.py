@@ -39,13 +39,19 @@ from fed_perso_xai.evaluation.predictions import (
     build_prediction_artifact,
     save_prediction_artifact,
 )
+from fed_perso_xai.evaluation.contracts import (
+    ClientEvaluationReport,
+    ExtensionEvaluationBundle,
+    PredictiveEvaluationBundle,
+    SplitEvaluationReport,
+)
 from fed_perso_xai.fl.client import ClientData, FederatedLogisticRegressionClient
 from fed_perso_xai.fl.strategy import (
-    FedAvgStrategyFactory,
     FederatedRunRecorder,
     StrategyFactory,
+    create_strategy_factory,
 )
-from fed_perso_xai.models.logistic_regression import LogisticRegressionModel, initialize_parameters
+from fed_perso_xai.models import create_model, initialize_model_parameters
 from fed_perso_xai.utils.config import FederatedTrainingConfig
 
 
@@ -138,9 +144,16 @@ def run_federated_training(
 
     result_dir.mkdir(parents=True, exist_ok=True)
     runtime_plan = plan_flower_runtime(config)
-    initial_parameters = initialize_parameters(client_datasets[0].X_train.shape[1])
+    initial_parameters = initialize_model_parameters(
+        config.model_name,
+        n_features=client_datasets[0].X_train.shape[1],
+        config=config.model,
+    )
     recorder = FederatedRunRecorder(backend=runtime_plan.resolved_backend)
-    factory = strategy_factory or FedAvgStrategyFactory(config)
+    factory = strategy_factory or create_strategy_factory(
+        config.strategy_name,
+        training_config=config,
+    )
     final_parameters, actual_backend, runtime_warnings = _execute_runtime(
         client_datasets=client_datasets,
         config=config,
@@ -267,6 +280,7 @@ def _run_flower_simulation(
         partition_id = int(context.node_config.get("partition-id", context.node_id))
         client = FederatedLogisticRegressionClient(
             data=data_by_id[partition_id],
+            model_name=config.model_name,
             model_config=config.model,
             seed=config.seed,
         )
@@ -311,6 +325,7 @@ def _run_debug_sequential_runtime(
     clients = [
         FederatedLogisticRegressionClient(
             data=dataset,
+            model_name=config.model_name,
             model_config=config.model,
             seed=config.seed,
         )
@@ -381,7 +396,7 @@ def _evaluate_and_persist_results(
     run_id: str,
     actual_backend: str,
 ) -> tuple[dict[str, Any], Path]:
-    per_client: list[dict[str, Any]] = []
+    per_client: list[ClientEvaluationReport] = []
     aggregated_inputs: list[tuple[int, dict[str, float]]] = []
     pooled_probabilities: list[np.ndarray] = []
     pooled_labels: list[np.ndarray] = []
@@ -389,12 +404,10 @@ def _evaluate_and_persist_results(
     pooled_client_ids: list[np.ndarray] = []
 
     for dataset in client_datasets:
-        model = LogisticRegressionModel(
+        model = create_model(
+            config.model_name,
             n_features=dataset.X_test.shape[1],
-            learning_rate=config.model.learning_rate,
-            batch_size=config.model.batch_size,
-            local_epochs=config.model.epochs,
-            l2_regularization=config.model.l2_regularization,
+            config=config.model,
         )
         model.set_parameters(final_parameters)
         probabilities = model.predict_proba(dataset.X_test)
@@ -405,14 +418,14 @@ def _evaluate_and_persist_results(
             loss=loss,
         )
         per_client.append(
-            {
-                "client_id": dataset.client_id,
-                "split_name": "client_test",
-                "num_examples": int(dataset.y_test.shape[0]),
-                "class_balance": summarize_class_balance(dataset.y_test),
-                "probability_summary": summarize_probability_distribution(probabilities),
-                "metrics": metrics,
-            }
+            ClientEvaluationReport(
+                client_id=dataset.client_id,
+                split_name="client_test",
+                num_examples=int(dataset.y_test.shape[0]),
+                class_balance=summarize_class_balance(dataset.y_test),
+                probability_summary=summarize_probability_distribution(probabilities),
+                metrics=metrics,
+            )
         )
         aggregated_inputs.append((int(dataset.y_test.shape[0]), metrics))
         pooled_probabilities.append(probabilities)
@@ -427,8 +440,8 @@ def _evaluate_and_persist_results(
     pooled_y_prob = np.concatenate(pooled_probabilities, axis=0)
     pooled_loss = float(
         np.average(
-            [row["metrics"]["loss"] for row in per_client],
-            weights=[row["num_examples"] for row in per_client],
+            [row.metrics["loss"] for row in per_client],
+            weights=[row.num_examples for row in per_client],
         )
     )
     pooled_metrics = compute_pooled_classification_metrics(
@@ -448,6 +461,34 @@ def _evaluate_and_persist_results(
     )
     predictions_path = save_prediction_artifact(result_dir / "predictions_client_test.npz", predictions)
 
+    predictive_evaluation = PredictiveEvaluationBundle(
+        splits={
+            "client_test_weighted": SplitEvaluationReport(
+                split_name="client_test_weighted",
+                provenance={
+                    "source": "weighted_client_evaluation",
+                    "client_count": len(client_datasets),
+                    "backend": actual_backend,
+                },
+                class_balance=summarize_class_balance(pooled_y_true),
+                probability_summary=summarize_probability_distribution(pooled_y_prob),
+                metrics=aggregated_metrics,
+            ),
+            "client_test_pooled": SplitEvaluationReport(
+                split_name="client_test",
+                provenance={
+                    "source": "pooled_client_predictions",
+                    "client_count": len(client_datasets),
+                    "backend": actual_backend,
+                },
+                class_balance=summarize_class_balance(pooled_y_true),
+                probability_summary=summarize_probability_distribution(pooled_y_prob),
+                metrics=pooled_metrics,
+                predictions_path=str(predictions_path),
+            ),
+        },
+        per_client=per_client,
+    )
     summary = {
         "run_id": run_id,
         "experiment_type": "federated",
@@ -456,34 +497,9 @@ def _evaluate_and_persist_results(
         "config": config.to_dict(),
         "round_history": recorder.round_history,
         "evaluation": {
-            "client_test_weighted": {
-                "split_name": "client_test_weighted",
-                "provenance": {
-                    "source": "weighted_client_evaluation",
-                    "client_count": len(client_datasets),
-                    "backend": actual_backend,
-                },
-                "class_balance": summarize_class_balance(pooled_y_true),
-                "probability_summary": summarize_probability_distribution(pooled_y_prob),
-                "metrics": aggregated_metrics,
-            },
-            "client_test_pooled": {
-                "split_name": "client_test",
-                "provenance": {
-                    "source": "pooled_client_predictions",
-                    "client_count": len(client_datasets),
-                    "backend": actual_backend,
-                },
-                "class_balance": summarize_class_balance(pooled_y_true),
-                "probability_summary": summarize_probability_distribution(pooled_y_prob),
-                "metrics": pooled_metrics,
-                "predictions_path": str(predictions_path),
-            },
-            "per_client": per_client,
+            "predictive": predictive_evaluation.to_dict(),
+            "extensions": ExtensionEvaluationBundle().to_dict(),
         },
-        "per_client": per_client,
-        "aggregated_weighted": aggregated_metrics,
-        "aggregated_pooled": pooled_metrics,
         "threshold_analysis": threshold_sweep,
         "final_parameters": [final_parameters[0].tolist(), final_parameters[1].tolist()],
         "predictions_path": str(predictions_path),

@@ -120,6 +120,13 @@ def prepare_federated_dataset(
             "display_name": dataset.display_name,
             "description": dataset.spec.description,
             "target_column": dataset.spec.target_column,
+            "preprocessing_assumption": {
+                "fitting_mode": config.preprocessing.fitting_mode,
+                "description": (
+                    "The frozen preprocessor is fit once on the global raw training pool before "
+                    "client partitioning. This is an explicit stage-1 baseline assumption."
+                ),
+            },
             "source_metadata": dataset.source_metadata,
             "schema": dataset.schema_summary(),
             "global_train_size": int(y_train_pool.shape[0]),
@@ -134,6 +141,7 @@ def prepare_federated_dataset(
                 "label_distribution": summarize_labels(y_train_pool),
                 "row_id_count": int(train_row_ids.shape[0]),
                 "transform_diagnostics": train_transform_diagnostics,
+                "preprocessing_fitting_mode": config.preprocessing.fitting_mode,
             },
             "global_eval": {
                 "split_name": "global_eval",
@@ -141,6 +149,7 @@ def prepare_federated_dataset(
                 "label_distribution": summarize_labels(y_eval),
                 "row_id_count": int(eval_row_ids.shape[0]),
                 "transform_diagnostics": eval_transform_diagnostics,
+                "preprocessing_fitting_mode": config.preprocessing.fitting_mode,
             },
             "pooled_client_test": pooled_client_test_metadata,
         },

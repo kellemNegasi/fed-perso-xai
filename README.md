@@ -104,6 +104,12 @@ This step:
 - creates each client train/test split
 - writes split and partition metadata for downstream runs
 
+Stage-1 preprocessing assumption:
+
+- `fitting_mode=global_shared` is explicit in config and metadata
+- the frozen preprocessor is fit once on the global raw training pool before partitioning
+- this is an intentional baseline assumption for comparability, not a privacy-faithful local preprocessing flow
+
 Prepared artifacts are written under:
 
 ```text
@@ -125,7 +131,7 @@ Key prepared artifacts:
 Client partitions are written under:
 
 ```text
-datasets/<K>_clients/alpha_<alpha>/
+datasets/<dataset>/<K>_clients/alpha_<alpha>/seed_<seed>/
 ```
 
 with:

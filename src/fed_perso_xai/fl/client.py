@@ -19,8 +19,7 @@ except ImportError:  # pragma: no cover - exercised via optional dependency path
     fl = None  # type: ignore[assignment]
 
 from fed_perso_xai.evaluation.metrics import compute_classification_metrics
-from fed_perso_xai.models.logistic_regression import LogisticRegressionModel
-from fed_perso_xai.utils.config import LogisticRegressionConfig
+from fed_perso_xai.models import create_model
 
 
 @dataclass(frozen=True)
@@ -44,17 +43,16 @@ if fl is not None:
         def __init__(
             self,
             data: ClientData,
-            model_config: LogisticRegressionConfig,
+            model_name: str,
+            model_config: Any,
             seed: int,
         ) -> None:
             self.data = data
             self.seed = seed
-            self.model = LogisticRegressionModel(
+            self.model = create_model(
+                model_name,
                 n_features=data.X_train.shape[1],
-                learning_rate=model_config.learning_rate,
-                batch_size=model_config.batch_size,
-                local_epochs=model_config.epochs,
-                l2_regularization=model_config.l2_regularization,
+                config=model_config,
             )
 
         def get_parameters(self, config: dict[str, Any]) -> list[np.ndarray]:
@@ -97,7 +95,8 @@ else:
         def __init__(
             self,
             data: ClientData,
-            model_config: LogisticRegressionConfig,
+            model_name: str,
+            model_config: Any,
             seed: int,
         ) -> None:
             raise ImportError(FLOWER_IMPORT_ERROR_MESSAGE)

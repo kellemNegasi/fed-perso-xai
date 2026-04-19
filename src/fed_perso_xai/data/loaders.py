@@ -64,6 +64,7 @@ def load_openml_dataset(spec: DatasetSpec, cache_dir: Path) -> RawTabularDataset
     bunch = fetch_openml(
         data_id=spec.openml_data_id,
         as_frame=True,
+        target_column=spec.target_column or "default-target",
         cache=True,
         data_home=str(cache_dir),
     )
@@ -136,9 +137,16 @@ def _resolve_frame_target_and_row_ids(
         if target_array.ndim == 1 and target_array.shape[0] == frame.shape[0]:
             return frame.copy(), target_array, row_ids
 
-    fallback_target_name = frame.columns[-1]
-    X = frame.iloc[:, :-1].copy()
-    return X, frame[fallback_target_name].to_numpy(copy=True), row_ids
+    expected_columns = [column for column in candidate_target_columns if column]
+    if expected_columns:
+        expected_text = ", ".join(repr(column) for column in expected_columns)
+        raise ValueError(
+            f"Could not resolve the target column for dataset '{spec.key}'. "
+            f"Expected one of: {expected_text}."
+        )
+    raise ValueError(
+        f"Could not resolve the target values for dataset '{spec.key}' from the OpenML frame or target payload."
+    )
 
 
 def _validate_raw_schema(X: pd.DataFrame, spec: DatasetSpec) -> None:

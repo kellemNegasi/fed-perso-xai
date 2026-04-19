@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import numpy as np
 
@@ -38,8 +38,46 @@ class StrategyFactory(Protocol):
         self,
         initial_parameters: list[np.ndarray],
         recorder: FederatedRunRecorder,
-    ) -> Any:
+        ) -> Any:
         """Build a Flower strategy."""
+
+
+StrategyFactoryBuilder = Callable[[FederatedTrainingConfig], StrategyFactory]
+
+
+@dataclass(frozen=True)
+class StrategySpec:
+    """Declarative strategy-factory entry."""
+
+    key: str
+    display_name: str
+    build_factory: StrategyFactoryBuilder
+
+
+class StrategyRegistry:
+    """Registry of supported federated aggregation strategies."""
+
+    def __init__(self, specs: list[StrategySpec] | None = None) -> None:
+        self._specs: dict[str, StrategySpec] = {}
+        for spec in specs or []:
+            self.register(spec)
+
+    def register(self, spec: StrategySpec) -> None:
+        if spec.key in self._specs:
+            raise ValueError(f"Strategy '{spec.key}' is already registered.")
+        self._specs[spec.key] = spec
+
+    def get(self, key: str) -> StrategySpec:
+        try:
+            return self._specs[key]
+        except KeyError as exc:
+            supported = ", ".join(sorted(self._specs))
+            raise ValueError(
+                f"Unsupported strategy '{key}'. Supported strategies: {supported}."
+            ) from exc
+
+    def list_keys(self) -> list[str]:
+        return sorted(self._specs)
 
 
 if fl is not None:
@@ -102,6 +140,29 @@ class FedAvgStrategyFactory:
             fit_metrics_aggregation_fn=_aggregate_scalar_metrics,
             evaluate_metrics_aggregation_fn=_aggregate_scalar_metrics,
         )
+
+
+DEFAULT_STRATEGY_REGISTRY = StrategyRegistry(
+    specs=[
+        StrategySpec(
+            key="fedavg",
+            display_name="FedAvg",
+            build_factory=lambda training_config: FedAvgStrategyFactory(training_config),
+        )
+    ]
+)
+
+
+def create_strategy_factory(
+    strategy_name: str,
+    *,
+    training_config: FederatedTrainingConfig,
+    registry: StrategyRegistry | None = None,
+) -> StrategyFactory:
+    """Build one configured strategy factory from the registry."""
+
+    spec = (registry or DEFAULT_STRATEGY_REGISTRY).get(strategy_name)
+    return spec.build_factory(training_config)
 
 
 def _aggregate_scalar_metrics(

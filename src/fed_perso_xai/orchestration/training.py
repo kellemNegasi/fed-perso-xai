@@ -14,13 +14,18 @@ from fed_perso_xai.data.serialization import (
     load_client_datasets,
 )
 from fed_perso_xai.evaluation.comparison import build_baseline_comparison, write_comparison_report
+from fed_perso_xai.evaluation.contracts import (
+    ExtensionEvaluationBundle,
+    PredictiveEvaluationBundle,
+    SplitEvaluationReport,
+)
 from fed_perso_xai.evaluation.metrics import (
     compute_pooled_classification_metrics,
     summarize_class_balance,
     summarize_probability_distribution,
 )
 from fed_perso_xai.evaluation.predictions import build_prediction_artifact, save_prediction_artifact
-from fed_perso_xai.models.logistic_regression import LogisticRegressionModel
+from fed_perso_xai.models import TabularClassifier, create_model
 from fed_perso_xai.utils.config import (
     CentralizedTrainingConfig,
     ComparisonConfig,
@@ -61,12 +66,10 @@ def train_centralized_from_prepared(
         else None
     )
 
-    model = LogisticRegressionModel(
+    model = create_model(
+        config.model_name,
         n_features=global_train.X.shape[1],
-        learning_rate=config.model.learning_rate,
-        batch_size=config.model.batch_size,
-        local_epochs=config.model.epochs,
-        l2_regularization=config.model.l2_regularization,
+        config=config.model,
     )
     train_loss = model.fit(global_train.X, global_train.y, seed=config.seed)
 
@@ -111,6 +114,16 @@ def train_centralized_from_prepared(
             },
         )
 
+    predictive_evaluation = PredictiveEvaluationBundle(
+        splits={
+            "global_eval": global_eval_summary,
+            **(
+                {}
+                if pooled_summary is None
+                else {"pooled_client_test": pooled_summary}
+            ),
+        }
+    )
     summary = {
         "run_id": run_id,
         "experiment_type": "centralized",
@@ -120,11 +133,9 @@ def train_centralized_from_prepared(
         "config": config.to_dict(),
         "train_loss": float(train_loss),
         "evaluation": {
-            "global_eval": global_eval_summary,
-            "pooled_client_test": pooled_summary,
+            "predictive": predictive_evaluation.to_dict(),
+            "extensions": ExtensionEvaluationBundle().to_dict(),
         },
-        "global_eval": global_eval_summary,
-        "pooled_client_test": pooled_summary,
         "model_path": str(model_path),
     }
     metrics_path = result_dir / "metrics_summary.json"
@@ -185,7 +196,13 @@ def train_federated_from_prepared(
         num_clients=config.num_clients,
         alpha=config.alpha,
     )
-    data_root = partition_root(config.paths.partition_root, config.num_clients, config.alpha)
+    data_root = partition_root(
+        config.paths.partition_root,
+        config.dataset_name,
+        config.num_clients,
+        config.alpha,
+        config.seed,
+    )
     partition_metadata_path = _resolve_partition_metadata_path(data_root)
     if not partition_metadata_path.exists():
         raise FileNotFoundError(
@@ -193,11 +210,7 @@ def train_federated_from_prepared(
         )
 
     metadata = json.loads(partition_metadata_path.read_text(encoding="utf-8"))
-    if metadata["dataset_name"] != config.dataset_name:
-        raise ValueError(
-            f"Prepared dataset name '{metadata['dataset_name']}' does not match "
-            f"requested dataset '{config.dataset_name}'."
-        )
+    _validate_partition_metadata(metadata=metadata, config=config, metadata_path=partition_metadata_path)
 
     prepared_root = Path(metadata["prepared_root"])
     client_datasets = [
@@ -322,14 +335,14 @@ def compare_centralized_and_federated(
 
 def _evaluate_split(
     *,
-    model: LogisticRegressionModel,
+    model: TabularClassifier,
     run_id: str,
     dataset_name: str,
     split_name: str,
     split: ArraySplit,
     prediction_path: Path,
     provenance: dict[str, Any],
-) -> dict[str, Any]:
+) -> SplitEvaluationReport:
     probabilities = model.predict_proba(split.X)
     loss = model.loss(split.X, split.y)
     metrics = compute_pooled_classification_metrics(split.y, probabilities, loss=loss)
@@ -342,14 +355,14 @@ def _evaluate_split(
         row_ids=split.row_ids,
     )
     save_prediction_artifact(prediction_path, predictions)
-    return {
-        "split_name": split_name,
-        "provenance": provenance,
-        "class_balance": summarize_class_balance(split.y),
-        "probability_summary": summarize_probability_distribution(probabilities),
-        "metrics": metrics,
-        "predictions_path": str(prediction_path),
-    }
+    return SplitEvaluationReport(
+        split_name=split_name,
+        provenance=provenance,
+        class_balance=summarize_class_balance(split.y),
+        probability_summary=summarize_probability_distribution(probabilities),
+        metrics=metrics,
+        predictions_path=str(prediction_path),
+    )
 
 
 def _resolve_partition_metadata_path(root_dir: Path) -> Path:
@@ -357,6 +370,32 @@ def _resolve_partition_metadata_path(root_dir: Path) -> Path:
     if explicit.exists():
         return explicit
     return root_dir / "metadata.json"
+
+
+def _validate_partition_metadata(
+    *,
+    metadata: dict[str, Any],
+    config: FederatedTrainingConfig,
+    metadata_path: Path,
+) -> None:
+    expected_values = {
+        "dataset_name": config.dataset_name,
+        "seed": config.seed,
+        "num_clients": config.num_clients,
+        "alpha": config.alpha,
+    }
+    mismatches = []
+    for field_name, expected in expected_values.items():
+        actual = metadata.get(field_name)
+        if actual != expected:
+            mismatches.append(
+                f"{field_name}: expected {expected!r}, found {actual!r}"
+            )
+    if mismatches:
+        details = "; ".join(mismatches)
+        raise ValueError(
+            f"Prepared partition metadata at '{metadata_path}' does not match the requested run: {details}."
+        )
 
 
 def _build_run_manifest(
@@ -433,6 +472,7 @@ def _extract_important_config_values(*, mode: str, config: dict[str, Any]) -> di
     important = {
         "seed": config["seed"],
         "dataset_name": config["dataset_name"],
+        "model_name": config["model_name"],
         "model": config["model"],
     }
     if mode == "centralized":
@@ -443,6 +483,7 @@ def _extract_important_config_values(*, mode: str, config: dict[str, Any]) -> di
         {
             "num_clients": config["num_clients"],
             "alpha": config["alpha"],
+            "strategy_name": config["strategy_name"],
             "rounds": config["rounds"],
             "fit_fraction": config["fit_fraction"],
             "evaluate_fraction": config["evaluate_fraction"],

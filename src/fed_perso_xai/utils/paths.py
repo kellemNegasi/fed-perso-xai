@@ -19,16 +19,35 @@ def prepared_dir(paths: ArtifactPaths, dataset_name: str, seed: int) -> Path:
     return paths.prepared_root / dataset_name / f"seed_{seed}"
 
 
-def partition_root(base_dir: Path, num_clients: int, alpha: float) -> Path:
+def partition_root(
+    base_dir: Path,
+    dataset_name: str,
+    num_clients: int,
+    alpha: float,
+    seed: int,
+) -> Path:
     """Return the directory containing all client partitions."""
 
-    return base_dir / f"{num_clients}_clients" / f"alpha_{format_alpha(alpha)}"
+    return (
+        base_dir
+        / dataset_name
+        / f"{num_clients}_clients"
+        / f"alpha_{format_alpha(alpha)}"
+        / f"seed_{seed}"
+    )
 
 
-def client_dir(base_dir: Path, num_clients: int, alpha: float, client_id: int) -> Path:
+def client_dir(
+    base_dir: Path,
+    dataset_name: str,
+    num_clients: int,
+    alpha: float,
+    seed: int,
+    client_id: int,
+) -> Path:
     """Return the directory for one client partition."""
 
-    return partition_root(base_dir, num_clients, alpha) / f"client_{client_id}"
+    return partition_root(base_dir, dataset_name, num_clients, alpha, seed) / f"client_{client_id}"
 
 
 def centralized_run_dir(paths: ArtifactPaths, dataset_name: str, seed: int) -> Path:

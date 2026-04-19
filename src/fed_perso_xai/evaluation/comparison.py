@@ -24,13 +24,15 @@ def build_baseline_comparison(
 ) -> dict[str, Any]:
     """Build a predictive comparison report between centralized and federated runs."""
 
-    centralized_eval = centralized_summary["evaluation"]
-    federated_eval = federated_summary["evaluation"]
+    centralized_eval = centralized_summary["evaluation"]["predictive"]
+    federated_eval = federated_summary["evaluation"]["predictive"]
+    centralized_splits = centralized_eval["splits"]
+    federated_splits = federated_eval["splits"]
     split_sections = {
-        "centralized_global_eval": centralized_eval["global_eval"],
-        "centralized_pooled_client_test": centralized_eval.get("pooled_client_test"),
-        "federated_client_test_weighted": federated_eval["client_test_weighted"],
-        "federated_client_test_pooled": federated_eval["client_test_pooled"],
+        "centralized_global_eval": centralized_splits["global_eval"],
+        "centralized_pooled_client_test": centralized_splits.get("pooled_client_test"),
+        "federated_client_test_weighted": federated_splits["client_test_weighted"],
+        "federated_client_test_pooled": federated_splits["client_test_pooled"],
     }
 
     metric_names = _collect_metric_names(split_sections)
