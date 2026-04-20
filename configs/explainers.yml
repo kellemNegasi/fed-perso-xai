@@ -1,0 +1,24 @@
+templates:
+  tabular_explainer: &tabular_explainer
+    supported_data_types:
+      - tabular
+
+shap:
+  <<: *tabular_explainer
+  type: shap
+  description: "Tree/Kernel SHAP with client-local background data."
+  params:
+    experiment:
+      logging:
+        level: WARNING
+        library_level: WARNING
+      explanation:
+        max_instances: 100
+        method_max_instances: 200
+        sampling_strategy: random
+        random_state: 42
+        background_data_source: client_local_train
+        background_sample_size: 100
+        shap_explainer_type: kernel
+        shap_nsamples: 100
+        shap_l1_reg: auto

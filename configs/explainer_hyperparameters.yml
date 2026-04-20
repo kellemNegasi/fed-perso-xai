@@ -1,0 +1,12 @@
+# Hyperparameter grids for explainer variants.
+# Keys match explainer names from explainers.yml.
+
+explainers:
+  shap:
+    background_sample_size: [50, 100, 150]
+    shap_explainer_type: [kernel, sampling]
+    shap_nsamples:
+      randint: [10, 2048]
+    shap_l1_reg: [Auto, aic, bic, num_features]
+    shap_l1_reg_k:
+      randint: [1, n_features]

@@ -34,6 +34,16 @@ class ClientData:
     y_test: np.ndarray
     row_ids_test: np.ndarray
 
+    def get_split(self, split_name: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return one local split in a consistent order."""
+
+        normalized = split_name.strip().lower()
+        if normalized in {"train", "local_train", "client_local_train"}:
+            return self.X_train, self.y_train, self.row_ids_train
+        if normalized in {"test", "local_test", "client_local_test"}:
+            return self.X_test, self.y_test, self.row_ids_test
+        raise ValueError(f"Unsupported client split '{split_name}'. Expected 'train' or 'test'.")
+
 
 @dataclass(frozen=True)
 class SharedParameterPayload:
