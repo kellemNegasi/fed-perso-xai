@@ -1,19 +1,30 @@
 from __future__ import annotations
 
+import json
 import sys
 from types import SimpleNamespace
 
 import numpy as np
 
+from fed_perso_xai.cli import main
+from fed_perso_xai.data.serialization import load_client_datasets
 from fed_perso_xai.explainers import DEFAULT_EXPLAINER_REGISTRY, SHAPExplainer, load_explainer_hyperparameter_grid
 from fed_perso_xai.fl.client import ClientData
 from fed_perso_xai.models import create_model
+from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
 from fed_perso_xai.orchestration.explanations import (
     LocalExplanationDataset,
     generate_client_local_explanations,
     instantiate_explainer,
 )
-from fed_perso_xai.utils.config import LogisticRegressionConfig
+from fed_perso_xai.utils.config import (
+    ArtifactPaths,
+    DataPreparationConfig,
+    FederatedTrainingConfig,
+    LogisticRegressionConfig,
+    PartitionConfig,
+)
+from fed_perso_xai.utils.paths import federated_run_dir
 
 
 class FakeKernelExplainer:
@@ -187,3 +198,100 @@ def test_generate_client_local_shap_explanations_schema_and_metadata(monkeypatch
     fake_explainer = FakeKernelExplainer.instances[-1]
     assert fake_explainer.last_kwargs["nsamples"] == 32
     assert fake_explainer.last_kwargs["l1_reg"] == "num_features(2)"
+
+
+def test_explain_shap_cli_writes_output(monkeypatch, mock_openml, tmp_path) -> None:
+    _install_fake_shap(monkeypatch)
+    mock_openml("adult_income")
+    paths = ArtifactPaths(
+        prepared_root=tmp_path / "prepared",
+        partition_root=tmp_path / "datasets",
+        centralized_root=tmp_path / "centralized",
+        federated_root=tmp_path / "federated",
+        comparison_root=tmp_path / "comparisons",
+        cache_dir=tmp_path / "cache",
+    )
+    prepare_federated_dataset(
+        DataPreparationConfig(
+            dataset_name="adult_income",
+            seed=13,
+            paths=paths,
+            partition=PartitionConfig(num_clients=3, alpha=1.0, min_client_samples=2, max_retries=20),
+        )
+    )
+
+    client = load_client_datasets(
+        paths.partition_root / "adult_income" / "3_clients" / "alpha_1.0" / "seed_13",
+        3,
+    )[0]
+    model = create_model(
+        "logistic_regression",
+        n_features=client.train.X.shape[1],
+        config=LogisticRegressionConfig(epochs=3, batch_size=4, learning_rate=0.1),
+    )
+    model.fit(client.train.X, client.train.y, seed=13)
+
+    result_dir = federated_run_dir(paths, "adult_income", 3, 1.0, 13)
+    result_dir.mkdir(parents=True, exist_ok=True)
+    model.save(result_dir / "model_parameters.npz")
+    config = FederatedTrainingConfig(
+        dataset_name="adult_income",
+        seed=13,
+        paths=paths,
+        model=LogisticRegressionConfig(epochs=3, batch_size=4, learning_rate=0.1),
+        num_clients=3,
+        alpha=1.0,
+        rounds=1,
+        simulation_backend="debug-sequential",
+    )
+    (result_dir / "config_snapshot.json").write_text(
+        json.dumps(config.to_dict(), indent=2),
+        encoding="utf-8",
+    )
+
+    output_path = tmp_path / "cli_explanations.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fed-perso-xai",
+            "explain-shap",
+            "--dataset",
+            "adult_income",
+            "--num-clients",
+            "3",
+            "--alpha",
+            "1.0",
+            "--seed",
+            "13",
+            "--client-id",
+            "0",
+            "--partition-root",
+            str(paths.partition_root),
+            "--prepared-root",
+            str(paths.prepared_root),
+            "--federated-root",
+            str(paths.federated_root),
+            "--centralized-root",
+            str(paths.centralized_root),
+            "--comparison-root",
+            str(paths.comparison_root),
+            "--cache-dir",
+            str(paths.cache_dir),
+            "--output",
+            str(output_path),
+            "--max-instances",
+            "2",
+            "--background-sample-size",
+            "3",
+            "--random-state",
+            "5",
+        ],
+    )
+    main()
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["method"] == "shap"
+    assert payload["client_id"] == 0
+    assert payload["split_name"] == "test"
+    assert payload["n_explanations"] == min(2, client.test.X.shape[0])

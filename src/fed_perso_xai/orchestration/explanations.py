@@ -10,8 +10,12 @@ from typing import Any
 
 import numpy as np
 
+from fed_perso_xai.data.serialization import load_client_datasets
 from fed_perso_xai.explainers import DEFAULT_EXPLAINER_REGISTRY, make_explainer
 from fed_perso_xai.fl.client import ClientData
+from fed_perso_xai.models import create_model
+from fed_perso_xai.utils.config import ArtifactPaths, LogisticRegressionConfig
+from fed_perso_xai.utils.paths import centralized_run_dir, federated_run_dir, partition_root
 
 
 @dataclass(frozen=True)
@@ -146,6 +150,119 @@ def save_client_explanations(path: Path, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(to_serializable(payload), indent=2), encoding="utf-8")
     return path
+
+
+def load_client_data_for_explanations(
+    *,
+    paths: ArtifactPaths,
+    dataset_name: str,
+    num_clients: int,
+    alpha: float,
+    seed: int,
+    client_id: int,
+) -> ClientData:
+    """Load one saved client partition for explanation generation."""
+
+    root_dir = partition_root(paths.partition_root, dataset_name, num_clients, alpha, seed)
+    datasets = load_client_datasets(root_dir, num_clients)
+    try:
+        client = next(item for item in datasets if item.client_id == client_id)
+    except StopIteration as exc:
+        raise ValueError(
+            f"Client {client_id} not found under prepared partition root {root_dir}."
+        ) from exc
+
+    return ClientData(
+        client_id=client.client_id,
+        X_train=client.train.X,
+        y_train=client.train.y,
+        row_ids_train=client.train.row_ids,
+        X_test=client.test.X,
+        y_test=client.test.y,
+        row_ids_test=client.test.row_ids,
+    )
+
+
+def load_saved_model_for_explanations(
+    *,
+    paths: ArtifactPaths,
+    dataset_name: str,
+    seed: int,
+    model_source: str,
+    num_clients: int,
+    alpha: float,
+) -> tuple[Any, Path]:
+    """Load a saved stage-1 model artifact and rebuild the model wrapper."""
+
+    normalized_source = model_source.strip().lower()
+    if normalized_source == "federated":
+        result_dir = federated_run_dir(paths, dataset_name, num_clients, alpha, seed)
+    elif normalized_source == "centralized":
+        result_dir = centralized_run_dir(paths, dataset_name, seed)
+    else:
+        raise ValueError(
+            f"Unsupported model source '{model_source}'. Expected 'federated' or 'centralized'."
+        )
+
+    config_path = result_dir / "config_snapshot.json"
+    model_path = result_dir / "model_parameters.npz"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Missing config snapshot at '{config_path}'.")
+    if not model_path.exists():
+        raise FileNotFoundError(f"Missing model artifact at '{model_path}'.")
+
+    config_payload = json.loads(config_path.read_text(encoding="utf-8"))
+    model_name = str(config_payload.get("model_name", "logistic_regression"))
+    model_cfg = LogisticRegressionConfig(**dict(config_payload.get("model", {}) or {}))
+
+    data = np.load(model_path, allow_pickle=False)
+    weights = np.asarray(data["weights"], dtype=np.float64)
+    bias = np.asarray(data["bias"], dtype=np.float64).reshape(1)
+    model = create_model(
+        model_name,
+        n_features=int(weights.shape[0]),
+        config=model_cfg,
+    )
+    model.set_parameters([weights, bias])
+    return model, result_dir
+
+
+def resolve_feature_names_for_explanations(
+    *,
+    paths: ArtifactPaths,
+    dataset_name: str,
+    seed: int,
+    model_source: str,
+    num_clients: int,
+    alpha: float,
+) -> tuple[list[str], Path]:
+    """Resolve feature metadata from the selected run, with partition fallback."""
+
+    normalized_source = model_source.strip().lower()
+    if normalized_source == "federated":
+        result_dir = federated_run_dir(paths, dataset_name, num_clients, alpha, seed)
+    elif normalized_source == "centralized":
+        result_dir = centralized_run_dir(paths, dataset_name, seed)
+    else:
+        raise ValueError(
+            f"Unsupported model source '{model_source}'. Expected 'federated' or 'centralized'."
+        )
+
+    candidate = result_dir / "feature_metadata.json"
+    if candidate.exists():
+        return load_feature_names_from_metadata(candidate), candidate
+
+    partition_metadata_path = (
+        partition_root(paths.partition_root, dataset_name, num_clients, alpha, seed)
+        / "partition_metadata.json"
+    )
+    if not partition_metadata_path.exists():
+        raise FileNotFoundError(
+            f"Missing feature metadata in '{candidate}' and partition metadata in '{partition_metadata_path}'."
+        )
+    partition_metadata = json.loads(partition_metadata_path.read_text(encoding="utf-8"))
+    fallback_path = Path(str(partition_metadata["feature_metadata_path"]))
+    return load_feature_names_from_metadata(fallback_path), fallback_path
 
 
 def to_serializable(obj: Any) -> Any:

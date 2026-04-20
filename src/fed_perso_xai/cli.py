@@ -10,6 +10,13 @@ from fed_perso_xai.data.catalog import DEFAULT_DATASET_REGISTRY
 from fed_perso_xai.fl.strategy import DEFAULT_STRATEGY_REGISTRY
 from fed_perso_xai.models.registry import DEFAULT_MODEL_REGISTRY
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
+from fed_perso_xai.orchestration.explanations import (
+    generate_client_local_explanations,
+    load_client_data_for_explanations,
+    load_saved_model_for_explanations,
+    resolve_feature_names_for_explanations,
+    save_client_explanations,
+)
 from fed_perso_xai.orchestration.training import (
     compare_centralized_and_federated,
     train_centralized_from_prepared,
@@ -28,6 +35,7 @@ from fed_perso_xai.utils.config import (
 from fed_perso_xai.utils.logging import configure_logging
 
 FEDERATED_BACKEND_CHOICES = ["auto", "ray", "debug-sequential", "sequential_fallback"]
+MODEL_SOURCE_CHOICES = ["federated", "centralized"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -100,6 +108,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_dataset_args(compare_parser, dataset_choices)
     _add_shared_path_args(compare_parser)
+
+    explain_parser = subparsers.add_parser(
+        "explain-shap",
+        help="Generate client-local SHAP explanations from a saved run artifact.",
+    )
+    _add_common_dataset_args(explain_parser, dataset_choices)
+    _add_shared_path_args(explain_parser)
+    explain_parser.add_argument("--client-id", type=int, required=True)
+    explain_parser.add_argument("--model-source", choices=MODEL_SOURCE_CHOICES, default="federated")
+    explain_parser.add_argument("--split", choices=["train", "test"], default="test")
+    explain_parser.add_argument("--output", type=Path)
+    explain_parser.add_argument("--background-sample-size", type=int)
+    explain_parser.add_argument("--max-instances", type=int)
+    explain_parser.add_argument(
+        "--sampling-strategy",
+        choices=["sequential", "random", "auto", "balanced", "quantile"],
+    )
+    explain_parser.add_argument("--random-state", type=int)
+    explain_parser.add_argument("--shap-explainer-type", choices=["kernel", "sampling"])
+    explain_parser.add_argument("--shap-nsamples", type=int)
+    explain_parser.add_argument("--shap-l1-reg")
+    explain_parser.add_argument("--shap-l1-reg-k", type=int)
     return parser
 
 
@@ -224,6 +254,61 @@ def main() -> None:
         )
         return
 
+    if args.command == "explain-shap":
+        paths = _build_artifact_paths(args)
+        client_data = load_client_data_for_explanations(
+            paths=paths,
+            dataset_name=args.dataset,
+            num_clients=args.num_clients,
+            alpha=args.alpha,
+            seed=args.seed,
+            client_id=args.client_id,
+        )
+        model, result_dir = load_saved_model_for_explanations(
+            paths=paths,
+            dataset_name=args.dataset,
+            seed=args.seed,
+            model_source=args.model_source,
+            num_clients=args.num_clients,
+            alpha=args.alpha,
+        )
+        feature_names, feature_metadata_path = resolve_feature_names_for_explanations(
+            paths=paths,
+            dataset_name=args.dataset,
+            seed=args.seed,
+            model_source=args.model_source,
+            num_clients=args.num_clients,
+            alpha=args.alpha,
+        )
+        payload = generate_client_local_explanations(
+            client_data=client_data,
+            model=model,
+            feature_names=feature_names,
+            explainer_name="shap",
+            split_name=args.split,
+            params_override=_build_shap_override_args(args),
+        )
+        output_path = args.output or _default_explanation_output_path(
+            result_dir=result_dir,
+            client_id=args.client_id,
+            split_name=args.split,
+        )
+        save_client_explanations(output_path, payload)
+        print(
+            json.dumps(
+                {
+                    "output_path": str(output_path),
+                    "model_source": args.model_source,
+                    "client_id": args.client_id,
+                    "split": args.split,
+                    "n_explanations": payload["n_explanations"],
+                    "feature_metadata_path": str(feature_metadata_path),
+                },
+                indent=2,
+            )
+        )
+        return
+
     raise ValueError(f"Unhandled command '{args.command}'.")
 
 
@@ -269,6 +354,36 @@ def _build_model_config(args: argparse.Namespace) -> LogisticRegressionConfig:
         learning_rate=args.learning_rate,
         l2_regularization=args.l2_regularization,
     )
+
+
+def _build_shap_override_args(args: argparse.Namespace) -> dict[str, object]:
+    overrides: dict[str, object] = {"background_data_source": "client_local_train"}
+    if args.background_sample_size is not None:
+        overrides["background_sample_size"] = args.background_sample_size
+    if args.max_instances is not None:
+        overrides["max_instances"] = args.max_instances
+    if args.sampling_strategy is not None:
+        overrides["sampling_strategy"] = args.sampling_strategy
+    if args.random_state is not None:
+        overrides["random_state"] = args.random_state
+    if args.shap_explainer_type is not None:
+        overrides["shap_explainer_type"] = args.shap_explainer_type
+    if args.shap_nsamples is not None:
+        overrides["shap_nsamples"] = args.shap_nsamples
+    if args.shap_l1_reg is not None:
+        overrides["shap_l1_reg"] = args.shap_l1_reg
+    if args.shap_l1_reg_k is not None:
+        overrides["shap_l1_reg_k"] = args.shap_l1_reg_k
+    return overrides
+
+
+def _default_explanation_output_path(
+    *,
+    result_dir: Path,
+    client_id: int,
+    split_name: str,
+) -> Path:
+    return result_dir / "explanations" / f"client_{client_id}_shap_{split_name}.json"
 
 
 if __name__ == "__main__":
