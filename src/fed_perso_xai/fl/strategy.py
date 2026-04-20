@@ -119,7 +119,34 @@ def _scale_parameter_set(
     return [np.asarray(parameter, dtype=np.float64) * float(factor) for parameter in parameters]
 
 
+def _validate_secure_config(training_config: FederatedTrainingConfig) -> None:
+    reconstruction_threshold = (
+        training_config.secure_reconstruction_threshold
+        if training_config.secure_reconstruction_threshold is not None
+        else training_config.secure_privacy_threshold + 1
+    )
+    if reconstruction_threshold > training_config.secure_num_helpers:
+        raise ValueError(
+            "Invalid secure aggregation config: secure_reconstruction_threshold "
+            f"({reconstruction_threshold}) must be less than or equal to "
+            f"secure_num_helpers ({training_config.secure_num_helpers})."
+        )
+    if training_config.secure_privacy_threshold >= reconstruction_threshold:
+        raise ValueError(
+            "Invalid secure aggregation config: secure_privacy_threshold "
+            f"({training_config.secure_privacy_threshold}) must be strictly less than "
+            f"secure_reconstruction_threshold ({reconstruction_threshold})."
+        )
+    if training_config.secure_num_helpers < reconstruction_threshold:
+        raise ValueError(
+            "Invalid secure aggregation config: secure_num_helpers "
+            f"({training_config.secure_num_helpers}) must be greater than or equal to "
+            f"secure_reconstruction_threshold ({reconstruction_threshold})."
+        )
+
+
 def _build_secure_aggregator(training_config: FederatedTrainingConfig) -> Any:
+    _validate_secure_config(training_config)
     try:
         from lcc_lib.aggregation.secure_aggregator import (
             SecureAggregationConfig,
@@ -147,6 +174,9 @@ def _build_secure_aggregator(training_config: FederatedTrainingConfig) -> Any:
                 reconstruction_threshold=training_config.secure_reconstruction_threshold,
                 seed=training_config.secure_seed,
             ),
+            # `compute_mean=False` is intentional: `lcc-lib` returns a sum.
+            # The strategy owns weighting and normalization. If that contract
+            # changes in `lcc-lib`, this strategy must be updated as well.
             compute_mean=False,
         )
     )
@@ -254,6 +284,10 @@ if fl is not None:
             total_weight = float(sum(weights))
             if total_weight <= 0.0:
                 raise ValueError("Secure aggregation requires a positive total example count.")
+            # `lcc-lib` reconstructs a sum, not a mean. The strategy therefore
+            # applies client weighting before aggregation and owns any division
+            # or normalization semantics. If `lcc-lib` changes that contract,
+            # this strategy must change with it.
             weighted_payloads = [
                 _scale_parameter_set(payload, fit_res.num_examples / total_weight)
                 for payload, (_, fit_res) in zip(shared_payloads, results, strict=True)
@@ -295,6 +329,12 @@ if fl is not None:
             self,
             aggregated_shared_parameters: Sequence[np.ndarray],
         ) -> list[np.ndarray]:
+            """Return server parameters after aggregation.
+
+            Stage 1 uses full-model aggregation. This function currently acts as
+            a pass-through. It exists to support future partial/shared-only
+            recomposition when local parameters are introduced.
+            """
             return [
                 np.asarray(parameter, dtype=np.float64).copy()
                 for parameter in aggregated_shared_parameters

@@ -121,7 +121,9 @@ if fl is not None:
             metrics: dict[str, Any] = {
                 "train_loss": float(train_loss),
                 "client_id": str(self.data.client_id),
-                "aggregation_scope": "shared_global",
+                # Stage 1 aggregates the full predictive model. Future stages
+                # may introduce explicit shared/local parameter splits.
+                "aggregation_scope": "full_model",
                 "shared_parameter_count": int(len(shared_payload.shared_parameters)),
                 "shared_parameter_indices": ",".join(
                     str(index) for index in shared_payload.shared_parameter_indices
