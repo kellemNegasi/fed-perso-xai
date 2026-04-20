@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from .causal_shap_explainer import CausalSHAPExplainer
+from .integrated_gradients_explainer import IntegratedGradientsExplainer
 from .shap_explainer import SHAPExplainer
 
 _NAME2CLS = {
     "causal_shap": CausalSHAPExplainer,
+    "integrated_gradients": IntegratedGradientsExplainer,
     "shap": SHAPExplainer,
 }
 

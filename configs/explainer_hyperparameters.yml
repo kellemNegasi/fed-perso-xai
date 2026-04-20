@@ -14,3 +14,5 @@ explainers:
     background_sample_size: [50, 100, 150]
     causal_shap_coalitions: [20, 30, 40]
     causal_shap_corr_threshold: [0.1, 0.3, 0.5]
+  integrated_gradients:
+    ig_steps: [20, 40, 60]

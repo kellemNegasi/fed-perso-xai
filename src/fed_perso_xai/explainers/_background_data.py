@@ -42,3 +42,20 @@ def sample_client_local_background(
     rng = np.random.default_rng(random_state)
     indices = rng.choice(X_np.shape[0], size=sample_size, replace=False)
     return X_np[indices]
+
+
+def build_client_local_mean_reference(
+    X: np.ndarray,
+    *,
+    expl_cfg: dict[str, Any],
+) -> np.ndarray:
+    """Build a reproducible client-local reference vector for IG-style methods."""
+
+    X_np = np.asarray(X, dtype=np.float64)
+    if X_np.ndim != 2:
+        raise ValueError("Reference data must be a 2D array.")
+    if X_np.shape[0] == 0:
+        raise ValueError("Reference data cannot be built from an empty dataset.")
+
+    require_client_local_background(expl_cfg)
+    return np.mean(X_np, axis=0)

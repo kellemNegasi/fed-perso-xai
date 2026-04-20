@@ -38,3 +38,20 @@ causal_shap:
         background_sample_size: 100
         causal_shap_corr_threshold: 0.3
         causal_shap_coalitions: 20
+
+integrated_gradients:
+  <<: *tabular_explainer
+  type: integrated_gradients
+  description: "Finite-difference IG with client-local mean baseline."
+  params:
+    experiment:
+      explanation:
+        max_instances: 100
+        method_max_instances: 200
+        sampling_strategy: random
+        random_state: 42
+        background_data_source: client_local_train
+        ig_steps: 40
+        ig_epsilon: 1e-6
+        ig_target_class: 1
+        ig_allow_nondifferentiable: false
