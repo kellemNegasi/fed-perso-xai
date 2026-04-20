@@ -184,3 +184,44 @@ def test_dataset_loading_requests_configured_openml_target_column(monkeypatch, t
     assert captured_kwargs["target_column"] == "class"
     assert dataset.X.columns.tolist() == ["feature_a", "feature_b"]
     assert dataset.y.tolist() == [1, 0, 1, 0]
+
+
+def test_dataset_loading_uses_openml_default_target_when_target_column_is_unspecified(
+    monkeypatch, tmp_path
+) -> None:
+    frame = pd.DataFrame(
+        {
+            "feature_a": [1, 2, 3, 4],
+            "feature_b": [10, 11, 12, 13],
+        },
+        index=[f"row-{idx}" for idx in range(4)],
+    )
+    captured_kwargs: dict[str, object] = {}
+    spec = DatasetSpec(
+        key="bank_marketing_like",
+        display_name="Bank Marketing Like",
+        openml_data_id=999,
+        target_transform=lambda value: int(str(value).strip().lower() == "yes"),
+    )
+
+    def fake_fetch_openml(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return type(
+            "Bunch",
+            (),
+            {
+                "frame": frame,
+                "target": pd.Series(["yes", "no", "yes", "no"], name="Class", index=frame.index),
+                "details": {"name": "bank-marketing-like", "version": "1"},
+            },
+        )()
+
+    monkeypatch.setattr("fed_perso_xai.data.loaders.fetch_openml", fake_fetch_openml)
+
+    from fed_perso_xai.data.loaders import load_openml_dataset
+
+    dataset = load_openml_dataset(spec, cache_dir=tmp_path / "cache")
+
+    assert captured_kwargs["target_column"] == "default-target"
+    assert dataset.X.columns.tolist() == ["feature_a", "feature_b"]
+    assert dataset.y.tolist() == [1, 0, 1, 0]

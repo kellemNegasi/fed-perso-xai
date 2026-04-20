@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+LCC_SRC = PROJECT_ROOT.parent / "lcc-lib" / "src"
+if str(LCC_SRC) not in sys.path:
+    sys.path.insert(0, str(LCC_SRC))
 
 
 def _build_mock_frame(dataset_name: str) -> tuple[pd.DataFrame, str]:

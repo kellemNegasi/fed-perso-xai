@@ -82,6 +82,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="If Ray simulation fails, explicitly continue with the debug sequential runtime.",
     )
+    train_parser.add_argument(
+        "--secure-aggregation",
+        action="store_true",
+        help="Enable in-process simulated secure aggregation for shared parameters.",
+    )
+    train_parser.add_argument("--secure-num-helpers", type=int, default=5)
+    train_parser.add_argument("--secure-privacy-threshold", type=int, default=2)
+    train_parser.add_argument("--secure-reconstruction-threshold", type=int)
+    train_parser.add_argument("--secure-field-modulus", type=int, default=2_147_483_647)
+    train_parser.add_argument("--secure-quantization-scale", type=int, default=1 << 16)
+    train_parser.add_argument("--secure-seed", type=int, default=0)
 
     compare_parser = subparsers.add_parser(
         "compare-baselines",
@@ -170,6 +181,13 @@ def main() -> None:
             min_available_clients=args.min_available_clients,
             simulation_backend=args.simulation_backend,
             debug_fallback_on_error=args.debug_fallback_on_error,
+            secure_aggregation=args.secure_aggregation,
+            secure_num_helpers=args.secure_num_helpers,
+            secure_privacy_threshold=args.secure_privacy_threshold,
+            secure_reconstruction_threshold=args.secure_reconstruction_threshold,
+            secure_field_modulus=args.secure_field_modulus,
+            secure_quantization_scale=args.secure_quantization_scale,
+            secure_seed=args.secure_seed,
         )
         artifacts, summary = train_federated_from_prepared(config)
         print(

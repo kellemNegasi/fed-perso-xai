@@ -42,6 +42,23 @@ def test_federated_training_config_rejects_unknown_model_and_strategy() -> None:
         FederatedTrainingConfig(dataset_name="adult_income", strategy_name="missing_strategy")
 
 
+def test_federated_training_config_rejects_invalid_secure_aggregation_values() -> None:
+    with pytest.raises(ValueError, match="secure_num_helpers"):
+        FederatedTrainingConfig(dataset_name="adult_income", secure_num_helpers=0)
+    with pytest.raises(ValueError, match="secure_num_helpers"):
+        FederatedTrainingConfig(
+            dataset_name="adult_income",
+            secure_num_helpers=2,
+            secure_privacy_threshold=2,
+        )
+    with pytest.raises(ValueError, match="secure_reconstruction_threshold"):
+        FederatedTrainingConfig(
+            dataset_name="adult_income",
+            secure_reconstruction_threshold=2,
+            secure_privacy_threshold=2,
+        )
+
+
 def test_top_level_configs_reject_invalid_common_values() -> None:
     with pytest.raises(ValueError, match="dataset_name"):
         DataPreparationConfig(dataset_name="")

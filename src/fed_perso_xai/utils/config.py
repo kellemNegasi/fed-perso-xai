@@ -145,6 +145,13 @@ class FederatedTrainingConfig(ExperimentConfig):
     min_available_clients: int = 2
     simulation_backend: str = "auto"
     debug_fallback_on_error: bool = False
+    secure_aggregation: bool = False
+    secure_num_helpers: int = 5
+    secure_privacy_threshold: int = 2
+    secure_reconstruction_threshold: int | None = None
+    secure_field_modulus: int = 2_147_483_647
+    secure_quantization_scale: int = 1 << 16
+    secure_seed: int = 0
     simulation_resources: dict[str, float] = field(
         default_factory=lambda: {"num_cpus": 1.0}
     )
@@ -158,6 +165,33 @@ class FederatedTrainingConfig(ExperimentConfig):
         _require_fraction_or_one("fit_fraction", self.fit_fraction)
         _require_fraction_or_one("evaluate_fraction", self.evaluate_fraction)
         _require_integer_at_least("min_available_clients", self.min_available_clients, minimum=1)
+        _require_integer_at_least("secure_num_helpers", self.secure_num_helpers, minimum=1)
+        _require_integer_at_least(
+            "secure_privacy_threshold",
+            self.secure_privacy_threshold,
+            minimum=0,
+        )
+        if self.secure_reconstruction_threshold is not None:
+            _require_integer_at_least(
+                "secure_reconstruction_threshold",
+                self.secure_reconstruction_threshold,
+                minimum=self.secure_privacy_threshold + 1,
+            )
+            if self.secure_reconstruction_threshold > self.secure_num_helpers:
+                raise ValueError(
+                    "secure_reconstruction_threshold cannot exceed secure_num_helpers."
+                )
+        if self.secure_privacy_threshold + 1 > self.secure_num_helpers:
+            raise ValueError(
+                "secure_num_helpers must be at least secure_privacy_threshold + 1."
+            )
+        _require_integer_at_least("secure_field_modulus", self.secure_field_modulus, minimum=3)
+        _require_integer_at_least(
+            "secure_quantization_scale",
+            self.secure_quantization_scale,
+            minimum=1,
+        )
+        _require_non_negative_integer("secure_seed", self.secure_seed)
         if not isinstance(self.simulation_resources, dict):
             raise TypeError("simulation_resources must be a dictionary.")
         for resource_name, value in self.simulation_resources.items():

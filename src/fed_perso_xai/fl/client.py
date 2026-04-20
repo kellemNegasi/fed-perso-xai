@@ -35,6 +35,50 @@ class ClientData:
     row_ids_test: np.ndarray
 
 
+@dataclass(frozen=True)
+class SharedParameterPayload:
+    """Subset of model parameters that participates in server aggregation.
+
+    Stage 1 has no personalized server-excluded tensors yet, so all model
+    parameters are currently treated as shared/global. The helper is kept
+    explicit so later phases can leave local tensors on the client.
+    """
+
+    shared_parameters: list[np.ndarray]
+    shared_parameter_indices: tuple[int, ...]
+    total_parameter_count: int
+
+
+def extract_shared_parameter_payload(parameters: list[np.ndarray]) -> SharedParameterPayload:
+    """Return the model tensors that should be aggregated by the server."""
+
+    normalized = [np.asarray(parameter, dtype=np.float64).copy() for parameter in parameters]
+    return SharedParameterPayload(
+        shared_parameters=normalized,
+        shared_parameter_indices=tuple(range(len(normalized))),
+        total_parameter_count=len(normalized),
+    )
+
+
+def apply_shared_parameter_payload(
+    current_parameters: list[np.ndarray],
+    shared_parameters: list[np.ndarray],
+    shared_parameter_indices: tuple[int, ...] | None = None,
+) -> list[np.ndarray]:
+    """Merge aggregated shared tensors back into a full local model state."""
+
+    merged = [np.asarray(parameter, dtype=np.float64).copy() for parameter in current_parameters]
+    indices = shared_parameter_indices or tuple(range(len(shared_parameters)))
+    if len(shared_parameters) != len(indices):
+        raise ValueError("shared_parameters and shared_parameter_indices must align.")
+    if len(indices) > len(merged):
+        raise ValueError("shared_parameter_indices exceeds the local parameter count.")
+
+    for index, parameter in zip(indices, shared_parameters, strict=True):
+        merged[index] = np.asarray(parameter, dtype=np.float64).copy()
+    return merged
+
+
 if fl is not None:
 
     class FederatedLogisticRegressionClient(fl.client.NumPyClient):
@@ -56,31 +100,49 @@ if fl is not None:
             )
 
         def get_parameters(self, config: dict[str, Any]) -> list[np.ndarray]:
-            return self.model.get_parameters()
+            return extract_shared_parameter_payload(self.model.get_parameters()).shared_parameters
 
         def fit(
             self,
             parameters: list[np.ndarray],
             config: dict[str, Any],
         ) -> tuple[list[np.ndarray], int, dict[str, Any]]:
-            self.model.set_parameters(parameters)
+            merged_parameters = apply_shared_parameter_payload(
+                self.model.get_parameters(),
+                parameters,
+            )
+            self.model.set_parameters(merged_parameters)
             train_loss = self.model.fit(
                 self.data.X_train,
                 self.data.y_train,
                 seed=self.seed + self.data.client_id,
             )
+            shared_payload = extract_shared_parameter_payload(self.model.get_parameters())
             metrics: dict[str, Any] = {
                 "train_loss": float(train_loss),
                 "client_id": str(self.data.client_id),
+                "aggregation_scope": "shared_global",
+                "shared_parameter_count": int(len(shared_payload.shared_parameters)),
+                "shared_parameter_indices": ",".join(
+                    str(index) for index in shared_payload.shared_parameter_indices
+                ),
             }
-            return self.model.get_parameters(), int(self.data.y_train.shape[0]), metrics
+            return (
+                shared_payload.shared_parameters,
+                int(self.data.y_train.shape[0]),
+                metrics,
+            )
 
         def evaluate(
             self,
             parameters: list[np.ndarray],
             config: dict[str, Any],
         ) -> tuple[float, int, dict[str, Any]]:
-            self.model.set_parameters(parameters)
+            merged_parameters = apply_shared_parameter_payload(
+                self.model.get_parameters(),
+                parameters,
+            )
+            self.model.set_parameters(merged_parameters)
             loss = self.model.loss(self.data.X_test, self.data.y_test)
             probabilities = self.model.predict_proba(self.data.X_test)
             metrics = compute_classification_metrics(self.data.y_test, probabilities, loss)

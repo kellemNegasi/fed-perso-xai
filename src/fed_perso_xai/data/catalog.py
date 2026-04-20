@@ -100,7 +100,6 @@ DEFAULT_DATASET_REGISTRY = DatasetRegistry(
             display_name="Bank Marketing",
             openml_data_id=1461,
             target_transform=_bank_marketing_transform,
-            target_column="y",
             cleaning_hook=_replace_common_missing_tokens,
             description="OpenML Bank Marketing binary classification benchmark.",
         ),

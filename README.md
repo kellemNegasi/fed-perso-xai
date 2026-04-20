@@ -18,7 +18,6 @@ Not implemented yet:
 - recommender training
 - pairwise comparison or preference learning
 - clustering
-- secure aggregation
 
 ## Repository Layout
 
@@ -42,6 +41,12 @@ Optional dependency groups:
 - `.[dev]`: test and local development tooling
 - `.[fl]`: Flower support for federated code paths, including the explicit debug sequential runtime
 - `.[ray]`: Ray-backed Flower simulation support for the primary federated runtime
+
+Secure aggregation also needs the sibling `lcc-lib` package installed:
+
+```bash
+python3 -m pip install -e ../lcc-lib
+```
 
 Typical setups:
 
@@ -244,6 +249,80 @@ Important artifacts:
   - `dataset_metadata.json`
   - `split_metadata.json`
   - `partition_metadata.json`
+
+### Aggregation Modes
+
+The federated strategy now supports two server-side aggregation modes over the
+same shared/global tensors:
+
+- plain weighted averaging
+- protocol-first secure aggregation using in-process simulated helpers
+
+The stage-1 model has no personalized server-excluded tensors yet, so the
+client adapter currently marks all model parameters as shared. The extraction
+and merge helpers are still explicit so later phases can keep local/personal
+parameters on-device while only aggregating the shared subset.
+
+Secure aggregation flow in this prototype:
+
+1. clients train locally and return the shared parameter payload
+2. the strategy extracts the shared tensors from each client result
+3. `lcc-lib` flattens, quantizes, secret-shares, and uploads one share per helper
+4. in-memory helper objects sum shares for the round
+5. the server reconstructs the aggregate, dequantizes it, restores tensor shapes, and applies the usual weighted average semantics
+
+No gRPC, HTTP, or external helper process is involved in this phase.
+
+Plain aggregation example:
+
+```bash
+python3 -m fed_perso_xai train-federated \
+  --dataset adult_income \
+  --num-clients 10 \
+  --alpha 1.0 \
+  --rounds 10 \
+  --seed 42 \
+  --simulation-backend debug-sequential
+```
+
+Secure aggregation example:
+
+```bash
+python3 -m fed_perso_xai train-federated \
+  --dataset adult_income \
+  --num-clients 10 \
+  --alpha 1.0 \
+  --rounds 10 \
+  --seed 42 \
+  --simulation-backend debug-sequential \
+  --secure-aggregation \
+  --secure-num-helpers 5 \
+  --secure-privacy-threshold 2 \
+  --secure-reconstruction-threshold 3 \
+  --secure-field-modulus 2147483647 \
+  --secure-quantization-scale 65536 \
+  --secure-seed 7
+```
+
+Equivalent config snapshot fields inside a federated run:
+
+```json
+{
+  "secure_aggregation": false
+}
+```
+
+```json
+{
+  "secure_aggregation": true,
+  "secure_num_helpers": 5,
+  "secure_privacy_threshold": 2,
+  "secure_reconstruction_threshold": 3,
+  "secure_field_modulus": 2147483647,
+  "secure_quantization_scale": 65536,
+  "secure_seed": 7
+}
+```
 
 ## Artifact Contract
 
