@@ -22,3 +22,19 @@ shap:
         shap_explainer_type: kernel
         shap_nsamples: 100
         shap_l1_reg: auto
+
+causal_shap:
+  <<: *tabular_explainer
+  type: causal_shap
+  description: "Causal SHAP with correlation threshold and client-local background data."
+  params:
+    experiment:
+      explanation:
+        max_instances: 100
+        method_max_instances: 200
+        sampling_strategy: random
+        random_state: 42
+        background_data_source: client_local_train
+        background_sample_size: 100
+        causal_shap_corr_threshold: 0.3
+        causal_shap_coalitions: 20

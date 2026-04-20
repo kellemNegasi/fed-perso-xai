@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from .causal_shap_explainer import CausalSHAPExplainer
 from .shap_explainer import SHAPExplainer
 
 _NAME2CLS = {
+    "causal_shap": CausalSHAPExplainer,
     "shap": SHAPExplainer,
 }
 

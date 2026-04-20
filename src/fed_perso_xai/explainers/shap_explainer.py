@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from ._background_data import require_client_local_background, sample_client_local_background
 from .base import ArrayLike, BaseExplainer, InstanceLike
 
 
@@ -67,20 +68,12 @@ class SHAPExplainer(BaseExplainer):
                 f"Got {self._expl_cfg.get('shap_explainer_type')!r}."
             )
 
-        background_source = str(
-            self._expl_cfg.get("background_data_source", "client_local_train")
-        ).strip()
-        if background_source != "client_local_train":
-            raise ValueError(
-                "Only client-local SHAP background data is implemented. "
-                "Set experiment.explanation.background_data_source to 'client_local_train'."
-            )
-
-        bsize = int(self._expl_cfg.get("background_sample_size", 100))
-        bsize = min(bsize, len(X_np))
-        rng = np.random.default_rng(self.random_state)
-        idx = rng.choice(len(X_np), size=bsize, replace=False)
-        self._background = X_np[idx]
+        require_client_local_background(self._expl_cfg)
+        self._background = sample_client_local_background(
+            X_np,
+            expl_cfg=self._expl_cfg,
+            random_state=self.random_state,
+        )
         predict_fn = self._kernel_predict_fn()
         if explainer_type == "sampling":
             self._explainer = self._shap.SamplingExplainer(predict_fn, self._background)

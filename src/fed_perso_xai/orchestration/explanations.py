@@ -97,7 +97,7 @@ def generate_client_local_explanations(
     logging_cfg: dict[str, Any] | None = None,
     params_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Generate local explanations for one client using only that client's train split as SHAP background."""
+    """Generate local explanations for one client using only that client's train split as explainer background."""
 
     dataset = LocalExplanationDataset(
         X_train=np.asarray(client_data.X_train, dtype=np.float64),
