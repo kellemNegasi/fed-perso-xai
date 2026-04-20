@@ -1,0 +1,111 @@
+correctness:
+  module: fed_perso_xai.evaluators.correctness
+  class: CorrectnessEvaluator
+  params:
+    removal_fraction: 0.1    # float=fraction of top features, int=absolute count
+    default_baseline: 0.0    # value used when no baseline vector is provided
+    fast_mode: false   # flip back to the slow Quantus-style path
+
+output_completeness_deletion:
+  module: fed_perso_xai.evaluators.correctness
+  class: CorrectnessEvaluator
+  params:
+    metric_key: output_completeness_deletion
+    removal_fraction: 0.1
+    default_baseline: 0.0
+
+continuity_stability:
+  module: fed_perso_xai.evaluators.continuity
+  class: ContinuityEvaluator
+  params:
+    max_instances: 5
+    noise_scale: 0.01
+
+compactness_size:
+  module: fed_perso_xai.evaluators.compactness
+  class: CompactnessEvaluator
+  params:
+    zero_tolerance: 1.0e-08
+
+covariate_complexity:
+  module: fed_perso_xai.evaluators.covariate_complexity
+  class: CovariateComplexityEvaluator
+  params:
+    metric_key: covariate_complexity
+    regularity_key: covariate_regularity
+
+completeness_deletion:
+  module: fed_perso_xai.evaluators.completeness
+  class: CompletenessEvaluator
+  params:
+    magnitude_threshold: 1.0e-08
+    min_features: 1
+    random_trials: 10
+    default_baseline: 0.0
+
+relative_input_stability:
+  module: fed_perso_xai.evaluators.relative_stability
+  class: RelativeInputStabilityEvaluator
+  params:
+    metric_key: relative_input_stability
+    max_instances: 5
+    num_samples: 10
+    noise_scale: 0.01
+    eps_min: 1.0e-03
+    bounded: true
+
+consistency_local:
+  module: fed_perso_xai.evaluators.consistency
+  class: ConsistencyEvaluator
+  params:
+    discretise_kwargs:
+      n: 10
+
+non_sensitivity:
+  module: fed_perso_xai.evaluators.non_sensitivity
+  class: NonSensitivityEvaluator
+  params:
+    zero_threshold: 1.0e-05
+    delta_tolerance: 1.0e-04
+    features_per_step: 1
+    default_baseline: 0.0
+
+contrastivity_ssim:
+  module: fed_perso_xai.evaluators.contrastivity
+  class: ContrastivityEvaluator
+  params:
+    pairs_per_instance: 3
+    normalise: true
+    similarity_func: fed_perso_xai.evaluators.utils.structural_similarity
+
+monotonicity_correlation:
+  module: fed_perso_xai.evaluators.monotonicity
+  class: MonotonicityEvaluator
+  params:
+    nr_samples: 5
+    features_in_step: 1
+    default_baseline: 0.0
+    abs_attributions: true
+    normalise: true
+    noise_scale: 0.0
+
+infidelity:
+  module: fed_perso_xai.evaluators.infidelity
+  class: InfidelityEvaluator
+  params:
+    n_perturb_samples: 32
+    features_per_sample: 3
+    default_baseline: 0.0
+    abs_attributions: false
+    normalise: true
+    noise_scale: 0.0
+
+confidence:
+  module: fed_perso_xai.evaluators.confidence
+  class: ConfidenceEvaluator
+  params:
+    n_resamples: 8
+    ci_percentile: 95.0
+    max_instances: 10
+    noise_scale: 0.005
+    random_baseline: true
