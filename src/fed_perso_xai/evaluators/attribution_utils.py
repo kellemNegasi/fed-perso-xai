@@ -78,15 +78,17 @@ def coerce_attribution_vector(
 
 def extract_instance_vector(explanation: dict[str, Any]) -> Optional[np.ndarray]:
     """Extract the instance represented by an explanation as a 1-D numpy vector."""
-    candidate = (
-        explanation.get("instance")
-        or (explanation.get("metadata") or {}).get("instance")
-        or explanation.get("input")
-    )
-    if candidate is None:
-        return None
-    arr = np.asarray(candidate, dtype=float).reshape(-1)
-    return arr.copy()
+    metadata = explanation.get("metadata") or {}
+    for candidate in (
+        explanation.get("instance"),
+        metadata.get("instance"),
+        explanation.get("input"),
+    ):
+        if candidate is None:
+            continue
+        arr = np.asarray(candidate, dtype=float).reshape(-1)
+        return arr.copy()
+    return None
 
 
 def prepare_attributions(
