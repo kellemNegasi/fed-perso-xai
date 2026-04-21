@@ -13,6 +13,7 @@ from .baselines import baseline_vector, dataset_feature_std, feature_scale
 from .compactness import CompactnessEvaluator
 from .completeness import CompletenessEvaluator
 from .confidence import ConfidenceEvaluator
+from .contrastivity import ContrastivityEvaluator
 from .continuity import ContinuityEvaluator
 from .correctness import CorrectnessEvaluator
 from .covariate_complexity import CovariateComplexityEvaluator
@@ -56,6 +57,7 @@ __all__ = [
     "CompactnessEvaluator",
     "CompletenessEvaluator",
     "ConfidenceEvaluator",
+    "ContrastivityEvaluator",
     "ContinuityEvaluator",
     "CorrectnessEvaluator",
     "CovariateComplexityEvaluator",
