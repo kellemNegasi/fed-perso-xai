@@ -5,6 +5,7 @@ Causal SHAP explainer for tabular data.
 from __future__ import annotations
 
 import time
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -13,10 +14,15 @@ from ._background_data import require_client_local_background, sample_client_loc
 from .base import ArrayLike, BaseExplainer, InstanceLike
 
 
+_MIN_CORRELATION_SAMPLE_ROWS = 2
+
+
 class CausalSHAPExplainer(BaseExplainer):
     """
     Approximate SHAP values while respecting a simple causal ordering inferred
-    from feature correlations.
+    from feature correlations over the sampled client-local background data.
+    Very small local samples can make the inferred graph unstable, so graph
+    inference warnings and diagnostics are exposed in metadata.
     """
 
     supported_data_types = ["tabular"]
@@ -33,7 +39,7 @@ class CausalSHAPExplainer(BaseExplainer):
         self._X_train: Optional[np.ndarray] = getattr(dataset, "X_train", None)
         self._y_train: Optional[np.ndarray] = getattr(dataset, "y_train", None)
         self._rng = np.random.default_rng(self.random_state)
-        self._causal_graph_cache: Dict[Tuple[str, ...], Dict[str, List[str]]] = {}
+        self._causal_graph_cache: Dict[Tuple[str, ...], Dict[str, Any]] = {}
         self._baseline_vector: Optional[np.ndarray] = None
         self._baseline_prediction: Optional[float] = None
         self._background: Optional[np.ndarray] = None
@@ -41,6 +47,7 @@ class CausalSHAPExplainer(BaseExplainer):
     def fit(self, X: ArrayLike, y: Optional[ArrayLike] = None) -> None:
         X_np, y_np = self._coerce_X_y(X, y)
         require_client_local_background(self._expl_cfg)
+        self._graph_inference_warning_threshold()
         self._background = sample_client_local_background(
             X_np,
             expl_cfg=self._expl_cfg,
@@ -59,7 +66,7 @@ class CausalSHAPExplainer(BaseExplainer):
         X_train = self._ensure_training_data(inst_vec)
         feature_names = self._infer_feature_names(inst_vec)
 
-        causal_graph = self._infer_causal_structure(X_train, feature_names)
+        causal_graph, graph_info = self._infer_causal_structure(X_train, feature_names)
         attributions, info = self._causal_shap(inst_vec, X_train, causal_graph, feature_names)
 
         prediction, t_pred = self._timeit(self._predict_numeric, inst2d)
@@ -85,6 +92,18 @@ class CausalSHAPExplainer(BaseExplainer):
             ),
             "background_sample_size": (
                 None if self._background is None else int(self._background.shape[0])
+            ),
+            "graph_inference_sample_size": graph_info["graph_inference_sample_size"],
+            "graph_inference_small_sample_warning": graph_info[
+                "graph_inference_small_sample_warning"
+            ],
+            "graph_inference_small_sample_threshold": graph_info[
+                "graph_inference_small_sample_threshold"
+            ],
+            "graph_inference_fallback": graph_info["graph_inference_fallback"],
+            "graph_inference_nan_count": graph_info["graph_inference_nan_count"],
+            "graph_inference_warning_messages": list(
+                graph_info["graph_inference_warning_messages"]
             ),
         }
         if proba_value is not None:
@@ -118,7 +137,7 @@ class CausalSHAPExplainer(BaseExplainer):
         for idx, inst_vec in enumerate(X_np):
             X_train = self._ensure_training_data(inst_vec)
             feature_names = self._infer_feature_names(inst_vec)
-            causal_graph = self._infer_causal_structure(X_train, feature_names)
+            causal_graph, graph_info = self._infer_causal_structure(X_train, feature_names)
             attributions, info = self._causal_shap(
                 inst_vec, X_train, causal_graph, feature_names
             )
@@ -143,6 +162,18 @@ class CausalSHAPExplainer(BaseExplainer):
                 ),
                 "background_sample_size": (
                     None if self._background is None else int(self._background.shape[0])
+                ),
+                "graph_inference_sample_size": graph_info["graph_inference_sample_size"],
+                "graph_inference_small_sample_warning": graph_info[
+                    "graph_inference_small_sample_warning"
+                ],
+                "graph_inference_small_sample_threshold": graph_info[
+                    "graph_inference_small_sample_threshold"
+                ],
+                "graph_inference_fallback": graph_info["graph_inference_fallback"],
+                "graph_inference_nan_count": graph_info["graph_inference_nan_count"],
+                "graph_inference_warning_messages": list(
+                    graph_info["graph_inference_warning_messages"]
                 ),
             }
             if proba_value is not None:
@@ -178,6 +209,9 @@ class CausalSHAPExplainer(BaseExplainer):
                 "background_sample_size": (
                     None if self._background is None else int(self._background.shape[0])
                 ),
+                "graph_inference_small_sample_threshold": (
+                    self._graph_inference_warning_threshold()
+                ),
             }
         )
         return info
@@ -192,16 +226,96 @@ class CausalSHAPExplainer(BaseExplainer):
         self._X_train = fallback_instance.reshape(1, -1)
         return self._X_train
 
+    def _graph_inference_warning_threshold(self) -> int:
+        """Return the explicit heuristic threshold for graph-size warnings."""
+
+        threshold = int(self._expl_cfg.get("causal_shap_min_graph_samples_warning", 10))
+        if threshold < _MIN_CORRELATION_SAMPLE_ROWS:
+            raise ValueError(
+                "experiment.explanation.causal_shap_min_graph_samples_warning must be "
+                f">= {_MIN_CORRELATION_SAMPLE_ROWS}. Got {threshold}."
+            )
+        return threshold
+
+    def _warn_graph_inference(self, message: str) -> None:
+        warnings.warn(message, RuntimeWarning, stacklevel=3)
+        self.logger.warning(message)
+
     def _infer_causal_structure(
         self, X_train: np.ndarray, feature_names: List[str]
-    ) -> Dict[str, List[str]]:
+    ) -> Tuple[Dict[str, List[str]], Dict[str, Any]]:
         key = tuple(feature_names)
         cached = self._causal_graph_cache.get(key)
         if cached is not None:
-            return cached
+            return cached["graph"], cached["info"]
+
+        n_features = len(feature_names)
+        n_samples = int(X_train.shape[0]) if X_train.ndim == 2 else 0
+        small_sample_threshold = self._graph_inference_warning_threshold()
+        small_sample_warning = n_samples < small_sample_threshold
         corr_threshold = float(self._expl_cfg.get("causal_shap_corr_threshold", 0.3))
-        corr = np.corrcoef(X_train.T)
-        graph: Dict[str, List[str]] = {}
+        graph: Dict[str, List[str]] = {fname: [] for fname in feature_names}
+        warning_messages: List[str] = []
+
+        def record_warning(message: str) -> None:
+            warning_messages.append(message)
+            self._warn_graph_inference(message)
+
+        if small_sample_warning:
+            record_warning(
+                "Causal SHAP graph inference is using a small client-local background "
+                f"sample (n_samples={n_samples}, threshold={small_sample_threshold}); "
+                "inferred feature correlations may be unstable and should be interpreted cautiously."
+            )
+
+        info: Dict[str, Any] = {
+            "graph_inference_sample_size": n_samples,
+            "graph_inference_small_sample_warning": small_sample_warning,
+            "graph_inference_small_sample_threshold": small_sample_threshold,
+            "graph_inference_fallback": None,
+            "graph_inference_nan_count": 0,
+            "graph_inference_warning_messages": warning_messages,
+        }
+
+        if n_features == 0:
+            self._causal_graph_cache[key] = {"graph": graph, "info": info}
+            return graph, info
+
+        if n_samples < _MIN_CORRELATION_SAMPLE_ROWS:
+            info["graph_inference_fallback"] = "empty_graph_insufficient_rows"
+            record_warning(
+                "Causal SHAP graph inference could not compute correlations from the "
+                f"client-local background sample because only {n_samples} row(s) were available; "
+                "falling back to an empty causal graph."
+            )
+            self._causal_graph_cache[key] = {"graph": graph, "info": info}
+            return graph, info
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            corr = np.corrcoef(np.asarray(X_train, dtype=np.float64), rowvar=False)
+        corr = np.asarray(corr, dtype=np.float64)
+
+        if corr.ndim == 0:
+            corr = corr.reshape(1, 1)
+
+        expected_shape = (n_features, n_features)
+        if corr.shape != expected_shape:
+            info["graph_inference_fallback"] = "empty_graph_invalid_correlation_shape"
+            record_warning(
+                "Causal SHAP graph inference produced an unexpected correlation matrix "
+                f"shape {corr.shape} for {n_features} feature(s); falling back to an empty causal graph."
+            )
+            self._causal_graph_cache[key] = {"graph": graph, "info": info}
+            return graph, info
+
+        nan_count = int(np.isnan(corr).sum())
+        if nan_count > 0:
+            info["graph_inference_nan_count"] = nan_count
+            record_warning(
+                "Causal SHAP graph inference encountered NaN correlations in the "
+                f"client-local background sample (nan_count={nan_count}); replacing them with 0.0 before building the graph."
+            )
+            corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
 
         for i, fname in enumerate(feature_names):
             parents: List[str] = []
@@ -211,8 +325,8 @@ class CausalSHAPExplainer(BaseExplainer):
                 if abs(corr[i, j]) >= corr_threshold and j < i:
                     parents.append(feature_names[j])
             graph[fname] = parents
-        self._causal_graph_cache[key] = graph
-        return graph
+        self._causal_graph_cache[key] = {"graph": graph, "info": info}
+        return graph, info
 
     def _causal_shap(
         self,

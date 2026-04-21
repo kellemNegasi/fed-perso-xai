@@ -37,6 +37,11 @@ def sample_client_local_background(
 
     require_client_local_background(expl_cfg)
     sample_size = int(expl_cfg.get("background_sample_size", 100))
+    if sample_size <= 0:
+        raise ValueError(
+            "experiment.explanation.background_sample_size must be greater than 0 "
+            f"for client-local background sampling. Got {sample_size}."
+        )
     sample_size = min(sample_size, X_np.shape[0])
 
     rng = np.random.default_rng(random_state)

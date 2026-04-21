@@ -26,7 +26,7 @@ shap:
 causal_shap:
   <<: *tabular_explainer
   type: causal_shap
-  description: "Causal SHAP with correlation threshold and client-local background data."
+  description: "Causal SHAP with correlation threshold, client-local background data, and small-sample graph warnings."
   params:
     experiment:
       explanation:
@@ -38,6 +38,7 @@ causal_shap:
         background_sample_size: 100
         causal_shap_corr_threshold: 0.3
         causal_shap_coalitions: 20
+        causal_shap_min_graph_samples_warning: 10
 
 integrated_gradients:
   <<: *tabular_explainer
