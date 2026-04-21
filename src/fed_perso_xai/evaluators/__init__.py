@@ -12,6 +12,7 @@ from .base_metric import MetricCapabilities, MetricInput, MetricScoreMap
 from .baselines import baseline_vector, dataset_feature_std, feature_scale
 from .compactness import CompactnessEvaluator
 from .completeness import CompletenessEvaluator
+from .confidence import ConfidenceEvaluator
 from .continuity import ContinuityEvaluator
 from .correctness import CorrectnessEvaluator
 from .covariate_complexity import CovariateComplexityEvaluator
@@ -54,6 +55,7 @@ __all__ = [
     "FEATURE_METHOD_KEYS",
     "CompactnessEvaluator",
     "CompletenessEvaluator",
+    "ConfidenceEvaluator",
     "ContinuityEvaluator",
     "CorrectnessEvaluator",
     "CovariateComplexityEvaluator",
