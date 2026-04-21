@@ -11,6 +11,7 @@ from .attribution_utils import (
 from .base_metric import MetricCapabilities, MetricInput, MetricScoreMap
 from .baselines import baseline_vector, dataset_feature_std, feature_scale
 from .compactness import CompactnessEvaluator
+from .covariate_complexity import CovariateComplexityEvaluator
 from .execution import MetricExecutionResult, evaluate_metric, evaluate_metrics_for_method
 from .factory import make_metric, metric_capabilities
 from .perturbation import (
@@ -46,6 +47,7 @@ __all__ = [
     "FEATURE_ATTRIBUTION_FIELD_CANDIDATES",
     "FEATURE_METHOD_KEYS",
     "CompactnessEvaluator",
+    "CovariateComplexityEvaluator",
     "MetricCapabilities",
     "MetricExecutionResult",
     "MetricInput",
