@@ -7,6 +7,7 @@ import pytest
 
 from fed_perso_xai.evaluators import (
     DEFAULT_METRIC_REGISTRY,
+    ConsistencyEvaluator,
     MetricCapabilities,
     MetricInput,
     baseline_vector,
@@ -257,8 +258,10 @@ def test_metric_registry_and_config_support_are_present() -> None:
     assert spec["class"] == "InfidelityEvaluator"
 
     loaded = load_metric_config()
+    assert loaded["consistency_local"]["module"] == "fed_perso_xai.evaluators.consistency"
     assert "correctness" in loaded
     assert loaded["contrastivity_ssim"]["params"]["similarity_func"] == (
         "fed_perso_xai.evaluators.utils.structural_similarity"
     )
     assert isinstance(make_metric("infidelity"), InfidelityEvaluator)
+    assert isinstance(make_metric("consistency_local"), ConsistencyEvaluator)

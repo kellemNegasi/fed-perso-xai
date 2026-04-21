@@ -58,6 +58,9 @@ consistency_local:
   module: fed_perso_xai.evaluators.consistency
   class: ConsistencyEvaluator
   params:
+    # Optional custom discretiser, either as a callable at runtime or a dotted
+    # module path string in YAML. The default keeps the top-n signed features.
+    # discretise_func: fed_perso_xai.evaluators.consistency._top_n_sign
     discretise_kwargs:
       n: 10
 
