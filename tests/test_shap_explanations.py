@@ -193,6 +193,9 @@ def test_generate_client_local_shap_explanations_schema_and_metadata(monkeypatch
     assert len(explanation["attributions"]) == client_data.X_test.shape[1]
     assert len(explanation["prediction_proba"]) == 2
     assert "expected_value" in explanation["metadata"]
+    assert explanation["metadata"]["background_data_source"] == "client_local_train"
+    assert explanation["metadata"]["background_sample_size"] == 5
+    assert "baseline_instance" not in explanation["metadata"]
     assert "true_label" in explanation["metadata"]
     assert "explained_class" in explanation["metadata"]
 

@@ -21,7 +21,7 @@ from .attribution_utils import (
     extract_instance_vector,
 )
 from .base_metric import MetricCapabilities, MetricInput
-from .baselines import baseline_vector
+from .baselines import BASELINE_STRATEGY_EXPLAINER_ONLY, resolve_baseline_vector
 from .perturbation import chunk_indices, mask_feature_indices
 from .prediction_utils import (
     model_prediction,
@@ -311,9 +311,10 @@ class NonSensitivityEvaluator(MetricCapabilities):
         # The original non-sensitivity evaluator only consumed an explainer-provided
         # baseline_instance or the configured scalar fallback; keep that behavior
         # rather than deriving a dataset-mean baseline here.
-        baseline = baseline_vector(
+        baseline = resolve_baseline_vector(
             explanation,
             instance,
+            strategy=BASELINE_STRATEGY_EXPLAINER_ONLY,
             default_baseline=self.default_baseline,
             dataset=None,
             logger=self.logger,

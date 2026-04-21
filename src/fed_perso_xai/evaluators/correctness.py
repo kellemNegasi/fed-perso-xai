@@ -20,6 +20,7 @@ from .attribution_utils import (
     extract_attribution_vector,
     extract_instance_vector,
 )
+from .baselines import BASELINE_STRATEGY_EXPLAINER_ONLY, resolve_baseline_vector
 from .base_metric import MetricCapabilities, MetricInput
 from .perturbation import mask_feature_indices, top_k_mask_indices
 from .prediction_utils import (
@@ -433,17 +434,16 @@ class CorrectnessEvaluator(MetricCapabilities):
         return extract_instance_vector(explanation)
 
     def _baseline_vector(self, explanation: Dict[str, Any], instance: np.ndarray) -> np.ndarray:
-        """Return explainer-provided baseline if present, otherwise fill with default."""
-        metadata = explanation.get("metadata") or {}
-        baseline = metadata.get("baseline_instance")
-        if baseline is not None:
-            base_arr = np.asarray(baseline, dtype=float).reshape(-1)
-            if base_arr.shape == instance.shape:
-                return base_arr
-        self.logger.debug(
-            "CorrectnessEvaluator using default baseline %.5f for instance", self.default_baseline
+        """Match the original correctness fallback: explainer baseline or constant."""
+        return resolve_baseline_vector(
+            explanation,
+            instance,
+            strategy=BASELINE_STRATEGY_EXPLAINER_ONLY,
+            default_baseline=self.default_baseline,
+            dataset=None,
+            logger=self.logger,
+            log_prefix="CorrectnessEvaluator",
         )
-        return np.full_like(instance, self.default_baseline, dtype=float)
 
     def _target_class(
         self,

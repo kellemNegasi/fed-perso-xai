@@ -76,6 +76,16 @@ class CausalSHAPExplainer(BaseExplainer):
             "causal_graph": causal_graph,
             "coalition_samples": info["coalition_samples"],
             "correlation_threshold": info["correlation_threshold"],
+            "baseline_source": info["baseline_source"],
+            "baseline_instance": info["baseline_instance"],
+            "baseline_prediction": info["baseline_prediction"],
+            "background_data_source": self._expl_cfg.get(
+                "background_data_source",
+                "client_local_train",
+            ),
+            "background_sample_size": (
+                None if self._background is None else int(self._background.shape[0])
+            ),
         }
         if proba_value is not None:
             metadata["explained_class"] = int(np.argmax(np.asarray(proba_value, dtype=float)))
@@ -124,6 +134,16 @@ class CausalSHAPExplainer(BaseExplainer):
                 "causal_graph": causal_graph,
                 "coalition_samples": info["coalition_samples"],
                 "correlation_threshold": info["correlation_threshold"],
+                "baseline_source": info["baseline_source"],
+                "baseline_instance": info["baseline_instance"],
+                "baseline_prediction": info["baseline_prediction"],
+                "background_data_source": self._expl_cfg.get(
+                    "background_data_source",
+                    "client_local_train",
+                ),
+                "background_sample_size": (
+                    None if self._background is None else int(self._background.shape[0])
+                ),
             }
             if proba_value is not None:
                 metadata["explained_class"] = int(
@@ -250,8 +270,18 @@ class CausalSHAPExplainer(BaseExplainer):
             "correlation_threshold": float(
                 self._expl_cfg.get("causal_shap_corr_threshold", 0.3)
             ),
+            "baseline_source": self._baseline_source(),
+            "baseline_instance": np.asarray(baseline, dtype=float).reshape(-1).tolist(),
+            "baseline_prediction": float(baseline_pred),
         }
         return contributions, info
+
+    def _baseline_source(self) -> str:
+        if self._background is not None:
+            return "background_mean"
+        if self._X_train is not None and getattr(self._X_train, "shape", (0,))[0] > 1:
+            return "train_mean"
+        return "instance_fallback"
 
     def _sample_coalition(
         self,

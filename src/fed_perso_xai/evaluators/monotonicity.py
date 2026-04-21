@@ -23,7 +23,7 @@ from .attribution_utils import (
     prepare_attributions,
 )
 from .base_metric import MetricCapabilities, MetricInput
-from .baselines import feature_scale
+from .baselines import BASELINE_STRATEGY_EXPLAINER_ONLY, feature_scale, resolve_baseline_vector
 from .perturbation import build_metric_rng
 
 
@@ -363,13 +363,15 @@ class MonotonicityEvaluator(MetricCapabilities):
         explanation: Dict[str, Any],
         instance: np.ndarray,
     ) -> np.ndarray:
-        metadata = explanation.get("metadata") or {}
-        baseline = metadata.get("baseline_instance")
-        if baseline is not None:
-            base_arr = np.asarray(baseline, dtype=float).reshape(-1)
-            if base_arr.shape == instance.shape:
-                return base_arr
-        return np.full_like(instance, self.default_baseline, dtype=float)
+        return resolve_baseline_vector(
+            explanation,
+            instance,
+            strategy=BASELINE_STRATEGY_EXPLAINER_ONLY,
+            default_baseline=self.default_baseline,
+            dataset=None,
+            logger=self.logger,
+            log_prefix="MonotonicityEvaluator",
+        )
 
     def _model_prediction(self, model: Any, instance: np.ndarray) -> float:
         batch = instance.reshape(1, -1)

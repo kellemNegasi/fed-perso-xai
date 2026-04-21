@@ -99,6 +99,25 @@ class SHAPExplainer(BaseExplainer):
         explained_class = self._select_target_class_index()
         if explained_class is None and proba_value is not None:
             explained_class = int(np.argmax(np.asarray(proba_value, dtype=float)))
+        metadata = {
+            "expected_value": exp_val,
+            **(
+                {
+                    "background_data_source": self._expl_cfg.get(
+                        "background_data_source",
+                        "client_local_train",
+                    ),
+                    "background_sample_size": int(self._background.shape[0]),
+                }
+                if self._background is not None
+                else {}
+            ),
+            **(
+                {"explained_class": int(explained_class)}
+                if explained_class is not None
+                else {}
+            ),
+        }
 
         feature_names = self._infer_feature_names(inst2d[0])
         result = self._standardize_explanation_output(
@@ -109,14 +128,7 @@ class SHAPExplainer(BaseExplainer):
             prediction=pred[0] if len(pred) else pred,
             prediction_proba=proba_value,
             feature_names=feature_names,
-            metadata={
-                "expected_value": exp_val,
-                **(
-                    {"explained_class": int(explained_class)}
-                    if explained_class is not None
-                    else {}
-                ),
-            },
+            metadata=metadata,
             per_instance_time=t_pred + t_shap,
         )
         return result
@@ -150,6 +162,25 @@ class SHAPExplainer(BaseExplainer):
                 explained_class = int(np.argmax(np.asarray(proba_val, dtype=float)))
             exp_val = self._select_expected_value(expected, np.asarray(preds_numeric[idx : idx + 1]))
             attr_row = shap_vals[idx] if shap_vals.ndim > 1 else shap_vals
+            metadata = {
+                "expected_value": exp_val,
+                **(
+                    {
+                        "background_data_source": self._expl_cfg.get(
+                            "background_data_source",
+                            "client_local_train",
+                        ),
+                        "background_sample_size": int(self._background.shape[0]),
+                    }
+                    if self._background is not None
+                    else {}
+                ),
+                **(
+                    {"explained_class": int(explained_class)}
+                    if explained_class is not None
+                    else {}
+                ),
+            }
             results.append(
                 self._standardize_explanation_output(
                     attributions=np.asarray(attr_row).tolist(),
@@ -157,14 +188,7 @@ class SHAPExplainer(BaseExplainer):
                     prediction=pred_val,
                     prediction_proba=proba_val,
                     feature_names=self._infer_feature_names(instance),
-                    metadata={
-                        "expected_value": exp_val,
-                        **(
-                            {"explained_class": int(explained_class)}
-                            if explained_class is not None
-                            else {}
-                        ),
-                    },
+                    metadata=metadata,
                     per_instance_time=0.0,
                 )
             )

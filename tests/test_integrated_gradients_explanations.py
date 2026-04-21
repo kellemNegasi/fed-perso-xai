@@ -142,6 +142,10 @@ def test_generate_client_local_integrated_gradients_explanations_schema_and_meta
     assert len(explanation["attributions"]) == client_data.X_test.shape[1]
     assert len(explanation["prediction_proba"]) == 2
     assert explanation["metadata"]["baseline_source"] == "train_mean"
+    np.testing.assert_allclose(
+        np.asarray(explanation["metadata"]["baseline_instance"], dtype=float),
+        np.mean(client_data.X_train, axis=0),
+    )
     assert explanation["metadata"]["n_steps"] == 24
     assert explanation["metadata"]["epsilon"] == 1e-5
     assert explanation["metadata"]["explained_class"] == 1
@@ -176,3 +180,7 @@ def test_integrated_gradients_persists_inferred_explained_class_without_explicit
     expected_class = int(np.argmax(np.asarray(explanation["prediction_proba"], dtype=float)))
 
     assert explanation["metadata"]["explained_class"] == expected_class
+    np.testing.assert_allclose(
+        np.asarray(explanation["metadata"]["baseline_instance"], dtype=float),
+        np.mean(client_data.X_train, axis=0),
+    )

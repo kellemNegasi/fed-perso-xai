@@ -76,6 +76,7 @@ class IntegratedGradientsExplainer(BaseExplainer):
 
         metadata = {
             "baseline_source": info["baseline_source"],
+            "baseline_instance": info["baseline_instance"],
             "n_steps": info["n_steps"],
             "epsilon": info["epsilon"],
         }
@@ -129,6 +130,7 @@ class IntegratedGradientsExplainer(BaseExplainer):
 
             metadata = {
                 "baseline_source": info["baseline_source"],
+                "baseline_instance": info["baseline_instance"],
                 "n_steps": info["n_steps"],
                 "epsilon": info["epsilon"],
             }
@@ -213,6 +215,7 @@ class IntegratedGradientsExplainer(BaseExplainer):
 
         info = {
             "baseline_source": baseline_source,
+            "baseline_instance": np.asarray(baseline, dtype=float).reshape(-1).tolist(),
             "n_steps": n_steps,
             "epsilon": epsilon,
         }

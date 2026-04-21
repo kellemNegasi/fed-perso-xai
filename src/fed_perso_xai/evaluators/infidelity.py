@@ -18,7 +18,11 @@ from .attribution_utils import (
     prepare_attributions,
 )
 from .base_metric import MetricCapabilities, MetricInput
-from .baselines import baseline_vector, feature_scale
+from .baselines import (
+    BASELINE_STRATEGY_EXPLAINER_THEN_DATASET_MEAN,
+    feature_scale,
+    resolve_baseline_vector,
+)
 from .perturbation import build_metric_rng, sample_random_mask_indices
 from .prediction_utils import model_prediction
 
@@ -306,9 +310,10 @@ class InfidelityEvaluator(MetricCapabilities):
         *,
         dataset: Any | None,
     ) -> np.ndarray:
-        return baseline_vector(
+        return resolve_baseline_vector(
             explanation,
             instance,
+            strategy=BASELINE_STRATEGY_EXPLAINER_THEN_DATASET_MEAN,
             default_baseline=self.default_baseline,
             dataset=dataset,
             logger=self.logger,

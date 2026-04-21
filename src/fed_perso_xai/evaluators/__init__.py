@@ -9,7 +9,7 @@ from .attribution_utils import (
     prepare_attributions,
 )
 from .base_metric import MetricCapabilities, MetricInput, MetricScoreMap
-from .baselines import baseline_vector, dataset_feature_std, feature_scale
+from .baselines import baseline_vector, dataset_feature_std, feature_scale, resolve_baseline_vector
 from .compactness import CompactnessEvaluator
 from .completeness import CompletenessEvaluator
 from .confidence import ConfidenceEvaluator
@@ -100,6 +100,7 @@ __all__ = [
     "prediction_label",
     "prediction_value_from_probabilities",
     "prepare_attributions",
+    "resolve_baseline_vector",
     "resolve_scalar_prediction_score",
     "safe_scalar",
     "sample_random_mask_indices",

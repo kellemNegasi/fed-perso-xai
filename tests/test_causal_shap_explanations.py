@@ -87,6 +87,14 @@ def test_causal_shap_explainer_instantiation_and_local_background_sampling(
     for row in explainer._background:
         assert any(np.array_equal(row, candidate) for candidate in client_data.X_train)
 
+    explanation = explainer.explain_instance(client_data.X_test[0])
+    assert explanation["metadata"]["baseline_source"] == "background_mean"
+    np.testing.assert_allclose(
+        np.asarray(explanation["metadata"]["baseline_instance"], dtype=float),
+        np.mean(explainer._background, axis=0),
+    )
+    assert np.isfinite(float(explanation["metadata"]["baseline_prediction"]))
+
     explainer_again = instantiate_explainer(
         "causal_shap",
         model=model,
@@ -141,6 +149,11 @@ def test_generate_client_local_causal_shap_explanations_schema_and_metadata(
     assert len(explanation["prediction_proba"]) == 2
     assert explanation["metadata"]["coalition_samples"] == 8
     assert explanation["metadata"]["correlation_threshold"] == 0.25
+    assert explanation["metadata"]["baseline_source"] == "background_mean"
+    assert len(explanation["metadata"]["baseline_instance"]) == client_data.X_test.shape[1]
+    assert "baseline_prediction" in explanation["metadata"]
+    assert explanation["metadata"]["background_data_source"] == "client_local_train"
+    assert explanation["metadata"]["background_sample_size"] == 5
     assert set(explanation["metadata"]["causal_graph"]) == set(feature_names)
     assert "explained_class" in explanation["metadata"]
     assert "true_label" in explanation["metadata"]
