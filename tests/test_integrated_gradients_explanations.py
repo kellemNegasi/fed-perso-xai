@@ -147,3 +147,32 @@ def test_generate_client_local_integrated_gradients_explanations_schema_and_meta
     assert explanation["metadata"]["explained_class"] == 1
     assert "true_label" in explanation["metadata"]
     assert any(abs(value) > 0.0 for value in explanation["attributions"])
+
+
+def test_integrated_gradients_persists_inferred_explained_class_without_explicit_target(
+    synthetic_client_splits,
+) -> None:
+    client_data = _build_client_data(synthetic_client_splits)
+    model = _fit_model(client_data)
+    dataset = LocalExplanationDataset(
+        X_train=client_data.X_train,
+        y_train=client_data.y_train,
+        feature_names=[f"feature_{idx}" for idx in range(client_data.X_train.shape[1])],
+    )
+
+    explainer = instantiate_explainer(
+        "integrated_gradients",
+        model=model,
+        dataset=dataset,
+        params_override={
+            "random_state": 5,
+            "ig_steps": 12,
+            "ig_epsilon": 1e-5,
+            "ig_target_class": None,
+        },
+    )
+
+    explanation = explainer.explain_instance(client_data.X_test[0])
+    expected_class = int(np.argmax(np.asarray(explanation["prediction_proba"], dtype=float)))
+
+    assert explanation["metadata"]["explained_class"] == expected_class

@@ -89,6 +89,8 @@ class IntegratedGradientsExplainer(BaseExplainer):
         target_class = self._expl_cfg.get("ig_target_class")
         if target_class is not None:
             metadata["explained_class"] = int(target_class)
+        elif proba_value is not None:
+            metadata["explained_class"] = int(np.argmax(np.asarray(proba_value, dtype=float)))
 
         return self._standardize_explanation_output(
             attributions=attributions.tolist(),
@@ -133,6 +135,8 @@ class IntegratedGradientsExplainer(BaseExplainer):
             target_class = self._expl_cfg.get("ig_target_class")
             if target_class is not None:
                 metadata["explained_class"] = int(target_class)
+            elif proba_value is not None:
+                metadata["explained_class"] = int(np.argmax(np.asarray(proba_value, dtype=float)))
 
             results.append(
                 self._standardize_explanation_output(

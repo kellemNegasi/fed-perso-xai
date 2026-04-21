@@ -125,6 +125,43 @@ def test_non_sensitivity_uses_target_class_probability_and_grouping() -> None:
     assert scores["non_sensitivity_delta_mean"] == pytest.approx(expected_delta, abs=1e-12)
 
 
+def test_non_sensitivity_falls_back_to_model_scores_when_explanation_lacks_probabilities() -> None:
+    model = ThreeClassFeatureModel()
+    instance = np.array([1.0, 0.0], dtype=float)
+    explanation_results = {
+        "method": "causal_shap",
+        "explanations": [
+            {
+                "instance": instance.tolist(),
+                "attributions": [0.0, 0.4],
+                "prediction": 1,
+                "metadata": {
+                    "baseline_instance": [0.0, 0.0],
+                    "explained_class": 0,
+                },
+            }
+        ],
+    }
+
+    evaluator = NonSensitivityEvaluator(
+        zero_threshold=1.0e-5,
+        delta_tolerance=0.1,
+        features_per_step=1,
+    )
+    scores = evaluator.evaluate(model, explanation_results)
+
+    original = model.predict_proba(instance.reshape(1, -1))[0, 0]
+    perturbed = model.predict_proba(np.array([[0.0, 0.0]], dtype=float))[0, 0]
+    expected_delta = abs(original - perturbed)
+    legacy_label_delta = abs(1.0 - perturbed)
+
+    assert scores["non_sensitivity_violation_fraction"] == pytest.approx(1.0, abs=1e-12)
+    assert scores["non_sensitivity_safe_fraction"] == pytest.approx(0.0, abs=1e-12)
+    assert scores["non_sensitivity_zero_features"] == pytest.approx(1.0, abs=1e-12)
+    assert scores["non_sensitivity_delta_mean"] == pytest.approx(expected_delta, abs=1e-12)
+    assert scores["non_sensitivity_delta_mean"] != pytest.approx(legacy_label_delta, abs=1e-12)
+
+
 def test_non_sensitivity_handles_requested_edge_cases_deterministically() -> None:
     no_zero_model = AffineBinaryProbModel(positive_weights=[0.2, -0.1], intercept=0.5)
     no_zero_results = {

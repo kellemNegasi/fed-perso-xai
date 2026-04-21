@@ -24,8 +24,8 @@ from .base_metric import MetricCapabilities, MetricInput
 from .baselines import baseline_vector
 from .perturbation import chunk_indices, mask_feature_indices
 from .prediction_utils import (
-    extract_prediction_value,
     model_prediction,
+    resolve_scalar_prediction_score,
 )
 
 
@@ -274,6 +274,8 @@ class NonSensitivityEvaluator(MetricCapabilities):
         target_class = self._target_class(explanation, model, instance)
         original_prediction = self._prediction_value(
             explanation,
+            model=model,
+            instance=instance,
             target_class=target_class,
         )
         if original_prediction is None:
@@ -337,13 +339,20 @@ class NonSensitivityEvaluator(MetricCapabilities):
         self,
         explanation: Dict[str, Any],
         *,
+        model: Any | None = None,
+        instance: np.ndarray | None = None,
         target_class: int | None,
     ) -> Optional[float]:
-        return extract_prediction_value(
+        value = resolve_scalar_prediction_score(
             explanation,
+            model=model,
+            instance=instance,
             target_class=target_class,
             prefer_probability=True,
         )
+        if value is not None:
+            return float(value)
+        return None
 
     def _model_prediction(
         self,
