@@ -467,10 +467,17 @@ class BaseExplainer(ABC):
         explanations: List[Dict[str, Any]],
         y: Optional[np.ndarray],
     ) -> List[Dict[str, Any]]:
+        """
+        Attach explainer-side metadata to each explanation.
+
+        ``true_label`` stores the supervised ground-truth label ``y`` for the
+        instance. It is provenance only and must not be interpreted as the class
+        whose prediction score the explanation or downstream metrics should track.
+        """
         if y is None:
             return explanations
 
         for idx, explanation in enumerate(explanations):
             metadata = explanation.setdefault("metadata", {})
-            metadata.setdefault("target", np.asarray(y[idx]).item())
+            metadata.setdefault("true_label", np.asarray(y[idx]).item())
         return explanations

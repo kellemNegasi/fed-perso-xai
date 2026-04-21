@@ -94,7 +94,7 @@ def test_completeness_uses_target_class_and_random_baseline_matches_equal_size_m
                 "prediction": 0,
                 "prediction_proba": proba.tolist(),
                 "metadata": {
-                    "target": 0,
+                    "explained_class": 0,
                     "baseline_instance": baseline.tolist(),
                 },
             }
@@ -155,7 +155,7 @@ def test_completeness_clips_negative_advantage_and_handles_edge_cases() -> None:
                 "attributions": [0.7, 0.1],
                 "instance": [0.5, -0.5],
                 "prediction_proba": [1.0, 0.0],
-                "metadata": {"baseline_instance": [0.0, 0.0], "target": 1},
+                "metadata": {"baseline_instance": [0.0, 0.0], "explained_class": 1},
             },
             {
                 # Missing attributions => empty selected feature set / invalid payload.
@@ -280,7 +280,7 @@ def test_completeness_fast_mode_preserves_original_expected_value_shortcut() -> 
                 "instance": [1.0, 2.0],
                 "prediction": 1,
                 "prediction_proba": [0.1, 0.9],
-                "metadata": {"expected_value": [0.0, 0.2], "target": 1},
+                "metadata": {"expected_value": [0.0, 0.2], "explained_class": 1},
             }
         ],
     }

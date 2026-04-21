@@ -144,5 +144,6 @@ def test_generate_client_local_integrated_gradients_explanations_schema_and_meta
     assert explanation["metadata"]["baseline_source"] == "train_mean"
     assert explanation["metadata"]["n_steps"] == 24
     assert explanation["metadata"]["epsilon"] == 1e-5
-    assert "target" in explanation["metadata"]
+    assert explanation["metadata"]["explained_class"] == 1
+    assert "true_label" in explanation["metadata"]
     assert any(abs(value) > 0.0 for value in explanation["attributions"])

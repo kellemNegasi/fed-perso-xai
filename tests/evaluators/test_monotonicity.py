@@ -47,13 +47,13 @@ class ConstantModel:
         return np.full(X_arr.shape[0], self.value, dtype=float)
 
 
-def _explanation(instance, attributions, *, model, baseline=None, target=None):
+def _explanation(instance, attributions, *, model, baseline=None, explained_class=None):
     instance_arr = np.asarray(instance, dtype=float)
     metadata = {}
     if baseline is not None:
         metadata["baseline_instance"] = np.asarray(baseline, dtype=float).tolist()
-    if target is not None:
-        metadata["target"] = target
+    if explained_class is not None:
+        metadata["explained_class"] = explained_class
 
     return {
         "instance": instance_arr.tolist(),

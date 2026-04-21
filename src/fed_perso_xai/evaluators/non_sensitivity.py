@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from ..utils.target_resolution import resolve_explained_class
 from .attribution_utils import (
     FEATURE_METHOD_KEYS,
     extract_attribution_vector,
@@ -25,7 +26,6 @@ from .perturbation import chunk_indices, mask_feature_indices
 from .prediction_utils import (
     extract_prediction_value,
     model_prediction,
-    prediction_label,
 )
 
 
@@ -186,7 +186,7 @@ class NonSensitivityEvaluator(MetricCapabilities):
         *,
         context_cache: Optional[Dict[int, _NonSensitivityContext]] = None,
     ) -> Optional[Dict[str, float]]:
-        context = self._prepare_context(explanation, context_cache)
+        context = self._prepare_context(model, explanation, context_cache)
         if context is None:
             return None
 
@@ -246,6 +246,7 @@ class NonSensitivityEvaluator(MetricCapabilities):
 
     def _prepare_context(
         self,
+        model: Any,
         explanation: Dict[str, Any],
         context_cache: Optional[Dict[int, _NonSensitivityContext]],
     ) -> Optional[_NonSensitivityContext]:
@@ -270,7 +271,7 @@ class NonSensitivityEvaluator(MetricCapabilities):
 
         baseline = self._baseline_vector(explanation, instance)
         zero_indices = np.flatnonzero(np.abs(importance) <= self.zero_threshold)
-        target_class = self._target_class(explanation)
+        target_class = self._target_class(explanation, model, instance)
         original_prediction = self._prediction_value(
             explanation,
             target_class=target_class,
@@ -318,24 +319,19 @@ class NonSensitivityEvaluator(MetricCapabilities):
         )
         return baseline
 
-    def _target_class(self, explanation: Dict[str, Any]) -> int | None:
+    def _target_class(
+        self,
+        explanation: Dict[str, Any],
+        model: Any,
+        instance: np.ndarray,
+    ) -> int | None:
         """
         Resolve the class whose score should be tracked under perturbation.
 
-        The original Perso-XAI implementation defaulted to the positive-class /
-        max-probability convention. We preserve that fallback, but when an explainer
-        records a target class (or a discrete predicted label) we follow that class
-        consistently for both the original and perturbed predictions.
+        This uses the shared resolver so ground-truth labels are never reused as
+        evaluator targets.
         """
-        metadata = explanation.get("metadata") or {}
-        candidate = metadata.get("target")
-        if isinstance(candidate, (np.integer, int)):
-            return int(candidate)
-
-        label = prediction_label(explanation)
-        if isinstance(label, int):
-            return label
-        return None
+        return resolve_explained_class(explanation, model=model, instance=instance)
 
     def _prediction_value(
         self,

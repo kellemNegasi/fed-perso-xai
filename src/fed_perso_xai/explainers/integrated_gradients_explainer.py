@@ -86,6 +86,9 @@ class IntegratedGradientsExplainer(BaseExplainer):
         proba_value = None
         if prediction_proba is not None:
             proba_value = np.asarray(prediction_proba)[0]
+        target_class = self._expl_cfg.get("ig_target_class")
+        if target_class is not None:
+            metadata["explained_class"] = int(target_class)
 
         return self._standardize_explanation_output(
             attributions=attributions.tolist(),
@@ -127,6 +130,9 @@ class IntegratedGradientsExplainer(BaseExplainer):
                 "n_steps": info["n_steps"],
                 "epsilon": info["epsilon"],
             }
+            target_class = self._expl_cfg.get("ig_target_class")
+            if target_class is not None:
+                metadata["explained_class"] = int(target_class)
 
             results.append(
                 self._standardize_explanation_output(

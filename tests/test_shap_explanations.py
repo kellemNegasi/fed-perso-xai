@@ -193,7 +193,8 @@ def test_generate_client_local_shap_explanations_schema_and_metadata(monkeypatch
     assert len(explanation["attributions"]) == client_data.X_test.shape[1]
     assert len(explanation["prediction_proba"]) == 2
     assert "expected_value" in explanation["metadata"]
-    assert "target" in explanation["metadata"]
+    assert "true_label" in explanation["metadata"]
+    assert "explained_class" in explanation["metadata"]
 
     fake_explainer = FakeKernelExplainer.instances[-1]
     assert fake_explainer.last_kwargs["nsamples"] == 32

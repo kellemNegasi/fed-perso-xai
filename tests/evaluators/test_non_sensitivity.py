@@ -40,7 +40,7 @@ class ConstantModel:
         return np.full(X_arr.shape[0], self.value, dtype=float)
 
 
-def _explanation(instance, attributions, *, model=None, baseline=None, target=None):
+def _explanation(instance, attributions, *, model=None, baseline=None, explained_class=None):
     instance_arr = np.asarray(instance, dtype=float)
     explanation = {
         "instance": instance_arr.tolist(),
@@ -49,8 +49,8 @@ def _explanation(instance, attributions, *, model=None, baseline=None, target=No
     }
     if baseline is not None:
         explanation["metadata"]["baseline_instance"] = np.asarray(baseline, dtype=float).tolist()
-    if target is not None:
-        explanation["metadata"]["target"] = int(target)
+    if explained_class is not None:
+        explanation["metadata"]["explained_class"] = int(explained_class)
 
     if model is not None:
         if hasattr(model, "predict_proba"):
@@ -104,7 +104,7 @@ def test_non_sensitivity_uses_target_class_probability_and_grouping() -> None:
         [0.0, 0.4],
         model=model,
         baseline=[0.0, 0.0],
-        target=0,
+        explained_class=0,
     )
     explanation_results = {"method": "causal_shap", "explanations": [explanation]}
 

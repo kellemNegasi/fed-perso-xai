@@ -142,4 +142,5 @@ def test_generate_client_local_causal_shap_explanations_schema_and_metadata(
     assert explanation["metadata"]["coalition_samples"] == 8
     assert explanation["metadata"]["correlation_threshold"] == 0.25
     assert set(explanation["metadata"]["causal_graph"]) == set(feature_names)
-    assert "target" in explanation["metadata"]
+    assert "explained_class" in explanation["metadata"]
+    assert "true_label" in explanation["metadata"]

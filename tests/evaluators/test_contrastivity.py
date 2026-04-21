@@ -11,7 +11,7 @@ def _explanation(
     *,
     prediction=None,
     prediction_proba=None,
-    target=None,
+    true_label=None,
 ):
     explanation = {
         "instance": np.asarray(attributions, dtype=float).tolist(),
@@ -25,8 +25,8 @@ def _explanation(
             prediction_proba,
             dtype=float,
         ).tolist()
-    if target is not None:
-        explanation["metadata"]["target"] = int(target)
+    if true_label is not None:
+        explanation["metadata"]["true_label"] = int(true_label)
     return explanation
 
 
@@ -90,9 +90,9 @@ def test_contrastivity_selects_off_class_references_by_predicted_label() -> None
         "method": "lime",
         "current_index": 0,
         "explanations": [
-            _explanation([1.0, 0.0, 0.0], prediction=0, target=1),
-            _explanation([0.0, 1.0, 0.0], prediction=0, target=0),
-            _explanation([1.0, 0.0, 0.0], prediction=1, target=1),
+            _explanation([1.0, 0.0, 0.0], prediction=0, true_label=1),
+            _explanation([0.0, 1.0, 0.0], prediction=0, true_label=0),
+            _explanation([1.0, 0.0, 0.0], prediction=1, true_label=1),
         ],
     }
 

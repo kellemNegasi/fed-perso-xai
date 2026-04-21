@@ -95,6 +95,10 @@ class SHAPExplainer(BaseExplainer):
         shap_vals = self._select_shap_values(shap_vals_raw, pred_numeric)
         expected = self._explainer.expected_value
         exp_val = self._select_expected_value(expected, pred_numeric)
+        proba_value = proba[0] if proba is not None and len(proba) else None
+        explained_class = self._select_target_class_index()
+        if explained_class is None and proba_value is not None:
+            explained_class = int(np.argmax(np.asarray(proba_value, dtype=float)))
 
         feature_names = self._infer_feature_names(inst2d[0])
         result = self._standardize_explanation_output(
@@ -103,9 +107,16 @@ class SHAPExplainer(BaseExplainer):
             else np.asarray(shap_vals).tolist(),
             instance=inst2d[0],
             prediction=pred[0] if len(pred) else pred,
-            prediction_proba=proba[0] if proba is not None and len(proba) else None,
+            prediction_proba=proba_value,
             feature_names=feature_names,
-            metadata={"expected_value": exp_val},
+            metadata={
+                "expected_value": exp_val,
+                **(
+                    {"explained_class": int(explained_class)}
+                    if explained_class is not None
+                    else {}
+                ),
+            },
             per_instance_time=t_pred + t_shap,
         )
         return result
@@ -134,6 +145,9 @@ class SHAPExplainer(BaseExplainer):
             proba_val = None
             if proba is not None:
                 proba_val = proba[idx] if proba.ndim > 1 else proba
+            explained_class = self._select_target_class_index()
+            if explained_class is None and proba_val is not None:
+                explained_class = int(np.argmax(np.asarray(proba_val, dtype=float)))
             exp_val = self._select_expected_value(expected, np.asarray(preds_numeric[idx : idx + 1]))
             attr_row = shap_vals[idx] if shap_vals.ndim > 1 else shap_vals
             results.append(
@@ -143,7 +157,14 @@ class SHAPExplainer(BaseExplainer):
                     prediction=pred_val,
                     prediction_proba=proba_val,
                     feature_names=self._infer_feature_names(instance),
-                    metadata={"expected_value": exp_val},
+                    metadata={
+                        "expected_value": exp_val,
+                        **(
+                            {"explained_class": int(explained_class)}
+                            if explained_class is not None
+                            else {}
+                        ),
+                    },
                     per_instance_time=0.0,
                 )
             )

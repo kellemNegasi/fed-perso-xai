@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from ..utils.target_resolution import resolve_explained_class
 from .attribution_utils import (
     FEATURE_METHOD_KEYS,
     extract_attribution_vector,
@@ -24,7 +25,6 @@ from .perturbation import mask_feature_indices, top_k_mask_indices
 from .prediction_utils import (
     extract_prediction_value,
     model_prediction,
-    prediction_label,
 )
 
 
@@ -224,7 +224,7 @@ class CorrectnessEvaluator(MetricCapabilities):
         context_cache: Optional[Dict[int, _CorrectnessContext]] = None,
     ) -> Optional[float]:
         """Mask the most important features and return the resulting normalized drop."""
-        context = self._prepare_context(explanation, context_cache)
+        context = self._prepare_context(model, explanation, context_cache)
         if context is None:
             return None
 
@@ -238,6 +238,7 @@ class CorrectnessEvaluator(MetricCapabilities):
 
     def _prepare_context(
         self,
+        model: Any,
         explanation: Dict[str, Any],
         context_cache: Optional[Dict[int, _CorrectnessContext]],
     ) -> Optional[_CorrectnessContext]:
@@ -260,7 +261,7 @@ class CorrectnessEvaluator(MetricCapabilities):
         if not self.fast_mode:
             baseline = self._baseline_vector(explanation, instance)
 
-        target_class = self._target_class(explanation)
+        target_class = self._target_class(explanation, model, instance)
         orig_pred = self._prediction_value(explanation, target_class=target_class)
         if orig_pred is None:
             return None
@@ -449,24 +450,19 @@ class CorrectnessEvaluator(MetricCapabilities):
         )
         return np.full_like(instance, self.default_baseline, dtype=float)
 
-    def _target_class(self, explanation: Dict[str, Any]) -> int | None:
+    def _target_class(
+        self,
+        explanation: Dict[str, Any],
+        model: Any,
+        instance: np.ndarray,
+    ) -> int | None:
         """
         Resolve the class whose score should be tracked under deletion.
 
-        Original Perso-XAI code defaulted to the positive-class / max-probability
-        convention. We preserve that fallback, but when an explainer records a
-        target class (or a discrete predicted label) we follow that class
-        consistently for both the original and perturbed predictions.
+        This uses the shared resolver so ground-truth labels are never reused as
+        evaluator targets.
         """
-        metadata = explanation.get("metadata") or {}
-        candidate = metadata.get("target")
-        if isinstance(candidate, (np.integer, int)):
-            return int(candidate)
-
-        label = prediction_label(explanation)
-        if isinstance(label, int):
-            return label
-        return None
+        return resolve_explained_class(explanation, model=model, instance=instance)
 
     def _prediction_value(
         self,

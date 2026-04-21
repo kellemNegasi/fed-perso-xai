@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from ..utils.target_resolution import resolve_explained_class
 from .attribution_utils import (
     FEATURE_METHOD_KEYS,
     extract_attribution_vector,
@@ -29,7 +30,6 @@ from .prediction_utils import (
     extract_prediction_value,
     model_prediction,
     model_predictions,
-    prediction_label,
 )
 
 
@@ -347,7 +347,7 @@ class MonotonicityEvaluator(MetricCapabilities):
             return None
 
         baseline = self._baseline_vector(explanation, instance, dataset=dataset)
-        target_class = self._target_class(explanation)
+        target_class = self._target_class(explanation, model, instance)
         original_prediction = self._original_prediction(
             model,
             explanation,
@@ -399,24 +399,19 @@ class MonotonicityEvaluator(MetricCapabilities):
             log_prefix="MonotonicityEvaluator",
         )
 
-    def _target_class(self, explanation: Dict[str, Any]) -> int | None:
+    def _target_class(
+        self,
+        explanation: Dict[str, Any],
+        model: Any,
+        instance: np.ndarray,
+    ) -> int | None:
         """
         Resolve the class whose score should be tracked under perturbation.
 
-        Original Perso-XAI code defaulted to the positive-class / max-probability
-        convention. We preserve that fallback, but when an explainer records a
-        target class (or a discrete predicted label) we follow that class
-        consistently for both the original and perturbed predictions.
+        This uses the shared resolver so ground-truth labels are never reused as
+        evaluator targets.
         """
-        metadata = explanation.get("metadata") or {}
-        candidate = metadata.get("target")
-        if isinstance(candidate, (np.integer, int)):
-            return int(candidate)
-
-        label = prediction_label(explanation)
-        if isinstance(label, int):
-            return label
-        return None
+        return resolve_explained_class(explanation, model=model, instance=instance)
 
     def _original_prediction(
         self,

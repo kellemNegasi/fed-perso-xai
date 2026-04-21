@@ -77,6 +77,8 @@ class CausalSHAPExplainer(BaseExplainer):
             "coalition_samples": info["coalition_samples"],
             "correlation_threshold": info["correlation_threshold"],
         }
+        if proba_value is not None:
+            metadata["explained_class"] = int(np.argmax(np.asarray(proba_value, dtype=float)))
 
         return self._standardize_explanation_output(
             attributions=attributions.tolist(),
@@ -123,6 +125,10 @@ class CausalSHAPExplainer(BaseExplainer):
                 "coalition_samples": info["coalition_samples"],
                 "correlation_threshold": info["correlation_threshold"],
             }
+            if proba_value is not None:
+                metadata["explained_class"] = int(
+                    np.argmax(np.asarray(proba_value, dtype=float))
+                )
 
             results.append(
                 self._standardize_explanation_output(

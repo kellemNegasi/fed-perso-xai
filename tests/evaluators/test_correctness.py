@@ -91,7 +91,7 @@ def test_correctness_uses_target_class_and_stable_tie_breaking() -> None:
                 "prediction": 0,
                 "prediction_proba": proba.tolist(),
                 "metadata": {
-                    "target": 0,
+                    "explained_class": 0,
                     "baseline_instance": [0.0, 0.0, 0.0],
                 },
             }
@@ -115,6 +115,45 @@ def test_correctness_uses_target_class_and_stable_tie_breaking() -> None:
 
     assert scores["correctness"] == pytest.approx(expected, abs=1e-9)
     assert scores["correctness"] != pytest.approx(feature1_score, abs=1e-6)
+
+
+def test_correctness_ignores_legacy_target_field_for_misclassified_samples() -> None:
+    model = LinearProbModel(weights=[1.0, 0.0])
+    instance = np.array([2.0, 1.0], dtype=float)
+    proba = model.predict_proba(instance.reshape(1, -1))[0]
+
+    explanation_results = {
+        "method": "shap",
+        "explanations": [
+            {
+                "attributions": [0.9, 0.1],
+                "instance": instance.tolist(),
+                "prediction": 1,
+                "prediction_proba": proba.tolist(),
+                "metadata": {
+                    "true_label": 0,
+                    "target": 0,
+                    "baseline_instance": [0.0, 0.0],
+                },
+            }
+        ],
+    }
+
+    evaluator = CorrectnessEvaluator(removal_fraction=0.5, default_baseline=0.0, fast_mode=False)
+    scores = evaluator.evaluate(model, explanation_results, dataset=None, explainer=None)
+
+    perturbed = instance.copy()
+    perturbed[0] = 0.0
+    expected = abs(proba[1] - model.predict_proba(perturbed.reshape(1, -1))[0, 1]) / (
+        abs(proba[1]) + 1e-8
+    )
+    legacy_target_score = abs(proba[0] - model.predict_proba(perturbed.reshape(1, -1))[0, 0]) / (
+        abs(proba[0]) + 1e-8
+    )
+    legacy_target_score = float(np.clip(legacy_target_score, 0.0, 1.0))
+
+    assert scores["correctness"] == pytest.approx(expected, abs=1e-9)
+    assert scores["correctness"] != pytest.approx(legacy_target_score, abs=1e-9)
 
 
 def test_correctness_alias_reports_custom_metric_key() -> None:

@@ -85,7 +85,7 @@ def _explanation_payload():
             "prediction": 1,
             "prediction_proba": [0.3, 0.7],
             "metadata": {
-                "target": 1,
+                "true_label": 1,
                 "baseline_instance": [0.0, 0.0, 0.0],
             },
         },
@@ -97,7 +97,7 @@ def _explanation_payload():
             "prediction": 0,
             "prediction_proba": [0.8, 0.2],
             "metadata": {
-                "target": 0,
+                "true_label": 0,
                 "baseline_instance": [0.0, 0.0, 0.0],
             },
         },

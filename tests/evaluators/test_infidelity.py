@@ -39,13 +39,13 @@ class ConstantModel:
         return np.full(X_arr.shape[0], self.value, dtype=float)
 
 
-def _explanation(instance, attributions, *, model=None, baseline=None, target=None):
+def _explanation(instance, attributions, *, model=None, baseline=None, explained_class=None):
     instance_arr = np.asarray(instance, dtype=float)
     metadata = {}
     if baseline is not None:
         metadata["baseline_instance"] = np.asarray(baseline, dtype=float).tolist()
-    if target is not None:
-        metadata["target"] = target
+    if explained_class is not None:
+        metadata["explained_class"] = explained_class
 
     explanation = {
         "instance": instance_arr.tolist(),
@@ -130,7 +130,7 @@ def test_infidelity_uses_target_class_probability_when_available() -> None:
         class_zero_attributions,
         model=model,
         baseline=[0.0, 0.0],
-        target=0,
+        explained_class=0,
     )
     explanation_results = {"method": "causal_shap", "explanations": [explanation]}
 
