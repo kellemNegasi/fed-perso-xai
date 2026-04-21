@@ -42,6 +42,7 @@ from .prediction_utils import (
     model_predictions,
     prediction_label,
     prediction_value_from_probabilities,
+    resolve_scalar_prediction_score,
 )
 from .registry import DEFAULT_METRIC_REGISTRY, MetricRegistry, load_metric_config
 from .utils import (
@@ -99,6 +100,7 @@ __all__ = [
     "prediction_label",
     "prediction_value_from_probabilities",
     "prepare_attributions",
+    "resolve_scalar_prediction_score",
     "safe_scalar",
     "sample_random_mask_indices",
     "structural_similarity",

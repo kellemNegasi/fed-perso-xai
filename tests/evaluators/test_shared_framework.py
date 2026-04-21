@@ -26,6 +26,7 @@ from fed_perso_xai.evaluators import (
     model_predictions,
     prediction_label,
     prepare_attributions,
+    resolve_scalar_prediction_score,
     sample_random_mask_indices,
     support_indices,
     top_k_mask_indices,
@@ -159,6 +160,21 @@ def test_prediction_helpers_choose_probabilities_then_decision_function_then_pre
 
     predict_values = model_predictions(PredictOnlyModel(), batch, prefer_probability=True)
     np.testing.assert_allclose(predict_values, np.array([1.0, 0.0]))
+
+
+def test_resolve_scalar_prediction_score_prefers_model_scores_over_cached_labels() -> None:
+    model = PredictProbaModel()
+    instance = np.array([1.0, 0.0], dtype=float)
+    explanation = {"prediction": 1}
+
+    resolved = resolve_scalar_prediction_score(
+        explanation,
+        model=model,
+        instance=instance,
+        target_class=1,
+    )
+
+    assert resolved == pytest.approx(model_prediction(model, instance, target_class=1))
 
 
 def test_baseline_and_perturbation_helpers_are_reproducible() -> None:

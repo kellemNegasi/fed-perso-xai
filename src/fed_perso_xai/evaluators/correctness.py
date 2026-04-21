@@ -23,8 +23,8 @@ from .attribution_utils import (
 from .base_metric import MetricCapabilities, MetricInput
 from .perturbation import mask_feature_indices, top_k_mask_indices
 from .prediction_utils import (
-    extract_prediction_value,
     model_prediction,
+    resolve_scalar_prediction_score,
 )
 
 
@@ -61,6 +61,13 @@ class CorrectnessEvaluator(MetricCapabilities):
         in the explanation metadata (via ``baseline_instance``).
     min_features : int
         Minimum number of features to mask, regardless of ``removal_fraction``.
+
+    Notes
+    -----
+    The scalar quantity tracked under deletion is the same in both execution
+    modes: target-class probability/score for classification when available,
+    otherwise the scalar regression prediction. ``fast_mode`` is therefore a
+    performance optimization only; it must not change the prediction semantics.
     """
 
     per_instance = True
@@ -94,6 +101,10 @@ class CorrectnessEvaluator(MetricCapabilities):
         min_features : int, optional
             Enforce a minimum number of masked features even if ``removal_fraction``
             would suggest fewer.
+        fast_mode : bool, optional
+            Reuse cached context and explanation-provided probability scores when
+            available, while preserving the same scalar target-score semantics as
+            the full deletion path.
         """
         if isinstance(removal_fraction, bool):
             # avoid treating booleans as integers; coerce to float fraction
@@ -257,12 +268,15 @@ class CorrectnessEvaluator(MetricCapabilities):
         k = self._num_features_to_mask(len(importance_vec))
         top_indices = top_k_mask_indices(importance_vec, k)
 
-        baseline = None
-        if not self.fast_mode:
-            baseline = self._baseline_vector(explanation, instance)
+        baseline = self._baseline_vector(explanation, instance)
 
         target_class = self._target_class(explanation, model, instance)
-        orig_pred = self._prediction_value(explanation, target_class=target_class)
+        orig_pred = self._prediction_value(
+            model,
+            explanation,
+            instance,
+            target_class=target_class,
+        )
         if orig_pred is None:
             return None
 
@@ -359,20 +373,12 @@ class CorrectnessEvaluator(MetricCapabilities):
         explanation: Dict[str, Any],
         context: _CorrectnessContext,
     ) -> Optional[float]:
-        prediction = explanation.get("prediction")
-        if prediction is not None:
-            arr = np.asarray(prediction).ravel()
-            if arr.size:
-                try:
-                    return float(arr[0])
-                except Exception:
-                    pass
-        # Fallback to the richer probability-aware estimate prepared for the slow path.
         if context.original_prediction is not None:
             return float(context.original_prediction)
         try:
-            return self._fast_model_prediction(
+            return self._prediction_value(
                 model,
+                explanation,
                 context.instance,
                 target_class=context.target_class,
             )
@@ -386,12 +392,6 @@ class CorrectnessEvaluator(MetricCapabilities):
         *,
         target_class: int | None,
     ) -> float:
-        batch = instance.reshape(1, -1)
-        if hasattr(model, "predict"):
-            preds = np.asarray(model.predict(batch)).ravel()
-            if preds.size == 0:
-                raise ValueError("Model.predict returned empty output.")
-            return float(preds[0])
         return self._model_prediction(model, instance, target_class=target_class)
 
     def _fast_baseline_vector(
@@ -399,13 +399,8 @@ class CorrectnessEvaluator(MetricCapabilities):
         explanation: Dict[str, Any],
         instance: np.ndarray,
     ) -> np.ndarray:
-        metadata = explanation.get("metadata") or {}
-        baseline = metadata.get("baseline_instance")
-        if baseline is not None:
-            arr = np.asarray(baseline, dtype=float).reshape(-1)
-            if arr.shape == instance.shape:
-                return arr
-        return np.zeros_like(instance)
+        # Fast mode must preserve the same masking semantics as the slow path.
+        return self._baseline_vector(explanation, instance)
 
     def _num_features_to_mask(self, n_features: int) -> int:
         """
@@ -466,7 +461,9 @@ class CorrectnessEvaluator(MetricCapabilities):
 
     def _prediction_value(
         self,
+        model: Any,
         explanation: Dict[str, Any],
+        instance: np.ndarray,
         *,
         target_class: int | None,
     ) -> Optional[float]:
@@ -474,8 +471,10 @@ class CorrectnessEvaluator(MetricCapabilities):
         Scalar value to track under feature removal.
         Prefer class probability if available; otherwise use the raw prediction.
         """
-        value = extract_prediction_value(
+        value = resolve_scalar_prediction_score(
             explanation,
+            model=model,
+            instance=instance,
             target_class=target_class,
             prefer_probability=True,
         )

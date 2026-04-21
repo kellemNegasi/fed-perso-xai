@@ -9,6 +9,19 @@ from typing import Any, Optional
 import numpy as np
 
 
+def _model_has_score_outputs(
+    model: Any,
+    *,
+    prefer_probability: bool = True,
+) -> bool:
+    """Return whether the model can emit score/probability outputs beyond hard labels."""
+    if model is None:
+        return False
+    if prefer_probability and hasattr(model, "predict_proba"):
+        return True
+    return hasattr(model, "decision_function")
+
+
 def extract_prediction_value(
     explanation: dict[str, Any],
     *,
@@ -35,6 +48,69 @@ def extract_prediction_value(
         return float(arr[0])
     except Exception:
         return None
+
+
+def resolve_scalar_prediction_score(
+    explanation: dict[str, Any] | None = None,
+    *,
+    model: Any = None,
+    instance: Any = None,
+    target_class: int | None = None,
+    prefer_probability: bool = True,
+) -> Optional[float]:
+    """
+    Resolve the scalar prediction value tracked by deletion-style metrics.
+
+    The canonical quantity follows the original evaluator intent: use the
+    target-class probability/score for classification when available, otherwise
+    use the scalar model prediction. Cached explanation probabilities are reused
+    when present. Hard labels from ``prediction`` are only used as a fallback
+    when neither the explanation nor the model can provide a richer score.
+    """
+    if explanation is not None and prefer_probability:
+        proba = explanation.get("prediction_proba")
+        if proba is not None:
+            value = prediction_value_from_probabilities(
+                proba,
+                target_class=target_class,
+            )
+            if value is not None:
+                return float(value)
+
+    should_query_model = (
+        model is not None
+        and instance is not None
+        and (
+            _model_has_score_outputs(
+                model,
+                prefer_probability=prefer_probability,
+            )
+            or explanation is None
+        )
+    )
+    if should_query_model:
+        try:
+            return float(
+                model_prediction(
+                    model,
+                    np.asarray(instance, dtype=float),
+                    target_class=target_class,
+                    prefer_probability=prefer_probability,
+                )
+            )
+        except Exception:
+            pass
+
+    if explanation is None:
+        return None
+    value = extract_prediction_value(
+        explanation,
+        target_class=target_class,
+        prefer_probability=prefer_probability,
+    )
+    if value is None:
+        return None
+    return float(value)
 
 
 def prediction_value_from_probabilities(

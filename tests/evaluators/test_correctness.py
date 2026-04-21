@@ -17,6 +17,9 @@ class LinearProbModel:
         probs = 1.0 / (1.0 + np.exp(-logits))
         return np.column_stack([1.0 - probs, probs])
 
+    def predict(self, X):
+        return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
+
 
 class ThreeClassFeatureModel:
     def predict_proba(self, X):
@@ -30,6 +33,19 @@ class ThreeClassFeatureModel:
         )
         scores = np.clip(scores, 1.0e-8, None)
         return scores / np.sum(scores, axis=1, keepdims=True)
+
+    def predict(self, X):
+        return np.argmax(self.predict_proba(X), axis=1)
+
+
+class RegressionModel:
+    def __init__(self, weights, bias=0.0):
+        self.weights = np.asarray(weights, dtype=float)
+        self.bias = float(bias)
+
+    def predict(self, X):
+        X_arr = np.asarray(X, dtype=float)
+        return X_arr @ self.weights + self.bias
 
 
 def test_correctness_metrics_are_registered_and_alias_is_instantiable() -> None:
@@ -234,3 +250,167 @@ def test_correctness_handles_zero_denominator_top_k_overflow_and_baseline_fallba
 
     assert first_scores["correctness"] == pytest.approx(expected, abs=1e-9)
     assert second_scores["correctness"] == pytest.approx(0.0)
+
+
+def test_correctness_fast_mode_matches_slow_mode_for_binary_score_space() -> None:
+    model = LinearProbModel(weights=[1.2, -0.4, 0.1], bias=-0.2)
+    instance = np.array([1.5, -0.5, 0.25], dtype=float)
+    prediction = int(model.predict(instance.reshape(1, -1))[0])
+    default_baseline = -0.75
+    explanation_results = {
+        "method": "shap",
+        "explanations": [
+            {
+                "attributions": [0.8, 0.2, 0.1],
+                "instance": instance.tolist(),
+                "prediction": prediction,
+                "metadata": {"true_label": 0},
+            }
+        ],
+    }
+
+    fast_evaluator = CorrectnessEvaluator(
+        removal_fraction=0.5,
+        default_baseline=default_baseline,
+        fast_mode=True,
+    )
+    slow_evaluator = CorrectnessEvaluator(
+        removal_fraction=0.5,
+        default_baseline=default_baseline,
+        fast_mode=False,
+    )
+
+    fast_score = fast_evaluator.evaluate(model, explanation_results)["correctness"]
+    slow_score = slow_evaluator.evaluate(model, explanation_results)["correctness"]
+
+    perturbed = instance.copy()
+    perturbed[[0, 1]] = default_baseline
+    orig_pred = model.predict_proba(instance.reshape(1, -1))[0, 1]
+    new_pred = model.predict_proba(perturbed.reshape(1, -1))[0, 1]
+    expected = abs(orig_pred - new_pred) / (abs(orig_pred) + 1e-8)
+
+    assert fast_score == pytest.approx(expected, abs=1e-9)
+    assert slow_score == pytest.approx(expected, abs=1e-9)
+
+
+def test_correctness_fast_mode_matches_slow_mode_for_multiclass_target_score() -> None:
+    model = ThreeClassFeatureModel()
+    instance = np.array([3.0, 1.0, 0.5], dtype=float)
+    default_baseline = -1.0
+    explanation_results = {
+        "method": "causal_shap",
+        "explanations": [
+            {
+                "attributions": [0.7, 0.4, 0.1],
+                "instance": instance.tolist(),
+                "prediction": 2,
+                "metadata": {"explained_class": 0},
+            }
+        ],
+    }
+
+    fast_evaluator = CorrectnessEvaluator(
+        removal_fraction=1,
+        default_baseline=default_baseline,
+        fast_mode=True,
+    )
+    slow_evaluator = CorrectnessEvaluator(
+        removal_fraction=1,
+        default_baseline=default_baseline,
+        fast_mode=False,
+    )
+
+    fast_score = fast_evaluator.evaluate(model, explanation_results)["correctness"]
+    slow_score = slow_evaluator.evaluate(model, explanation_results)["correctness"]
+
+    perturbed = instance.copy()
+    perturbed[0] = default_baseline
+    orig_pred = model.predict_proba(instance.reshape(1, -1))[0, 0]
+    new_pred = model.predict_proba(perturbed.reshape(1, -1))[0, 0]
+    expected = abs(orig_pred - new_pred) / (abs(orig_pred) + 1e-8)
+
+    assert fast_score == pytest.approx(expected, abs=1e-9)
+    assert slow_score == pytest.approx(expected, abs=1e-9)
+
+
+def test_correctness_fast_mode_ignores_ground_truth_for_misclassified_samples() -> None:
+    model = LinearProbModel(weights=[1.0, 0.0], bias=0.1)
+    instance = np.array([2.0, 1.0], dtype=float)
+    explanation_results = {
+        "method": "shap",
+        "explanations": [
+            {
+                "attributions": [0.9, 0.1],
+                "instance": instance.tolist(),
+                "prediction": 1,
+                "metadata": {
+                    "true_label": 0,
+                    "target": 0,
+                    "baseline_instance": [0.0, 0.0],
+                },
+            }
+        ],
+    }
+
+    fast_score = CorrectnessEvaluator(
+        removal_fraction=0.5,
+        default_baseline=0.0,
+        fast_mode=True,
+    ).evaluate(model, explanation_results)["correctness"]
+    slow_score = CorrectnessEvaluator(
+        removal_fraction=0.5,
+        default_baseline=0.0,
+        fast_mode=False,
+    ).evaluate(model, explanation_results)["correctness"]
+
+    proba = model.predict_proba(instance.reshape(1, -1))[0]
+    perturbed = instance.copy()
+    perturbed[0] = 0.0
+    expected = abs(proba[1] - model.predict_proba(perturbed.reshape(1, -1))[0, 1]) / (
+        abs(proba[1]) + 1e-8
+    )
+    legacy_target = abs(proba[0] - model.predict_proba(perturbed.reshape(1, -1))[0, 0]) / (
+        abs(proba[0]) + 1e-8
+    )
+
+    assert fast_score == pytest.approx(expected, abs=1e-9)
+    assert slow_score == pytest.approx(expected, abs=1e-9)
+    assert fast_score != pytest.approx(legacy_target, abs=1e-9)
+
+
+def test_correctness_fast_mode_matches_slow_mode_for_regression_predictions() -> None:
+    model = RegressionModel(weights=[2.0, -1.0], bias=0.5)
+    instance = np.array([3.0, 1.0], dtype=float)
+    default_baseline = -2.0
+    explanation_results = {
+        "method": "lime",
+        "explanations": [
+            {
+                "attributions": [0.8, 0.1],
+                "instance": instance.tolist(),
+                "prediction": float(model.predict(instance.reshape(1, -1))[0]),
+            }
+        ],
+    }
+
+    fast_score = CorrectnessEvaluator(
+        removal_fraction=1,
+        default_baseline=default_baseline,
+        fast_mode=True,
+    ).evaluate(model, explanation_results)["correctness"]
+    slow_score = CorrectnessEvaluator(
+        removal_fraction=1,
+        default_baseline=default_baseline,
+        fast_mode=False,
+    ).evaluate(model, explanation_results)["correctness"]
+
+    perturbed = instance.copy()
+    perturbed[0] = default_baseline
+    orig_pred = float(model.predict(instance.reshape(1, -1))[0])
+    new_pred = float(model.predict(perturbed.reshape(1, -1))[0])
+    expected = float(
+        np.clip(abs(orig_pred - new_pred) / (abs(orig_pred) + 1e-8), 0.0, 1.0)
+    )
+
+    assert fast_score == pytest.approx(expected, abs=1e-9)
+    assert slow_score == pytest.approx(expected, abs=1e-9)

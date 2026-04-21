@@ -25,9 +25,9 @@ from .base_metric import MetricCapabilities, MetricInput
 from .baselines import baseline_vector
 from .perturbation import build_metric_rng, generate_random_masked_batch, support_indices
 from .prediction_utils import (
-    extract_prediction_value,
     model_prediction,
     model_predictions,
+    resolve_scalar_prediction_score,
 )
 
 
@@ -228,7 +228,7 @@ class CompletenessEvaluator(MetricCapabilities):
         context_cache: Optional[Dict[int, _CompletenessContext]] = None,
     ) -> Optional[Dict[str, float]]:
         if self.fast_mode:
-            metrics = self._fast_metrics_for_explanation(explanation)
+            metrics = self._fast_metrics_for_explanation(model, explanation)
             if metrics is not None:
                 return metrics
             # fall back to exact computation if heuristic failed
@@ -281,7 +281,12 @@ class CompletenessEvaluator(MetricCapabilities):
 
         baseline = self._baseline_vector(explanation, instance)
         target_class = self._target_class(explanation, model, instance)
-        orig_pred = self._prediction_value(explanation, target_class=target_class)
+        orig_pred = self._prediction_value(
+            explanation,
+            model=model,
+            instance=instance,
+            target_class=target_class,
+        )
         if orig_pred is None:
             return None
 
@@ -350,10 +355,14 @@ class CompletenessEvaluator(MetricCapabilities):
         self,
         explanation: Dict[str, Any],
         *,
+        model: Any | None = None,
+        instance: np.ndarray | None = None,
         target_class: int | None,
     ) -> Optional[float]:
-        value = extract_prediction_value(
+        value = resolve_scalar_prediction_score(
             explanation,
+            model=model,
+            instance=instance,
             target_class=target_class,
             prefer_probability=True,
         )
@@ -454,7 +463,9 @@ class CompletenessEvaluator(MetricCapabilities):
         )
 
     def _fast_metrics_for_explanation(
-        self, explanation: Dict[str, Any]
+        self,
+        model: Any,
+        explanation: Dict[str, Any],
     ) -> Optional[Dict[str, float]]:
         importance = self._importance_vector(explanation)
         if importance is None or importance.size == 0:
@@ -472,8 +483,13 @@ class CompletenessEvaluator(MetricCapabilities):
             }
 
         instance = self._extract_instance(explanation)
-        target_class = resolve_explained_class(explanation, instance=instance)
-        prediction_value = self._prediction_value(explanation, target_class=target_class)
+        target_class = resolve_explained_class(explanation, model=model, instance=instance)
+        prediction_value = self._prediction_value(
+            explanation,
+            model=model,
+            instance=instance,
+            target_class=target_class,
+        )
         if prediction_value is None:
             return None
 
