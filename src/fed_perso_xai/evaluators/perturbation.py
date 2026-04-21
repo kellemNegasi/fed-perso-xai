@@ -40,7 +40,8 @@ def top_k_mask_indices(importance: np.ndarray, k: int) -> np.ndarray:
     k = max(0, min(int(k), vec.size))
     if k == 0:
         return np.asarray([], dtype=int)
-    return np.argsort(-np.abs(vec))[:k]
+    # Use a stable sort so tied magnitudes preserve feature order deterministically.
+    return np.argsort(-np.abs(vec), kind="stable")[:k]
 
 
 def support_indices(
@@ -56,7 +57,8 @@ def support_indices(
     if indices.size >= int(min_features):
         return indices
 
-    order = np.argsort(-magnitudes)
+    # Use a stable sort so tied magnitudes preserve feature order deterministically.
+    order = np.argsort(-magnitudes, kind="stable")
     needed = max(int(min_features), 1)
     return order[: min(needed, magnitudes.size)]
 
