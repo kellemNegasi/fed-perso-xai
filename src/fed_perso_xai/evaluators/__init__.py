@@ -23,6 +23,7 @@ from .factory import make_metric, metric_capabilities
 from .infidelity import InfidelityEvaluator
 from .monotonicity import MonotonicityEvaluator
 from .non_sensitivity import NonSensitivityEvaluator
+from .relative_stability import RelativeInputStabilityEvaluator
 from .perturbation import (
     add_scaled_gaussian_noise,
     approximate_perturbed_attributions,
@@ -66,6 +67,7 @@ __all__ = [
     "InfidelityEvaluator",
     "MonotonicityEvaluator",
     "NonSensitivityEvaluator",
+    "RelativeInputStabilityEvaluator",
     "MetricCapabilities",
     "MetricExecutionResult",
     "MetricInput",
