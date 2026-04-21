@@ -28,6 +28,7 @@ from fed_perso_xai.evaluators import (
     sample_random_mask_indices,
     support_indices,
     top_k_mask_indices,
+    InfidelityEvaluator,
 )
 
 
@@ -260,6 +261,4 @@ def test_metric_registry_and_config_support_are_present() -> None:
     assert loaded["contrastivity_ssim"]["params"]["similarity_func"] == (
         "fed_perso_xai.evaluators.utils.structural_similarity"
     )
-
-    with pytest.raises(NotImplementedError, match="has not been ported"):
-        make_metric("infidelity")
+    assert isinstance(make_metric("infidelity"), InfidelityEvaluator)
