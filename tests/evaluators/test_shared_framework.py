@@ -76,6 +76,17 @@ class DummyBatchMetric(MetricCapabilities):
         return {"batch_metric": float(len(metric_input.explanations))}
 
 
+class DummyHybridMetric(MetricCapabilities):
+    per_instance = True
+    requires_full_batch = True
+    metric_names = ("hybrid_metric",)
+
+    def _evaluate(self, metric_input: MetricInput):
+        if metric_input.explanation_idx is not None:
+            return {"hybrid_metric": float(metric_input.explanation_idx)}
+        return {"hybrid_metric": float(len(metric_input.explanations) * 10)}
+
+
 def _explanation_payload():
     explanations = [
         {
@@ -266,6 +277,179 @@ def test_execution_plumbing_routes_per_instance_and_batch_metrics() -> None:
     assert result.instance_metrics[100][0]["instance_metric"] == 0.0
     assert result.instance_metrics[101][1]["instance_metric"] == 1.0
     assert result.instance_metrics[101][1]["cache_calls"] == 2.0
+
+
+def test_execution_plumbing_runs_hybrid_metrics_through_both_paths() -> None:
+    payload = _explanation_payload()
+    result = evaluate_metrics_for_method(
+        metric_objs={"hybrid_metric": DummyHybridMetric()},
+        metric_caps={"hybrid_metric": metric_capabilities(DummyHybridMetric())},
+        explainer=None,
+        expl_results=payload,
+        dataset_mapping={
+            100: (0, payload["explanations"][0]),
+            101: (1, payload["explanations"][1]),
+        },
+        model=PredictProbaModel(),
+        dataset=None,
+        method_label="shap",
+        log_progress=False,
+    )
+
+    assert result.batch_metrics == {"hybrid_metric": 20.0}
+    assert result.instance_metrics == {
+        100: {0: {"hybrid_metric": 0.0}},
+        101: {1: {"hybrid_metric": 1.0}},
+    }
+
+
+def test_execution_plumbing_preserves_non_hybrid_metric_behavior() -> None:
+    payload = _explanation_payload()
+    result = evaluate_metrics_for_method(
+        metric_objs={
+            "instance_metric": DummyInstanceMetric(),
+            "batch_metric": DummyBatchMetric(),
+        },
+        metric_caps={
+            "instance_metric": metric_capabilities(DummyInstanceMetric()),
+            "batch_metric": metric_capabilities(DummyBatchMetric()),
+        },
+        explainer=None,
+        expl_results=payload,
+        dataset_mapping={100: (0, payload["explanations"][0])},
+        model=PredictProbaModel(),
+        dataset=None,
+        method_label="shap",
+        log_progress=False,
+    )
+
+    assert result.batch_metrics == {"batch_metric": 2.0}
+    assert result.instance_metrics == {
+        100: {
+            0: {
+                "instance_metric": 0.0,
+                "cache_calls": 1.0,
+            }
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("metric_name", "metric", "payload", "dataset_mapping", "batch_expectations", "instance_expectations"),
+    [
+        (
+            "consistency",
+            ConsistencyEvaluator(discretise_kwargs={"n": 2}),
+            {
+                "method": "shap",
+                "explanations": [
+                    {
+                        "instance": [1.0, 0.0],
+                        "attributions": [1.0, 0.0],
+                        "prediction": 0,
+                        "metadata": {},
+                    },
+                    {
+                        "instance": [2.0, 0.0],
+                        "attributions": [2.0, 0.0],
+                        "prediction": 0,
+                        "metadata": {},
+                    },
+                    {
+                        "instance": [3.0, 0.0],
+                        "attributions": [3.0, 0.0],
+                        "prediction": 1,
+                        "metadata": {},
+                    },
+                    {
+                        "instance": [0.0, 1.0],
+                        "attributions": [0.0, 1.0],
+                        "prediction": 1,
+                        "metadata": {},
+                    },
+                ],
+            },
+            {
+                10: (0, {"prediction": 0}),
+                11: (1, {"prediction": 0}),
+                12: (2, {"prediction": 1}),
+                13: (3, {"prediction": 1}),
+            },
+            {"consistency": pytest.approx(0.25, abs=1e-12)},
+            {
+                10: {0: {"consistency": pytest.approx(0.5, abs=1e-12)}},
+                11: {1: {"consistency": pytest.approx(0.5, abs=1e-12)}},
+                12: {2: {"consistency": pytest.approx(0.0, abs=1e-12)}},
+                13: {3: {"consistency": pytest.approx(0.0, abs=1e-12)}},
+            },
+        ),
+        (
+            "contrastivity",
+            make_metric("contrastivity_ssim"),
+            {
+                "method": "shap",
+                "explanations": [
+                    {
+                        "instance": [1.0, 0.0, 0.0],
+                        "attributions": [1.0, 0.0, 0.0],
+                        "prediction": 0,
+                        "metadata": {},
+                    },
+                    {
+                        "instance": [0.0, 1.0, 0.0],
+                        "attributions": [0.0, 1.0, 0.0],
+                        "prediction": 1,
+                        "metadata": {},
+                    },
+                ],
+            },
+            {
+                20: (0, {"prediction": 0}),
+                21: (1, {"prediction": 1}),
+            },
+            {
+                "contrastivity": pytest.approx(1.0, abs=1e-9),
+                "contrastivity_pairs": pytest.approx(6.0, abs=1e-9),
+            },
+            {
+                20: {
+                    0: {
+                        "contrastivity": pytest.approx(1.0, abs=1e-9),
+                        "contrastivity_pairs": pytest.approx(3.0, abs=1e-9),
+                    }
+                },
+                21: {
+                    1: {
+                        "contrastivity": pytest.approx(1.0, abs=1e-9),
+                        "contrastivity_pairs": pytest.approx(3.0, abs=1e-9),
+                    }
+                },
+            },
+        ),
+    ],
+)
+def test_execution_plumbing_runs_actual_hybrid_metrics_for_instance_and_batch_outputs(
+    metric_name: str,
+    metric,
+    payload,
+    dataset_mapping,
+    batch_expectations,
+    instance_expectations,
+) -> None:
+    result = evaluate_metrics_for_method(
+        metric_objs={metric_name: metric},
+        metric_caps={metric_name: metric_capabilities(metric)},
+        explainer=None,
+        expl_results=payload,
+        dataset_mapping=dataset_mapping,
+        model=PredictProbaModel(),
+        dataset=None,
+        method_label="shap",
+        log_progress=False,
+    )
+
+    assert result.batch_metrics == batch_expectations
+    assert result.instance_metrics == instance_expectations
 
 
 def test_metric_registry_and_config_support_are_present() -> None:

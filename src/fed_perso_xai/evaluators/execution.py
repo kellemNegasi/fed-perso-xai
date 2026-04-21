@@ -46,8 +46,10 @@ def evaluate_metrics_for_method(
     Returns
     -------
     batch_metrics : Dict[str, float]
+        Batch-level outputs. Hybrid metrics may also populate this map.
     instance_metrics : Dict[int, Dict[int, Dict[str, float]]]
         Mapping dataset_index -> explanation_index (local_idx) -> metric values.
+        Hybrid metrics may populate both maps in the same execution pass.
     """
     batch_metrics: Dict[str, float] = {}
     instance_metrics: Dict[int, Dict[int, Dict[str, float]]] = {}
@@ -93,21 +95,19 @@ def evaluate_metrics_for_method(
                     dataset_bucket = instance_metrics.setdefault(int(dataset_idx), {})
                     metrics_bucket = dataset_bucket.setdefault(int(local_idx), {})
                     metrics_bucket.update(values)
-            continue
 
-        if not caps["requires_full_batch"]:
-            continue
-        if log_progress:
-            LOGGER.info("Running %s metric (batch) for %s", metric_name, method_label)
-        out = evaluate_metric(
-            metric,
-            model=model,
-            explanation_results=expl_results,
-            dataset=dataset,
-            explainer=explainer,
-            cache=shared_cache,
-        )
-        batch_metrics.update(coerce_metric_dict(out))
+        if caps["requires_full_batch"]:
+            if log_progress:
+                LOGGER.info("Running %s metric (batch) for %s", metric_name, method_label)
+            out = evaluate_metric(
+                metric,
+                model=model,
+                explanation_results=expl_results,
+                dataset=dataset,
+                explainer=explainer,
+                cache=shared_cache,
+            )
+            batch_metrics.update(coerce_metric_dict(out))
 
     return MetricExecutionResult(batch_metrics=batch_metrics, instance_metrics=instance_metrics)
 
