@@ -17,6 +17,7 @@ from .covariate_complexity import CovariateComplexityEvaluator
 from .execution import MetricExecutionResult, evaluate_metric, evaluate_metrics_for_method
 from .factory import make_metric, metric_capabilities
 from .infidelity import InfidelityEvaluator
+from .monotonicity import MonotonicityEvaluator
 from .non_sensitivity import NonSensitivityEvaluator
 from .perturbation import (
     add_scaled_gaussian_noise,
@@ -55,6 +56,7 @@ __all__ = [
     "CorrectnessEvaluator",
     "CovariateComplexityEvaluator",
     "InfidelityEvaluator",
+    "MonotonicityEvaluator",
     "NonSensitivityEvaluator",
     "MetricCapabilities",
     "MetricExecutionResult",
