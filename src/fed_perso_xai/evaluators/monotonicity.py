@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from ..utils.target_resolution import resolve_explained_class
 from .attribution_utils import (
     FEATURE_METHOD_KEYS,
     extract_attribution_vector,
@@ -24,13 +23,8 @@ from .attribution_utils import (
     prepare_attributions,
 )
 from .base_metric import MetricCapabilities, MetricInput
-from .baselines import baseline_vector, feature_scale
-from .perturbation import build_metric_rng, chunk_indices
-from .prediction_utils import (
-    extract_prediction_value,
-    model_prediction,
-    model_predictions,
-)
+from .baselines import feature_scale
+from .perturbation import build_metric_rng
 
 
 _FEATURE_METHOD_KEYS = FEATURE_METHOD_KEYS
@@ -50,20 +44,29 @@ class _MonotonicityContext:
     baseline: np.ndarray
     feature_scale: np.ndarray
     original_prediction: float
-    target_class: int | None
 
 
 class MonotonicityEvaluator(MetricCapabilities):
     """
     Measures whether attribution magnitudes are monotone with the model's sensitivity.
 
-    The evaluator sorts features by attribution magnitude, perturbs them in ranked
-    cumulative groups, and correlates the cumulative attribution mass with the
-    squared prediction deltas observed after perturbation. Scores in [-1, 1]
-    mirror the Quantus ``MonotonicityCorrelation`` metric: +1 when larger
-    attributions consistently correspond to larger model impact, -1 for inverted
-    rankings. This makes the metric a faithfulness check on feature ordering, not
-    just on one-step deletion magnitude.
+    The evaluator sorts features by (optionally absolute/normalised) attribution values,
+    perturbs them in small groups, and correlates the per-step attribution sums with
+    the squared prediction deltas observed after perturbation. Scores in [-1, 1] mirror
+    the original ``perso-xai`` implementation: +1 when attribution magnitudes
+    perfectly align with model variance, -1 for inverted rankings.
+
+    Implementation note
+    -------------------
+    A previous ``fed-perso-xai`` port drifted away from the original ``perso-xai``
+    algorithm by ranking in descending ``abs(attribution)`` order and then using
+    cumulative subsets plus cumulative attribution mass. This evaluator intentionally
+    restores the original ``perso-xai`` semantics instead:
+
+    * ranking uses the original ``np.argsort(attrs)`` order on prepared attributions
+    * groups are evaluated per step, not cumulatively
+    * attribution sums are computed per step, not cumulatively
+    * squared prediction deltas are measured for each step perturbation on its own
     """
 
     per_instance = True
@@ -127,7 +130,7 @@ class MonotonicityEvaluator(MetricCapabilities):
             Output dictionary from ``explain_dataset`` (must include ``method`` and
             ``explanations`` entries).
         dataset : Any | None, optional
-            Optional dataset reference used for baseline fallback / feature scaling.
+            Unused (accepted for interface parity).
         explainer : Any | None, optional
             Unused (interface parity).
         cache : Dict[str, Any] | None, optional
@@ -158,6 +161,7 @@ class MonotonicityEvaluator(MetricCapabilities):
         if not explanations:
             return {"monotonicity": 0.0}
 
+        rng = build_metric_rng(self.random_state)
         context_cache: Optional[Dict[int, _MonotonicityContext]] = (
             metric_input.cache_bucket("monotonicity_context") if self.cache_context else None
         )
@@ -169,18 +173,18 @@ class MonotonicityEvaluator(MetricCapabilities):
             score = self._monotonicity_score(
                 metric_input.model,
                 explanations[idx],
-                explanation_index=idx,
+                rng,
                 dataset=metric_input.dataset,
                 context_cache=context_cache,
             )
             return {"monotonicity": float(score) if score is not None else 0.0}
 
         scores: List[float] = []
-        for idx, explanation in metric_input.iter_explanations():
+        for _, explanation in metric_input.iter_explanations():
             score = self._monotonicity_score(
                 metric_input.model,
                 explanation,
-                explanation_index=idx,
+                rng,
                 dataset=metric_input.dataset,
                 context_cache=context_cache,
             )
@@ -194,18 +198,18 @@ class MonotonicityEvaluator(MetricCapabilities):
         self,
         model: Any,
         explanation: Dict[str, Any],
+        rng: np.random.Generator,
         *,
-        explanation_index: int,
         dataset: Any | None,
         context_cache: Optional[Dict[int, _MonotonicityContext]] = None,
     ) -> Optional[float]:
         # High-level flow:
         # 1. Pull attributions/instance/baseline; skip if malformed.
-        # 2. Resolve the scalar prediction target and original output.
-        # 3. Sort features by attribution magnitude, then build cumulative subsets
-        #    S_t by adding the next most important feature group each step.
-        # 4. Correlate cumulative attribution mass with the cumulative squared
-        #    prediction deltas, mirroring the paper-aligned monotonicity definition.
+        # 2. Predict the original output and derive the inverse-probability weight.
+        # 3. Sort features by the prepared attributions, chunk them, and perturb each
+        #    chunk multiple times to estimate squared prediction deltas.
+        # 4. Correlate the per-chunk attribution sums and variance terms, matching
+        #    the original ``perso-xai`` implementation.
         context = self._prepare_context(
             model,
             explanation,
@@ -219,20 +223,6 @@ class MonotonicityEvaluator(MetricCapabilities):
         if n_features == 0:
             return None
 
-        # Use a stable descending sort so tied magnitudes preserve feature order
-        # deterministically. The correlation definition is about importance ranking,
-        # so ordering follows absolute magnitude even when signed attributions are
-        # retained for the cumulative attribution signal itself.
-        ranked_indices = np.argsort(-np.abs(context.importance), kind="stable")
-        ranked_groups = chunk_indices(
-            ranked_indices,
-            features_per_step=self.features_in_step,
-        )
-        if len(ranked_groups) < 2:
-            return None
-
-        rng = build_metric_rng(self.random_state, offset=explanation_index)
-
         # Normalize variance terms so low-confidence predictions get amplified while
         # very confident ones contribute less, mirroring Quantus' inverse-probability
         # weighting. Predictions near zero skip the inversion to avoid blow-ups.
@@ -241,60 +231,45 @@ class MonotonicityEvaluator(MetricCapabilities):
         if abs_pred >= self.eps:
             inv_pred = (1.0 / abs_pred) ** 2
 
-        cumulative_indices: List[np.ndarray] = []
-        cumulative_mass = 0.0
+        sorted_indices = np.argsort(context.importance)
+        n_steps = int(np.ceil(n_features / self.features_in_step))
+
         att_sums: List[float] = []
         variance_terms: List[float] = []
 
-        for group in ranked_groups:
-            if group.size == 0:
+        for step in range(n_steps):
+            start = step * self.features_in_step
+            stop = min((step + 1) * self.features_in_step, n_features)
+            step_indices = sorted_indices[start:stop]
+            if step_indices.size == 0:
                 continue
 
-            cumulative_indices.append(group)
-            selected = np.concatenate(cumulative_indices)
-            cumulative_mass += float(np.sum(context.importance[group]))
+            preds: List[float] = []
+            for _ in range(self.nr_samples):
+                perturbed = context.instance.copy()
+                replacement = context.baseline[step_indices].copy()
+                if self.noise_scale > 0.0:
+                    noise = rng.normal(
+                        loc=0.0,
+                        scale=self.noise_scale,
+                        size=step_indices.size,
+                    )
+                    replacement = replacement + noise * context.feature_scale[step_indices]
+                perturbed[step_indices] = replacement
+                try:
+                    preds.append(self._model_prediction(model, perturbed))
+                except Exception:
+                    preds.append(np.nan)
 
-            perturbed_batch = np.repeat(context.instance[np.newaxis, :], self.nr_samples, axis=0)
-            replacements = np.repeat(
-                context.baseline[selected][np.newaxis, :],
-                self.nr_samples,
-                axis=0,
-            )
-            if self.noise_scale > 0.0:
-                noise = rng.normal(
-                    loc=0.0,
-                    scale=self.noise_scale * context.feature_scale[selected],
-                    size=(self.nr_samples, selected.size),
-                )
-                replacements = replacements + noise
-            perturbed_batch[:, selected] = replacements
-
-            try:
-                preds = model_predictions(
-                    model,
-                    perturbed_batch,
-                    target_class=context.target_class,
-                    prefer_probability=True,
-                )
-            except Exception as exc:
-                self.logger.debug(
-                    "MonotonicityEvaluator failed to evaluate perturbed batch: %s",
-                    exc,
-                )
-                continue
-
-            preds_arr = np.asarray(preds, dtype=float).reshape(-1)
+            preds_arr = np.asarray(preds, dtype=float)
             preds_arr = preds_arr[np.isfinite(preds_arr)]
             if preds_arr.size == 0:
                 continue
 
             squared_delta = (preds_arr - context.original_prediction) ** 2
             variance = float(np.mean(squared_delta)) * inv_pred
-            if not np.isfinite(variance):
-                continue
-
             variance_terms.append(variance)
-            att_sums.append(cumulative_mass)
+            att_sums.append(float(np.sum(context.importance[step_indices])))
 
         if len(att_sums) < 2 or len(variance_terms) < 2:
             return None
@@ -310,7 +285,7 @@ class MonotonicityEvaluator(MetricCapabilities):
         return float(np.clip(spearman.coefficient, -1.0, 1.0))
 
     # ------------------------------------------------------------------ #
-    # Shared helpers (mirrors other evaluators)                          #
+    # Data extraction helpers (mirrors the original evaluator)           #
     # ------------------------------------------------------------------ #
 
     def _prepare_context(
@@ -321,6 +296,8 @@ class MonotonicityEvaluator(MetricCapabilities):
         dataset: Any | None,
         context_cache: Optional[Dict[int, _MonotonicityContext]],
     ) -> Optional[_MonotonicityContext]:
+        del dataset  # The original Perso-XAI metric does not derive baselines from the dataset.
+
         cache_key = id(explanation)
         if context_cache is not None and cache_key in context_cache:
             return context_cache[cache_key]
@@ -346,15 +323,14 @@ class MonotonicityEvaluator(MetricCapabilities):
             )
             return None
 
-        baseline = self._baseline_vector(explanation, instance, dataset=dataset)
-        target_class = self._target_class(explanation, model, instance)
-        original_prediction = self._original_prediction(
-            model,
-            explanation,
-            instance,
-            target_class=target_class,
-        )
-        if original_prediction is None or not np.isfinite(original_prediction):
+        baseline = self._baseline_vector(explanation, instance)
+        try:
+            original_prediction = self._model_prediction(model, instance)
+        except Exception as exc:
+            self.logger.debug("MonotonicityEvaluator failed to score instance: %s", exc)
+            return None
+
+        if not np.isfinite(original_prediction):
             return None
 
         context = _MonotonicityContext(
@@ -363,7 +339,6 @@ class MonotonicityEvaluator(MetricCapabilities):
             baseline=baseline,
             feature_scale=feature_scale(instance),
             original_prediction=float(original_prediction),
-            target_class=target_class,
         )
         if context_cache is not None:
             context_cache[cache_key] = context
@@ -387,60 +362,32 @@ class MonotonicityEvaluator(MetricCapabilities):
         self,
         explanation: Dict[str, Any],
         instance: np.ndarray,
-        *,
-        dataset: Any | None,
     ) -> np.ndarray:
-        return baseline_vector(
-            explanation,
-            instance,
-            default_baseline=self.default_baseline,
-            dataset=dataset,
-            logger=self.logger,
-            log_prefix="MonotonicityEvaluator",
-        )
+        metadata = explanation.get("metadata") or {}
+        baseline = metadata.get("baseline_instance")
+        if baseline is not None:
+            base_arr = np.asarray(baseline, dtype=float).reshape(-1)
+            if base_arr.shape == instance.shape:
+                return base_arr
+        return np.full_like(instance, self.default_baseline, dtype=float)
 
-    def _target_class(
-        self,
-        explanation: Dict[str, Any],
-        model: Any,
-        instance: np.ndarray,
-    ) -> int | None:
-        """
-        Resolve the class whose score should be tracked under perturbation.
+    def _model_prediction(self, model: Any, instance: np.ndarray) -> float:
+        batch = instance.reshape(1, -1)
+        if hasattr(model, "predict_proba"):
+            proba = np.asarray(model.predict_proba(batch)).ravel()
+            if proba.size == 0:
+                raise ValueError("Model.predict_proba returned empty output.")
+            if proba.size == 2:
+                return float(proba[1])
+            return float(proba.max())
 
-        This uses the shared resolver so ground-truth labels are never reused as
-        evaluator targets.
-        """
-        return resolve_explained_class(explanation, model=model, instance=instance)
+        if not hasattr(model, "predict"):
+            raise AttributeError("Model must expose predict() or predict_proba().")
 
-    def _original_prediction(
-        self,
-        model: Any,
-        explanation: Dict[str, Any],
-        instance: np.ndarray,
-        *,
-        target_class: int | None,
-    ) -> Optional[float]:
-        prediction = extract_prediction_value(
-            explanation,
-            target_class=target_class,
-            prefer_probability=True,
-        )
-        if prediction is not None:
-            return float(prediction)
-
-        try:
-            return float(
-                model_prediction(
-                    model,
-                    instance,
-                    target_class=target_class,
-                    prefer_probability=True,
-                )
-            )
-        except Exception as exc:
-            self.logger.debug("MonotonicityEvaluator failed to score instance: %s", exc)
-            return None
+        preds = np.asarray(model.predict(batch)).ravel()
+        if preds.size == 0:
+            raise ValueError("Model.predict returned empty output.")
+        return float(preds[0])
 
     # ------------------------------------------------------------------ #
     # Spearman correlation helper
