@@ -53,7 +53,7 @@ class LIMEExplainer(BaseExplainer):
         inst_vec = inst2d[0]
         self._ensure_training_cache(inst_vec)
 
-        prediction, t_pred = self._timeit(self._predict_numeric, inst2d)
+        prediction, t_pred = self._timeit(self._predict, inst2d)
         prediction_proba = self._predict_proba(inst2d)
         proba_value = None
         if prediction_proba is not None:
@@ -65,8 +65,7 @@ class LIMEExplainer(BaseExplainer):
             target_class,
         )
 
-        pred_arr = np.asarray(prediction).ravel()
-        pred_value = float(pred_arr[0]) if pred_arr.size else float(pred_arr)
+        pred_value = self._prediction_output_value(prediction)
 
         metadata = self._build_metadata(
             info=info,
@@ -92,15 +91,14 @@ class LIMEExplainer(BaseExplainer):
             return []
 
         batch_start = time.time()
-        preds = np.asarray(self._predict_numeric(X_np))
+        preds = np.asarray(self._predict(X_np), dtype=object)
         proba = self._predict_proba(X_np)
         results: List[Dict[str, Any]] = []
 
         for idx, inst_vec in enumerate(X_np):
             self._ensure_training_cache(inst_vec)
 
-            pred_row = np.asarray(preds[idx]).ravel()
-            pred_value = float(pred_row[0]) if pred_row.size else float(pred_row)
+            pred_value = self._prediction_output_value(preds[idx])
 
             proba_value = None
             if proba is not None:
@@ -188,7 +186,7 @@ class LIMEExplainer(BaseExplainer):
         proba = self._predict_proba(perturbations)
         preds = None
         if proba is None:
-            preds = np.asarray(self._predict_numeric(perturbations))
+            preds = np.asarray(self._predict(perturbations), dtype=object)
         target = self._local_target_vector(
             perturbations,
             target_class=target_class,
@@ -293,7 +291,7 @@ class LIMEExplainer(BaseExplainer):
             if proba_row.size == 2:
                 return float(proba_row[1])
             return float(np.max(proba_row))
-        return float(np.asarray(self._predict_numeric(baseline_2d)).ravel()[0])
+        return float(self._encode_prediction_labels(self._predict(baseline_2d))[0])
 
     def _resolve_target_class(self, prediction_proba: Optional[np.ndarray]) -> Optional[int]:
         """
@@ -304,6 +302,7 @@ class LIMEExplainer(BaseExplainer):
         configured. Multiclass defaults to the original instance's predicted
         class, and that same fixed class is used for every perturbation.
         """
+        proba_row = self._probability_row(prediction_proba)
         explicit_target = self._expl_cfg.get("lime_target_class")
         if explicit_target is not None:
             target_class = int(explicit_target)
@@ -315,11 +314,13 @@ class LIMEExplainer(BaseExplainer):
                 )
             return target_class
 
+        if proba_row is None:
+            return None
+
         class_count = self._class_count(prediction_proba)
         if class_count == 2:
             return 1
 
-        proba_row = self._probability_row(prediction_proba)
         if proba_row is not None and proba_row.size > 0:
             return int(np.argmax(proba_row))
         return None
@@ -357,3 +358,28 @@ class LIMEExplainer(BaseExplainer):
             return preds.astype(float)
         indices = self._prediction_indices(predictions)
         return indices.astype(float)
+
+    def _prediction_indices(self, predictions: np.ndarray) -> np.ndarray:
+        preds = np.asarray(predictions)
+        if preds.ndim > 1 and preds.shape[1] == 1:
+            preds = preds.ravel()
+        classes = getattr(self.model, "classes_", None)
+        if classes is not None:
+            try:
+                labels = list(classes)
+            except TypeError:
+                labels = None
+            if labels is not None:
+                mapping = {label: idx for idx, label in enumerate(labels)}
+                return np.asarray([mapping.get(value, 0) for value in preds], dtype=int)
+        _, inverse = np.unique(preds, return_inverse=True)
+        return inverse.astype(int)
+
+    def _prediction_output_value(self, prediction: Any) -> Any:
+        pred_arr = np.asarray(prediction, dtype=object).ravel()
+        if pred_arr.size == 0:
+            return None
+        value = pred_arr[0]
+        if isinstance(value, np.generic):
+            return value.item()
+        return value

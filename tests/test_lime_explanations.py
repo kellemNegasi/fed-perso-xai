@@ -241,6 +241,15 @@ class _SignedBinaryModel:
         return self.predict(X)
 
 
+class _StringLabelModel:
+    _estimator_type = "classifier"
+    classes_ = np.asarray(["cat", "dog"], dtype=object)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        X_arr = np.asarray(X, dtype=float).reshape(-1, 2)
+        return np.where(X_arr[:, 0] >= X_arr[:, 1], "cat", "dog")
+
+
 def _toy_lime_dataset() -> LocalExplanationDataset:
     X_train = np.asarray(
         [
@@ -332,9 +341,39 @@ def test_lime_avoids_duplicate_numeric_inference_when_probabilities_exist() -> N
     explanation = explainer.explain_instance(np.asarray([0.4, 0.1], dtype=float))
 
     assert explanation["metadata"]["explained_class"] == 1
-    assert model.predict_numeric_calls == 1
+    assert model.predict_numeric_calls == 0
     assert model.predict_calls == 1
     assert model.predict_proba_calls >= 3
+
+
+def test_lime_supports_label_only_string_classifier_fallback() -> None:
+    explainer = _make_lime_explainer(_StringLabelModel(), lime_num_samples=12, lime_noise_scale=0.1)
+
+    explanation = explainer.explain_instance(np.asarray([0.7, 0.2], dtype=float))
+
+    assert explanation["prediction"] == "cat"
+    assert explanation["prediction_proba"] is None
+    assert "explained_class" not in explanation["metadata"]
+    assert np.isfinite(float(explanation["metadata"]["baseline_prediction"]))
+    assert np.all(np.isfinite(np.asarray(explanation["attributions"], dtype=float)))
+
+
+def test_lime_batch_supports_label_only_string_classifier_fallback() -> None:
+    explainer = _make_lime_explainer(_StringLabelModel(), lime_num_samples=8, lime_noise_scale=0.05)
+
+    explanations = explainer.explain_batch(
+        np.asarray(
+            [
+                [0.7, 0.2],
+                [0.1, 0.4],
+            ],
+            dtype=float,
+        )
+    )
+
+    assert [item["prediction"] for item in explanations] == ["cat", "dog"]
+    assert all(item["prediction_proba"] is None for item in explanations)
+    assert all(np.isfinite(float(item["metadata"]["baseline_prediction"])) for item in explanations)
 
 
 def test_lime_multiclass_keeps_original_instance_target_class_fixed() -> None:
