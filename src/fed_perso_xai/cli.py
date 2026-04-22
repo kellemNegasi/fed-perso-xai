@@ -14,6 +14,7 @@ from fed_perso_xai.orchestration.explanations import (
     generate_client_local_explanations,
     load_client_data_for_explanations,
     load_saved_model_for_explanations,
+    resolve_partition_data_root_for_explanations,
     resolve_feature_names_for_explanations,
     save_client_explanations,
 )
@@ -128,6 +129,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_shared_path_args(explain_parser)
     explain_parser.add_argument("--client-id", type=int, required=True)
     explain_parser.add_argument("--model-source", choices=MODEL_SOURCE_CHOICES, default="federated")
+    explain_parser.add_argument(
+        "--partitions",
+        type=Path,
+        help="Explicit path to the persisted partitioned client dataset root.",
+    )
     explain_parser.add_argument("--split", choices=["train", "test"], default="test")
     explain_parser.add_argument("--output", type=Path)
     explain_parser.add_argument("--background-sample-size", type=int)
@@ -272,6 +278,15 @@ def main() -> None:
 
     if args.command == "explain-shap":
         paths = _build_artifact_paths(args)
+        partition_data_root = resolve_partition_data_root_for_explanations(
+            paths=paths,
+            dataset_name=args.dataset,
+            seed=args.seed,
+            model_source=args.model_source,
+            num_clients=args.num_clients,
+            alpha=args.alpha,
+            partition_data_root=args.partitions,
+        )
         client_data = load_client_data_for_explanations(
             paths=paths,
             dataset_name=args.dataset,
@@ -279,6 +294,7 @@ def main() -> None:
             alpha=args.alpha,
             seed=args.seed,
             client_id=args.client_id,
+            partition_data_root=partition_data_root,
         )
         model, result_dir = load_saved_model_for_explanations(
             paths=paths,
@@ -295,6 +311,7 @@ def main() -> None:
             model_source=args.model_source,
             num_clients=args.num_clients,
             alpha=args.alpha,
+            partition_data_root=partition_data_root,
         )
         payload = generate_client_local_explanations(
             client_data=client_data,
@@ -315,6 +332,7 @@ def main() -> None:
                 {
                     "output_path": str(output_path),
                     "model_source": args.model_source,
+                    "partition_data_root": str(partition_data_root),
                     "client_id": args.client_id,
                     "split": args.split,
                     "n_explanations": payload["n_explanations"],

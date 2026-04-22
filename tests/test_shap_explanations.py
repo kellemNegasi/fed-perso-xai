@@ -476,3 +476,120 @@ def test_explain_shap_cli_writes_output(monkeypatch, mock_openml, tmp_path) -> N
     assert payload["client_id"] == 0
     assert payload["split_name"] == "test"
     assert payload["n_explanations"] == min(2, client.test.X.shape[0])
+
+
+def test_explain_shap_cli_uses_recorded_stage_b_partition_root(
+    monkeypatch,
+    mock_openml,
+    tmp_path,
+) -> None:
+    _install_fake_shap(monkeypatch)
+    mock_openml("adult_income")
+    paths = ArtifactPaths(
+        prepared_root=tmp_path / "prepared",
+        partition_root=tmp_path / "datasets",
+        centralized_root=tmp_path / "centralized",
+        federated_root=tmp_path / "federated",
+        comparison_root=tmp_path / "comparisons",
+        cache_dir=tmp_path / "cache",
+    )
+    alternate_partition_root = tmp_path / "datasets_alt"
+    prepare_federated_dataset(
+        DataPreparationConfig(
+            dataset_name="adult_income",
+            seed=13,
+            paths=ArtifactPaths(
+                prepared_root=paths.prepared_root,
+                partition_root=alternate_partition_root,
+                centralized_root=paths.centralized_root,
+                federated_root=paths.federated_root,
+                comparison_root=paths.comparison_root,
+                cache_dir=paths.cache_dir,
+            ),
+            partition=PartitionConfig(num_clients=3, alpha=1.0, min_client_samples=2, max_retries=20),
+        )
+    )
+
+    persisted_partition_root = alternate_partition_root / "adult_income" / "3_clients" / "alpha_1.0" / "seed_13"
+    client = load_client_datasets(persisted_partition_root, 3)[0]
+    model = create_model(
+        "logistic_regression",
+        n_features=client.train.X.shape[1],
+        config=LogisticRegressionConfig(epochs=3, batch_size=4, learning_rate=0.1),
+    )
+    model.fit(client.train.X, client.train.y, seed=13)
+
+    result_dir = federated_run_dir(paths, "adult_income", 3, 1.0, 13)
+    training_dir = result_dir / "training"
+    training_dir.mkdir(parents=True, exist_ok=True)
+    model.save(result_dir / "model_parameters.npz")
+    config = FederatedTrainingConfig(
+        dataset_name="adult_income",
+        seed=13,
+        paths=paths,
+        model=LogisticRegressionConfig(epochs=3, batch_size=4, learning_rate=0.1),
+        num_clients=3,
+        alpha=1.0,
+        rounds=1,
+        simulation_backend="debug-sequential",
+    )
+    (result_dir / "config_snapshot.json").write_text(
+        json.dumps(config.to_dict(), indent=2),
+        encoding="utf-8",
+    )
+    (training_dir / "training_metadata.json").write_text(
+        json.dumps(
+            {
+                "partition_data_root": str(persisted_partition_root.resolve()),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    output_path = tmp_path / "cli_explanations_recorded_partition.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fed-perso-xai",
+            "explain-shap",
+            "--dataset",
+            "adult_income",
+            "--num-clients",
+            "3",
+            "--alpha",
+            "1.0",
+            "--seed",
+            "13",
+            "--client-id",
+            "0",
+            "--partition-root",
+            str(paths.partition_root),
+            "--prepared-root",
+            str(paths.prepared_root),
+            "--federated-root",
+            str(paths.federated_root),
+            "--centralized-root",
+            str(paths.centralized_root),
+            "--comparison-root",
+            str(paths.comparison_root),
+            "--cache-dir",
+            str(paths.cache_dir),
+            "--output",
+            str(output_path),
+            "--max-instances",
+            "2",
+            "--background-sample-size",
+            "3",
+            "--random-state",
+            "5",
+        ],
+    )
+    main()
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["method"] == "shap"
+    assert payload["client_id"] == 0
+    assert payload["split_name"] == "test"
+    assert payload["row_ids"] == client.test.row_ids[:2].tolist()

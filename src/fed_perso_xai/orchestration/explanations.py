@@ -20,6 +20,7 @@ from fed_perso_xai.utils.paths import (
     federated_run_dir,
     partition_root,
     stage_b_model_metadata_path,
+    stage_b_training_metadata_path,
 )
 
 
@@ -174,10 +175,17 @@ def load_client_data_for_explanations(
     alpha: float,
     seed: int,
     client_id: int,
+    partition_data_root: Path | None = None,
 ) -> ClientData:
     """Load one saved client partition for explanation generation."""
 
-    root_dir = partition_root(paths.partition_root, dataset_name, num_clients, alpha, seed)
+    root_dir = partition_data_root or partition_root(
+        paths.partition_root,
+        dataset_name,
+        num_clients,
+        alpha,
+        seed,
+    )
     datasets = load_client_datasets(root_dir, num_clients)
     try:
         client = next(item for item in datasets if item.client_id == client_id)
@@ -195,6 +203,38 @@ def load_client_data_for_explanations(
         y_test=client.test.y,
         row_ids_test=client.test.row_ids,
     )
+
+
+def resolve_partition_data_root_for_explanations(
+    *,
+    paths: ArtifactPaths,
+    dataset_name: str,
+    seed: int,
+    model_source: str,
+    num_clients: int,
+    alpha: float,
+    partition_data_root: Path | None = None,
+) -> Path:
+    """Resolve the persisted client partition root used for explanation loading."""
+
+    if partition_data_root is not None:
+        return partition_data_root
+
+    normalized_source = model_source.strip().lower()
+    if normalized_source == "federated":
+        result_dir = federated_run_dir(paths, dataset_name, num_clients, alpha, seed)
+        training_metadata_path = stage_b_training_metadata_path(result_dir)
+        if training_metadata_path.exists():
+            training_metadata = json.loads(training_metadata_path.read_text(encoding="utf-8"))
+            recorded_partition_root = training_metadata.get("partition_data_root")
+            if not isinstance(recorded_partition_root, str) or not recorded_partition_root.strip():
+                raise ValueError(
+                    "Federated training metadata is missing 'partition_data_root', so the "
+                    "explanation data source cannot be resolved safely."
+                )
+            return Path(recorded_partition_root)
+
+    return partition_root(paths.partition_root, dataset_name, num_clients, alpha, seed)
 
 
 def load_saved_model_for_explanations(
@@ -254,6 +294,7 @@ def resolve_feature_names_for_explanations(
     model_source: str,
     num_clients: int,
     alpha: float,
+    partition_data_root: Path | None = None,
 ) -> tuple[list[str], Path]:
     """Resolve feature metadata from the selected run, with partition fallback."""
 
@@ -271,10 +312,16 @@ def resolve_feature_names_for_explanations(
     if candidate.exists():
         return load_feature_names_from_metadata(candidate), candidate
 
-    partition_metadata_path = (
-        partition_root(paths.partition_root, dataset_name, num_clients, alpha, seed)
-        / "partition_metadata.json"
+    resolved_partition_root = resolve_partition_data_root_for_explanations(
+        paths=paths,
+        dataset_name=dataset_name,
+        seed=seed,
+        model_source=model_source,
+        num_clients=num_clients,
+        alpha=alpha,
+        partition_data_root=partition_data_root,
     )
+    partition_metadata_path = resolved_partition_root / "partition_metadata.json"
     if not partition_metadata_path.exists():
         raise FileNotFoundError(
             f"Missing feature metadata in '{candidate}' and partition metadata in '{partition_metadata_path}'."
