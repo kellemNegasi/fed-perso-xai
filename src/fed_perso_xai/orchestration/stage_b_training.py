@@ -84,21 +84,6 @@ def train_federated_stage_b(
     config_snapshot = config.to_dict()
     config_hash = _stable_json_sha256(config_snapshot)
 
-    if (
-        _is_completed_stage_b_run(
-            artifacts,
-            expected_run_id=resolved_run_id,
-            expected_config_hash=config_hash,
-        )
-        and not force
-    ):
-        metadata = json.loads(artifacts.training_metadata_path.read_text(encoding="utf-8"))
-        metadata["status"] = "skipped_existing"
-        metadata["skipped"] = True
-        return artifacts, metadata
-    if artifacts.completion_marker_path.exists():
-        artifacts.completion_marker_path.unlink()
-
     partition_metadata_path = _resolve_partition_metadata_path(resolved_partition_root)
     if not partition_metadata_path.exists():
         raise FileNotFoundError(
@@ -111,6 +96,33 @@ def train_federated_stage_b(
         config=config,
         metadata_path=partition_metadata_path,
     )
+    partition_signature = _build_partition_source_signature(
+        root_dir=resolved_partition_root,
+        partition_metadata=partition_metadata,
+    )
+
+    existing_metadata = _load_completed_stage_b_metadata(artifacts)
+    if existing_metadata is not None:
+        mismatches = _describe_stage_b_reuse_mismatches(
+            metadata=existing_metadata,
+            expected_run_id=resolved_run_id,
+            expected_config_hash=config_hash,
+            expected_partition_signature=partition_signature,
+        )
+        if not mismatches and not force:
+            metadata = dict(existing_metadata)
+            metadata["status"] = "skipped_existing"
+            metadata["skipped"] = True
+            return artifacts, metadata
+        if mismatches and not force:
+            mismatch_text = "; ".join(mismatches)
+            raise FileExistsError(
+                "A completed Stage B run already exists at "
+                f"'{result_dir}' with different inputs ({mismatch_text}). "
+                "Re-run with force=True / --force to overwrite that completed run."
+            )
+    if artifacts.completion_marker_path.exists():
+        artifacts.completion_marker_path.unlink()
 
     prepared_root = Path(str(partition_metadata["prepared_root"]))
     client_datasets = [
@@ -181,8 +193,9 @@ def train_federated_stage_b(
             "assumption": "Frozen shared preprocessing fitted once during Stage A.",
         },
         "partition_reference": {
-            "partition_root": str(resolved_partition_root),
+            "partition_root": partition_signature["partition_data_root"],
             "partition_metadata_path": str(partition_metadata_path),
+            "partition_metadata_sha256": partition_signature["partition_metadata_sha256"],
             "num_clients": int(config.num_clients),
             "alpha": float(config.alpha),
         },
@@ -195,8 +208,9 @@ def train_federated_stage_b(
         "status": "completed",
         "run_id": resolved_run_id,
         "dataset_name": config.dataset_name,
-        "partition_data_root": str(resolved_partition_root),
+        "partition_data_root": partition_signature["partition_data_root"],
         "partition_metadata_path": str(partition_metadata_path),
+        "partition_metadata_sha256": partition_signature["partition_metadata_sha256"],
         "prepared_root": str(prepared_root),
         "num_clients": int(config.num_clients),
         "alpha": float(config.alpha),
@@ -285,26 +299,39 @@ def _build_stage_b_artifacts(run_dir: Path) -> StageBArtifacts:
     )
 
 
-def _is_completed_stage_b_run(
+def _load_completed_stage_b_metadata(
     artifacts: StageBArtifacts,
-    *,
-    expected_run_id: str,
-    expected_config_hash: str,
-) -> bool:
+) -> dict[str, Any] | None:
     if not (
         artifacts.model_artifact_path.exists()
         and artifacts.model_metadata_path.exists()
         and artifacts.training_metadata_path.exists()
         and artifacts.completion_marker_path.exists()
     ):
-        return False
+        return None
     metadata = json.loads(artifacts.training_metadata_path.read_text(encoding="utf-8"))
-    return (
-        metadata.get("status") == "completed"
-        and bool(metadata.get("stage_success"))
-        and metadata.get("run_id") == expected_run_id
-        and metadata.get("training_config_sha256") == expected_config_hash
-    )
+    if metadata.get("status") != "completed" or not bool(metadata.get("stage_success")):
+        return None
+    return metadata
+
+
+def _describe_stage_b_reuse_mismatches(
+    *,
+    metadata: dict[str, Any],
+    expected_run_id: str,
+    expected_config_hash: str,
+    expected_partition_signature: dict[str, str],
+) -> list[str]:
+    mismatches: list[str] = []
+    if metadata.get("run_id") != expected_run_id:
+        mismatches.append("run_id")
+    if metadata.get("training_config_sha256") != expected_config_hash:
+        mismatches.append("training_config_sha256")
+    if metadata.get("partition_data_root") != expected_partition_signature["partition_data_root"]:
+        mismatches.append("partition_data_root")
+    if metadata.get("partition_metadata_sha256") != expected_partition_signature["partition_metadata_sha256"]:
+        mismatches.append("partition_metadata_sha256")
+    return mismatches
 
 
 def _resolve_partition_metadata_path(root_dir: Path) -> Path:
@@ -336,6 +363,17 @@ def _validate_partition_metadata(
         raise ValueError(
             f"Prepared partition metadata at '{metadata_path}' does not match the requested run: {details}."
         )
+
+
+def _build_partition_source_signature(
+    *,
+    root_dir: Path,
+    partition_metadata: dict[str, Any],
+) -> dict[str, str]:
+    return {
+        "partition_data_root": str(root_dir.resolve()),
+        "partition_metadata_sha256": _stable_json_sha256(partition_metadata),
+    }
 
 
 def _write_training_history_csv(path: Path, round_history: list[dict[str, Any]]) -> Path:

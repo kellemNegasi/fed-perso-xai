@@ -35,6 +35,17 @@ def _build_paths(tmp_path):
     )
 
 
+def _build_paths_with_federated_root(tmp_path, federated_root_name: str):
+    return ArtifactPaths(
+        prepared_root=tmp_path / "prepared",
+        partition_root=tmp_path / "datasets",
+        centralized_root=tmp_path / "centralized",
+        federated_root=tmp_path / federated_root_name,
+        comparison_root=tmp_path / "comparisons",
+        cache_dir=tmp_path / "cache",
+    )
+
+
 def test_shared_parameter_helpers_keep_stage1_payloads_explicit() -> None:
     parameters = [
         np.array([1.0, 2.0], dtype=np.float64),
@@ -96,6 +107,7 @@ def test_debug_federated_training_supports_plain_and_secure_modes(
 ) -> None:
     mock_openml("adult_income")
     paths = _build_paths(tmp_path)
+    secure_paths = _build_paths_with_federated_root(tmp_path, "federated_secure")
     prepare_federated_dataset(
         DataPreparationConfig(
             dataset_name="adult_income",
@@ -114,7 +126,7 @@ def test_debug_federated_training_supports_plain_and_secure_modes(
         FederatedTrainingConfig(
             dataset_name="adult_income",
             seed=31,
-            paths=paths,
+            paths=secure_paths,
             model=LogisticRegressionConfig(epochs=2, batch_size=4, learning_rate=0.1),
             num_clients=3,
             alpha=1.0,

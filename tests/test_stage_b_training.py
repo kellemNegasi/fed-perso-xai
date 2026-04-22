@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import time
 
 import numpy as np
@@ -76,7 +77,8 @@ def test_stage_b_loads_persisted_partitions_and_writes_artifacts(mock_openml, tm
     assert artifacts.training_metadata_path.exists()
     assert artifacts.training_history_path.exists()
     assert artifacts.completion_marker_path.exists()
-    assert metadata["partition_data_root"] == str(explicit_partition_root)
+    assert metadata["partition_data_root"] == str(explicit_partition_root.resolve())
+    assert metadata["partition_metadata_sha256"]
     assert metadata["status"] == "completed"
     assert metadata["run_id"] == "stage-b-explicit-run"
 
@@ -133,3 +135,94 @@ def test_stage_b_skip_existing_and_force_rerun(mock_openml, tmp_path) -> None:
     loaded = load_global_model(artifacts.run_dir)
     parameters = loaded.model.get_parameters()
     assert all(np.asarray(parameter).size > 0 for parameter in parameters)
+
+
+@pytest.mark.skipif(
+    not FLOWER_AVAILABLE,
+    reason="Flower is not installed; Stage B federated training tests require Flower.",
+)
+def test_stage_b_blocks_overwrite_of_completed_run_without_force(mock_openml, tmp_path) -> None:
+    mock_openml("adult_income")
+    paths = _build_paths(tmp_path)
+    prepare_federated_dataset(
+        DataPreparationConfig(
+            dataset_name="adult_income",
+            seed=22,
+            paths=paths,
+            partition=PartitionConfig(num_clients=3, alpha=1.0, min_client_samples=2, max_retries=20),
+        )
+    )
+    base_config = FederatedTrainingConfig(
+        dataset_name="adult_income",
+        seed=22,
+        paths=paths,
+        model=LogisticRegressionConfig(epochs=2, batch_size=4, learning_rate=0.1),
+        num_clients=3,
+        alpha=1.0,
+        rounds=2,
+        simulation_backend="debug-sequential",
+    )
+
+    artifacts, initial_metadata = train_federated_stage_b(base_config, run_id="original-run")
+    initial_text = artifacts.training_metadata_path.read_text(encoding="utf-8")
+    assert initial_metadata["status"] == "completed"
+
+    with pytest.raises(FileExistsError, match="different inputs"):
+        train_federated_stage_b(base_config, run_id="replacement-run")
+
+    assert artifacts.training_metadata_path.read_text(encoding="utf-8") == initial_text
+    assert load_global_model(artifacts.run_dir).metadata["run_id"] == "original-run"
+
+
+@pytest.mark.skipif(
+    not FLOWER_AVAILABLE,
+    reason="Flower is not installed; Stage B federated training tests require Flower.",
+)
+def test_stage_b_blocks_reuse_when_partition_root_changes(mock_openml, tmp_path) -> None:
+    mock_openml("adult_income")
+    paths = _build_paths(tmp_path)
+    prepare_federated_dataset(
+        DataPreparationConfig(
+            dataset_name="adult_income",
+            seed=24,
+            paths=paths,
+            partition=PartitionConfig(num_clients=3, alpha=1.0, min_client_samples=2, max_retries=20),
+        )
+    )
+    config = FederatedTrainingConfig(
+        dataset_name="adult_income",
+        seed=24,
+        paths=paths,
+        model=LogisticRegressionConfig(epochs=2, batch_size=4, learning_rate=0.1),
+        num_clients=3,
+        alpha=1.0,
+        rounds=2,
+        simulation_backend="debug-sequential",
+    )
+    original_partition_root = partition_root(paths.partition_root, "adult_income", 3, 1.0, 24)
+    alternate_partition_root = tmp_path / "datasets_alt" / "adult_income" / "3_clients" / "alpha_1.0" / "seed_24"
+    alternate_partition_root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(original_partition_root, alternate_partition_root)
+
+    artifacts, first_metadata = train_federated_stage_b(
+        config,
+        run_id="stable-run",
+        partition_data_root=original_partition_root,
+    )
+    assert first_metadata["partition_data_root"] == str(original_partition_root.resolve())
+
+    with pytest.raises(FileExistsError, match="partition_data_root"):
+        train_federated_stage_b(
+            config,
+            run_id="stable-run",
+            partition_data_root=alternate_partition_root,
+        )
+
+    forced_artifacts, forced_metadata = train_federated_stage_b(
+        config,
+        run_id="stable-run",
+        partition_data_root=alternate_partition_root,
+        force=True,
+    )
+    assert forced_artifacts.run_dir == artifacts.run_dir
+    assert forced_metadata["partition_data_root"] == str(alternate_partition_root.resolve())
