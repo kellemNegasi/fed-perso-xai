@@ -88,17 +88,15 @@ class SHAPExplainer(BaseExplainer):
 
         inst2d = self._to_numpy_2d(instance)
         pred, t_pred = self._timeit(self._predict, inst2d)
-        pred_numeric = np.asarray(self._predict_numeric(inst2d))
         proba = self._predict_proba(inst2d)
+        target_indices = self._resolve_target_indices(pred, proba)
+        target_index = None if target_indices is None else int(target_indices[0])
 
         shap_vals_raw, t_shap = self._timeit(self._shap_values, inst2d)
-        shap_vals = self._select_shap_values(shap_vals_raw, pred_numeric)
+        shap_vals = self._select_shap_values(shap_vals_raw, target_indices=target_indices)
         expected = self._explainer.expected_value
-        exp_val = self._select_expected_value(expected, pred_numeric)
+        exp_val = self._select_expected_value(expected, target_index=target_index)
         proba_value = proba[0] if proba is not None and len(proba) else None
-        explained_class = self._select_target_class_index()
-        if explained_class is None and proba_value is not None:
-            explained_class = int(np.argmax(np.asarray(proba_value, dtype=float)))
         metadata = {
             "expected_value": exp_val,
             **(
@@ -113,8 +111,8 @@ class SHAPExplainer(BaseExplainer):
                 else {}
             ),
             **(
-                {"explained_class": int(explained_class)}
-                if explained_class is not None
+                {"explained_class": int(target_index)}
+                if target_index is not None
                 else {}
             ),
         }
@@ -125,7 +123,7 @@ class SHAPExplainer(BaseExplainer):
             if shap_vals.ndim == 2
             else np.asarray(shap_vals).tolist(),
             instance=inst2d[0],
-            prediction=pred[0] if len(pred) else pred,
+            prediction=self._prediction_output_value(pred),
             prediction_proba=proba_value,
             feature_names=feature_names,
             metadata=metadata,
@@ -143,24 +141,22 @@ class SHAPExplainer(BaseExplainer):
             return super().explain_batch(X_np)
 
         batch_start = time.time()
-        preds = np.asarray(self._predict(X_np))
-        preds_numeric = np.asarray(self._predict_numeric(X_np))
+        preds = np.asarray(self._predict(X_np), dtype=object)
         proba = self._predict_proba(X_np)
+        target_indices = self._resolve_target_indices(preds, proba)
         shap_vals_raw = self._shap_values(X_np)
-        shap_vals = self._select_shap_values(shap_vals_raw, preds_numeric)
+        shap_vals = self._select_shap_values(shap_vals_raw, target_indices=target_indices)
         expected = self._explainer.expected_value
 
         results: List[Dict[str, Any]] = []
         for idx in range(len(X_np)):
             instance = X_np[idx]
-            pred_val = preds[idx] if preds.ndim else preds
+            pred_val = self._prediction_output_value(preds[idx])
             proba_val = None
             if proba is not None:
                 proba_val = proba[idx] if proba.ndim > 1 else proba
-            explained_class = self._select_target_class_index()
-            if explained_class is None and proba_val is not None:
-                explained_class = int(np.argmax(np.asarray(proba_val, dtype=float)))
-            exp_val = self._select_expected_value(expected, np.asarray(preds_numeric[idx : idx + 1]))
+            target_index = None if target_indices is None else int(target_indices[idx])
+            exp_val = self._select_expected_value(expected, target_index=target_index)
             attr_row = shap_vals[idx] if shap_vals.ndim > 1 else shap_vals
             metadata = {
                 "expected_value": exp_val,
@@ -176,8 +172,8 @@ class SHAPExplainer(BaseExplainer):
                     else {}
                 ),
                 **(
-                    {"explained_class": int(explained_class)}
-                    if explained_class is not None
+                    {"explained_class": int(target_index)}
+                    if target_index is not None
                     else {}
                 ),
             }
@@ -359,7 +355,17 @@ class SHAPExplainer(BaseExplainer):
             return out
 
         if hasattr(self.model, "predict_proba"):
-            target_idx = self._select_target_class_index()
+            labels = self._class_labels()
+            class_count = len(labels) if labels is not None else None
+            target_idx = None
+            explicit_target = self._expl_cfg.get("shap_target_class")
+            if explicit_target is not None:
+                target_idx = self._target_index_from_value(
+                    explicit_target,
+                    class_count=class_count,
+                )
+            elif class_count == 2:
+                target_idx = 1
             if target_idx is not None:
 
                 def _predict_proba_class(x, idx=target_idx):
@@ -383,52 +389,111 @@ class SHAPExplainer(BaseExplainer):
             x2d = _coerce_2d(x)
             if x2d.shape[0] == 0:
                 return np.empty((0,), dtype=float)
-            return self.model.predict_numeric(x2d)
+            return self._predict_numeric(x2d)
 
         return _predict_numeric
 
-    def _select_target_class_index(self) -> Optional[int]:
-        classes = getattr(self.model, "classes_", None)
-        if classes is None:
-            return None
-        try:
-            labels = list(classes)
-        except TypeError:
-            return None
-        if len(labels) == 2:
-            return 1
-        target_label = self._expl_cfg.get("shap_target_class")
-        if target_label is not None and target_label in labels:
-            return labels.index(target_label)
-        return None
-
-    def _select_shap_values(self, shap_values_raw, prediction: np.ndarray) -> np.ndarray:
+    def _select_shap_values(
+        self,
+        shap_values_raw,
+        *,
+        target_indices: Optional[np.ndarray],
+    ) -> np.ndarray:
         if isinstance(shap_values_raw, list):
-            if len(shap_values_raw) == 2:
-                return np.asarray(shap_values_raw[1])
-            preds = prediction.astype(int).ravel()
-            return np.vstack([np.asarray(shap_values_raw[c])[i] for i, c in enumerate(preds)])
+            if len(shap_values_raw) == 1:
+                return np.asarray(shap_values_raw[0])
+            if target_indices is None:
+                if len(shap_values_raw) == 2:
+                    return np.asarray(shap_values_raw[1])
+                raise ValueError("SHAP target class could not be resolved for multi-output values.")
+            indices = np.asarray(target_indices, dtype=int).ravel()
+            return np.vstack([np.asarray(shap_values_raw[c])[i] for i, c in enumerate(indices)])
 
         shap_values = np.asarray(shap_values_raw)
 
         if shap_values.ndim == 3:
-            if shap_values.shape[2] == 2:
-                return shap_values[:, :, 1]
-            preds = prediction.astype(int).ravel()
-            return np.vstack([shap_values[i, :, preds[i]] for i in range(len(preds))])
+            if target_indices is None:
+                if shap_values.shape[2] == 2:
+                    return shap_values[:, :, 1]
+                raise ValueError("SHAP target class could not be resolved for multi-output values.")
+            indices = np.asarray(target_indices, dtype=int).ravel()
+            return np.vstack([shap_values[i, :, indices[i]] for i in range(len(indices))])
 
         return shap_values
 
-    def _select_expected_value(self, expected_value, prediction: np.ndarray) -> float:
+    def _select_expected_value(self, expected_value, *, target_index: Optional[int]) -> float:
         if isinstance(expected_value, (list, np.ndarray)):
             ev = np.asarray(expected_value)
             if ev.ndim == 0:
                 return float(ev)
+            if target_index is not None and 0 <= int(target_index) < ev.size:
+                return float(ev[int(target_index)])
             if ev.size == 2:
                 return float(ev[1])
-            pred = int(np.asarray(prediction).ravel()[0])
-            return float(ev[pred])
+            raise ValueError("SHAP expected_value target class could not be resolved.")
         return float(expected_value)
+
+    def _resolve_target_indices(
+        self,
+        predictions: np.ndarray,
+        prediction_proba: Optional[np.ndarray],
+    ) -> Optional[np.ndarray]:
+        explicit_target = self._expl_cfg.get("shap_target_class")
+        labels = self._class_labels()
+        class_count = len(labels) if labels is not None else None
+
+        if prediction_proba is not None:
+            proba = np.asarray(prediction_proba, dtype=float)
+            if proba.ndim == 0:
+                proba = proba.reshape(1, 1)
+            elif proba.ndim == 1:
+                proba = proba.reshape(1, -1)
+            if class_count is None and proba.ndim > 1:
+                class_count = int(proba.shape[1])
+        else:
+            proba = None
+
+        preds = np.asarray(predictions, dtype=object)
+        if preds.ndim == 0:
+            preds = preds.reshape(1)
+        elif preds.ndim > 1 and preds.shape[1] == 1:
+            preds = preds.ravel()
+        n_rows = int(proba.shape[0]) if proba is not None else int(preds.shape[0])
+
+        if explicit_target is not None:
+            target_index = self._target_index_from_value(explicit_target, class_count=class_count)
+            return np.full(n_rows, target_index, dtype=int)
+
+        if class_count == 2:
+            return np.ones(n_rows, dtype=int)
+
+        if proba is not None and proba.shape[1] > 0:
+            return np.argmax(proba, axis=1).astype(int)
+
+        if class_count is not None:
+            return self._prediction_indices(preds)
+        return None
+
+    def _target_index_from_value(self, target_value: Any, *, class_count: Optional[int]) -> int:
+        labels = self._class_labels()
+        if labels is not None:
+            for idx, label in enumerate(labels):
+                if label == target_value:
+                    return idx
+
+        try:
+            target_index = int(target_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"experiment.explanation.shap_target_class={target_value!r} could not be resolved."
+            ) from exc
+
+        if class_count is not None and not 0 <= target_index < class_count:
+            raise ValueError(
+                f"experiment.explanation.shap_target_class={target_value!r} is out of bounds "
+                f"for {class_count} classes."
+            )
+        return target_index
 
     def _explain_with_permutation(self, instance: InstanceLike) -> Dict[str, Any]:
         inst = self._to_numpy_2d(instance)[0]
@@ -447,7 +512,7 @@ class SHAPExplainer(BaseExplainer):
             perturbed = inst.copy()
             perturbed[j] = bg_mean[j]
             new_pred = float(np.asarray(self._predict_numeric(perturbed)).ravel()[0])
-            importances[j] = abs(base_pred - new_pred)
+            importances[j] = base_pred - new_pred
 
         feature_names = self._infer_feature_names(inst)
         return self._standardize_explanation_output(

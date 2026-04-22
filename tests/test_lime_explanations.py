@@ -346,6 +346,19 @@ def test_lime_avoids_duplicate_numeric_inference_when_probabilities_exist() -> N
     assert model.predict_proba_calls >= 3
 
 
+def test_lime_fit_reseeds_persistent_rng_after_random_state_updates() -> None:
+    explainer = _make_lime_explainer(_BinarySwitchingModel())
+
+    initial_sample = explainer._rng.normal(size=4)
+
+    explainer.random_state = 19
+    explainer.fit(explainer.dataset.X_train, explainer.dataset.y_train)
+    reseeded_sample = explainer._rng.normal(size=4)
+
+    assert not np.allclose(initial_sample, reseeded_sample)
+    np.testing.assert_allclose(reseeded_sample, np.random.default_rng(19).normal(size=4))
+
+
 def test_lime_supports_label_only_string_classifier_fallback() -> None:
     explainer = _make_lime_explainer(_StringLabelModel(), lime_num_samples=12, lime_noise_scale=0.1)
 

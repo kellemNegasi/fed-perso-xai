@@ -41,15 +41,24 @@ class ExplainerModelAdapter:
 
     def __init__(self, model: Any):
         self.model = model
+        model_classes = getattr(model, "classes_", None)
+        if model_classes is not None:
+            self.classes_ = np.asarray(model_classes)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        return np.asarray(self.model.predict(X), dtype=np.int64)
+        return np.asarray(self.model.predict(X))
 
     def predict_numeric(self, X: np.ndarray) -> np.ndarray:
-        return self.predict(X)
+        predict_numeric = getattr(self.model, "predict_numeric", None)
+        if callable(predict_numeric):
+            return np.asarray(predict_numeric(X))
+        return np.asarray(self.model.predict(X))
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        positive = np.asarray(self.model.predict_proba(X), dtype=np.float64).reshape(-1)
+        proba = np.asarray(self.model.predict_proba(X), dtype=np.float64)
+        if proba.ndim == 2:
+            return proba
+        positive = proba.reshape(-1)
         negative = 1.0 - positive
         return np.column_stack([negative, positive])
 

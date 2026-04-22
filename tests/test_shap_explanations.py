@@ -62,6 +62,26 @@ class FakeTreeExplainer:
         return [np.zeros_like(X_arr), X_arr]
 
 
+class FakeMulticlassKernelExplainer:
+    instances: list["FakeMulticlassKernelExplainer"] = []
+
+    def __init__(self, predict_fn, background):
+        self.predict_fn = predict_fn
+        self.background = np.asarray(background, dtype=np.float64)
+        self.expected_value = np.asarray([0.1, 0.3, 0.6], dtype=np.float64)
+        self.last_kwargs: dict[str, object] = {}
+        type(self).instances.append(self)
+
+    def shap_values(self, X, silent=True, **kwargs):
+        self.last_kwargs = dict(kwargs)
+        X_arr = np.asarray(X, dtype=np.float64)
+        return [
+            np.full_like(X_arr, -1.0),
+            X_arr + 0.25,
+            X_arr + 1.25,
+        ]
+
+
 def _install_fake_shap(monkeypatch) -> None:
     FakeKernelExplainer.instances.clear()
     FakeSamplingExplainer.instances.clear()
@@ -69,6 +89,16 @@ def _install_fake_shap(monkeypatch) -> None:
     module = SimpleNamespace(
         KernelExplainer=FakeKernelExplainer,
         SamplingExplainer=FakeSamplingExplainer,
+        TreeExplainer=FakeTreeExplainer,
+    )
+    monkeypatch.setitem(sys.modules, "shap", module)
+
+
+def _install_multiclass_fake_shap(monkeypatch) -> None:
+    FakeMulticlassKernelExplainer.instances.clear()
+    module = SimpleNamespace(
+        KernelExplainer=FakeMulticlassKernelExplainer,
+        SamplingExplainer=FakeMulticlassKernelExplainer,
         TreeExplainer=FakeTreeExplainer,
     )
     monkeypatch.setitem(sys.modules, "shap", module)
@@ -95,6 +125,62 @@ def _fit_model(client_data: ClientData):
     )
     model.fit(client_data.X_train, client_data.y_train, seed=11)
     return model
+
+
+class _CountingBinaryProbabilityModel:
+    _estimator_type = "classifier"
+    classes_ = np.asarray([0, 1], dtype=np.int64)
+
+    def __init__(self) -> None:
+        self.predict_calls = 0
+        self.predict_numeric_calls = 0
+        self.predict_proba_calls = 0
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        self.predict_proba_calls += 1
+        X_arr = np.asarray(X, dtype=float).reshape(-1, 2)
+        positive = np.clip(0.2 + 0.5 * X_arr[:, 0] + 0.1 * X_arr[:, 1], 1.0e-6, 1.0 - 1.0e-6)
+        negative = 1.0 - positive
+        return np.column_stack([negative, positive])
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        self.predict_calls += 1
+        X_arr = np.asarray(X, dtype=float).reshape(-1, 2)
+        return (X_arr[:, 0] + X_arr[:, 1] >= 0.75).astype(int)
+
+    def predict_numeric(self, X: np.ndarray) -> np.ndarray:
+        self.predict_numeric_calls += 1
+        return self.predict(X)
+
+
+class _StringMulticlassProbabilityModel:
+    _estimator_type = "classifier"
+    classes_ = np.asarray(["red", "green", "blue"], dtype=object)
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        X_arr = np.asarray(X, dtype=float).reshape(-1, 2)
+        scores = np.column_stack(
+            [
+                0.3 + 0.1 * X_arr[:, 0],
+                0.2 + 0.2 * X_arr[:, 0] + 0.3 * X_arr[:, 1],
+                0.4 + 0.1 * X_arr[:, 0] + 1.2 * X_arr[:, 1],
+            ]
+        )
+        shifted = scores - np.max(scores, axis=1, keepdims=True)
+        exp_scores = np.exp(shifted)
+        return exp_scores / np.sum(exp_scores, axis=1, keepdims=True)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        proba = self.predict_proba(X)
+        return self.classes_[np.argmax(proba, axis=1)]
+
+
+class _SignedRegressionModel:
+    _estimator_type = "regressor"
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        X_arr = np.asarray(X, dtype=float).reshape(-1, 2)
+        return X_arr[:, 0] - 2.0 * X_arr[:, 1]
 
 
 def test_shap_yaml_config_and_grid_are_exposed() -> None:
@@ -202,6 +288,97 @@ def test_generate_client_local_shap_explanations_schema_and_metadata(monkeypatch
     fake_explainer = FakeKernelExplainer.instances[-1]
     assert fake_explainer.last_kwargs["nsamples"] == 32
     assert fake_explainer.last_kwargs["l1_reg"] == "num_features(2)"
+
+
+def test_shap_avoids_duplicate_numeric_inference_when_probabilities_exist(monkeypatch) -> None:
+    _install_fake_shap(monkeypatch)
+    dataset = LocalExplanationDataset(
+        X_train=np.asarray([[0.0, 0.0], [1.0, 0.5], [0.3, 1.2]], dtype=float),
+        y_train=np.asarray([0, 1, 1], dtype=np.int64),
+        feature_names=["feature_0", "feature_1"],
+    )
+    model = _CountingBinaryProbabilityModel()
+    explainer = SHAPExplainer(
+        config={
+            "name": "shap",
+            "type": "shap",
+            "experiment": {
+                "explanation": {
+                    "background_data_source": "client_local_train",
+                    "random_state": 5,
+                    "background_sample_size": 3,
+                    "shap_explainer_type": "kernel",
+                }
+            },
+        },
+        model=model,
+        dataset=dataset,
+    )
+    explainer.fit(dataset.X_train, dataset.y_train)
+
+    explanation = explainer.explain_instance(np.asarray([0.6, 0.4], dtype=float))
+
+    assert explanation["metadata"]["explained_class"] == 1
+    assert model.predict_calls == 1
+    assert model.predict_numeric_calls == 0
+    assert model.predict_proba_calls == 1
+
+
+def test_shap_supports_string_multiclass_labels_when_selecting_class_outputs(monkeypatch) -> None:
+    _install_multiclass_fake_shap(monkeypatch)
+    dataset = LocalExplanationDataset(
+        X_train=np.asarray([[0.0, 0.0], [0.2, 0.4], [0.1, 1.0]], dtype=float),
+        y_train=np.asarray(["red", "green", "blue"], dtype=object),
+        feature_names=["feature_0", "feature_1"],
+    )
+    model = _StringMulticlassProbabilityModel()
+    explainer = SHAPExplainer(
+        config={
+            "name": "shap",
+            "type": "shap",
+            "experiment": {
+                "explanation": {
+                    "background_data_source": "client_local_train",
+                    "random_state": 7,
+                    "background_sample_size": 3,
+                    "shap_explainer_type": "kernel",
+                }
+            },
+        },
+        model=model,
+        dataset=dataset,
+    )
+    explainer.fit(dataset.X_train, dataset.y_train)
+
+    instance = np.asarray([0.2, 1.1], dtype=float)
+    explanation = explainer.explain_instance(instance)
+
+    assert explanation["prediction"] == "blue"
+    assert explanation["metadata"]["explained_class"] == 2
+    assert explanation["metadata"]["expected_value"] == 0.6
+    np.testing.assert_allclose(np.asarray(explanation["attributions"], dtype=float), instance + 1.25)
+
+
+def test_shap_permutation_fallback_preserves_attribution_sign() -> None:
+    dataset = LocalExplanationDataset(
+        X_train=np.asarray([[0.0, 0.0], [0.5, 0.0], [0.0, 0.5]], dtype=float),
+        y_train=np.asarray([0.0, 1.0, -1.0], dtype=float),
+        feature_names=["feature_0", "feature_1"],
+    )
+    explainer = SHAPExplainer(
+        config={
+            "type": "shap",
+            "experiment": {"explanation": {"random_state": 3}},
+        },
+        model=_SignedRegressionModel(),
+        dataset=dataset,
+    )
+
+    explanation = explainer.explain_instance(np.asarray([1.0, 1.0], dtype=float))
+    attributions = np.asarray(explanation["attributions"], dtype=float)
+
+    assert attributions[0] > 0.0
+    assert attributions[1] < 0.0
 
 
 def test_explain_shap_cli_writes_output(monkeypatch, mock_openml, tmp_path) -> None:

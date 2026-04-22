@@ -41,6 +41,27 @@ def _fit_model(client_data: ClientData):
     return model
 
 
+class _SmoothMulticlassModel:
+    _estimator_type = "classifier"
+    classes_ = np.asarray([0, 1, 2], dtype=np.int64)
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        X_arr = np.asarray(X, dtype=float).reshape(-1, 2)
+        scores = np.column_stack(
+            [
+                0.2 + 0.1 * X_arr[:, 0],
+                0.4 + 0.8 * X_arr[:, 0] - 0.6 * X_arr[:, 1],
+                0.1 - 0.2 * X_arr[:, 0] + 1.4 * X_arr[:, 1],
+            ]
+        )
+        shifted = scores - np.max(scores, axis=1, keepdims=True)
+        exp_scores = np.exp(shifted)
+        return exp_scores / np.sum(exp_scores, axis=1, keepdims=True)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.argmax(self.predict_proba(X), axis=1)
+
+
 def test_integrated_gradients_yaml_config_and_grid_are_exposed() -> None:
     spec = DEFAULT_EXPLAINER_REGISTRY.get("integrated_gradients")
     explanation_cfg = spec["params"]["experiment"]["explanation"]
@@ -184,3 +205,49 @@ def test_integrated_gradients_persists_inferred_explained_class_without_explicit
         np.asarray(explanation["metadata"]["baseline_instance"], dtype=float),
         np.mean(client_data.X_train, axis=0),
     )
+
+
+def test_integrated_gradients_multiclass_defaults_to_original_predicted_class() -> None:
+    dataset = LocalExplanationDataset(
+        X_train=np.asarray(
+            [
+                [0.0, 0.0],
+                [0.1, -0.2],
+                [-0.2, 0.3],
+            ],
+            dtype=float,
+        ),
+        y_train=np.asarray([0, 1, 2], dtype=np.int64),
+        feature_names=["feature_0", "feature_1"],
+    )
+    model = _SmoothMulticlassModel()
+    explainer = IntegratedGradientsExplainer(
+        config={
+            "name": "integrated_gradients",
+            "type": "integrated_gradients",
+            "experiment": {
+                "explanation": {
+                    "background_data_source": "client_local_train",
+                    "ig_target_class": None,
+                    "ig_steps": 128,
+                    "ig_epsilon": 1e-5,
+                }
+            },
+        },
+        model=model,
+        dataset=dataset,
+    )
+    explainer.fit(dataset.X_train, dataset.y_train)
+
+    instance = np.asarray([0.4, 1.1], dtype=float)
+    explanation = explainer.explain_instance(instance)
+    attributions = np.asarray(explanation["attributions"], dtype=float)
+    baseline = np.asarray(explanation["metadata"]["baseline_instance"], dtype=float)
+    probs_instance = model.predict_proba(instance.reshape(1, -1))[0]
+    probs_baseline = model.predict_proba(baseline.reshape(1, -1))[0]
+    expected_class = int(np.argmax(probs_instance))
+
+    assert expected_class == 2
+    assert explanation["metadata"]["explained_class"] == expected_class
+    assert abs(np.sum(attributions) - (probs_instance[expected_class] - probs_baseline[expected_class])) < 2e-2
+    assert abs(np.sum(attributions) - (probs_instance[1] - probs_baseline[1])) > 5e-2

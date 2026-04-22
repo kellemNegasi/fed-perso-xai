@@ -45,6 +45,7 @@ class LIMEExplainer(BaseExplainer):
     def fit(self, X: ArrayLike, y: Optional[ArrayLike] = None) -> None:
         """Cache training arrays/statistics for later perturbations."""
         require_client_local_background(self._expl_cfg)
+        self._rng = np.random.default_rng(self.random_state)
         self._cache_training_stats(X, y)
 
     def explain_instance(self, instance: InstanceLike) -> Dict[str, Any]:
@@ -358,28 +359,3 @@ class LIMEExplainer(BaseExplainer):
             return preds.astype(float)
         indices = self._prediction_indices(predictions)
         return indices.astype(float)
-
-    def _prediction_indices(self, predictions: np.ndarray) -> np.ndarray:
-        preds = np.asarray(predictions)
-        if preds.ndim > 1 and preds.shape[1] == 1:
-            preds = preds.ravel()
-        classes = getattr(self.model, "classes_", None)
-        if classes is not None:
-            try:
-                labels = list(classes)
-            except TypeError:
-                labels = None
-            if labels is not None:
-                mapping = {label: idx for idx, label in enumerate(labels)}
-                return np.asarray([mapping.get(value, 0) for value in preds], dtype=int)
-        _, inverse = np.unique(preds, return_inverse=True)
-        return inverse.astype(int)
-
-    def _prediction_output_value(self, prediction: Any) -> Any:
-        pred_arr = np.asarray(prediction, dtype=object).ravel()
-        if pred_arr.size == 0:
-            return None
-        value = pred_arr[0]
-        if isinstance(value, np.generic):
-            return value.item()
-        return value
