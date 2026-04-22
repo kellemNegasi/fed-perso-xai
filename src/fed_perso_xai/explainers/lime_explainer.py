@@ -53,20 +53,24 @@ class LIMEExplainer(BaseExplainer):
         inst_vec = inst2d[0]
         self._ensure_training_cache(inst_vec)
 
-        (attributions, info), t_lime = self._timeit(self._generate_local_explanation, inst_vec)
         prediction, t_pred = self._timeit(self._predict_numeric, inst2d)
         prediction_proba = self._predict_proba(inst2d)
+        proba_value = None
+        if prediction_proba is not None:
+            proba_value = np.asarray(prediction_proba)[0]
+        target_class = self._resolve_target_class(proba_value)
+        (attributions, info), t_lime = self._timeit(
+            self._generate_local_explanation,
+            inst_vec,
+            target_class,
+        )
 
         pred_arr = np.asarray(prediction).ravel()
         pred_value = float(pred_arr[0]) if pred_arr.size else float(pred_arr)
 
-        proba_value = None
-        if prediction_proba is not None:
-            proba_value = np.asarray(prediction_proba)[0]
-
         metadata = self._build_metadata(
             info=info,
-            prediction_proba=proba_value,
+            target_class=target_class,
         )
         return self._standardize_explanation_output(
             attributions=attributions.tolist(),
@@ -94,7 +98,6 @@ class LIMEExplainer(BaseExplainer):
 
         for idx, inst_vec in enumerate(X_np):
             self._ensure_training_cache(inst_vec)
-            attributions, info = self._generate_local_explanation(inst_vec)
 
             pred_row = np.asarray(preds[idx]).ravel()
             pred_value = float(pred_row[0]) if pred_row.size else float(pred_row)
@@ -102,6 +105,8 @@ class LIMEExplainer(BaseExplainer):
             proba_value = None
             if proba is not None:
                 proba_value = np.asarray(proba[idx])
+            target_class = self._resolve_target_class(proba_value)
+            attributions, info = self._generate_local_explanation(inst_vec, target_class)
 
             results.append(
                 self._standardize_explanation_output(
@@ -111,7 +116,7 @@ class LIMEExplainer(BaseExplainer):
                     prediction_proba=proba_value,
                     metadata=self._build_metadata(
                         info=info,
-                        prediction_proba=proba_value,
+                        target_class=target_class,
                     ),
                     per_instance_time=0.0,
                 )
@@ -157,7 +162,11 @@ class LIMEExplainer(BaseExplainer):
             return
         self._cache_training_stats(fallback_instance.reshape(1, -1), None)
 
-    def _generate_local_explanation(self, instance: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]:
+    def _generate_local_explanation(
+        self,
+        instance: np.ndarray,
+        target_class: Optional[int],
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
         """Perturb the instance, fit a weighted linear model, and return coefficients."""
         n_features = instance.shape[0]
         n_samples = int(self._expl_cfg.get("lime_num_samples", 100))
@@ -176,7 +185,11 @@ class LIMEExplainer(BaseExplainer):
         perturbations = np.vstack([instance, perturbations])
 
         preds = np.asarray(self._predict_numeric(perturbations))
-        target = self._local_target_vector(perturbations, preds)
+        target = self._local_target_vector(
+            perturbations,
+            preds,
+            target_class=target_class,
+        )
 
         distances = np.linalg.norm(perturbations - instance, axis=1)
         weights = np.exp(-(distances**2) / (kernel_width**2 + 1e-12))
@@ -191,6 +204,7 @@ class LIMEExplainer(BaseExplainer):
             "kernel_width": kernel_width,
             "noise_scale": noise_scale,
             "alpha": alpha,
+            "target_class": target_class,
         }
         return importance, info
 
@@ -198,7 +212,7 @@ class LIMEExplainer(BaseExplainer):
         self,
         *,
         info: Dict[str, Any],
-        prediction_proba: Optional[np.ndarray],
+        target_class: Optional[int],
     ) -> Dict[str, Any]:
         baseline_prediction = None
         baseline_instance = None
@@ -218,11 +232,17 @@ class LIMEExplainer(BaseExplainer):
             "noise_scale": info["noise_scale"],
             "alpha": info["alpha"],
         }
-        if prediction_proba is not None:
-            metadata["explained_class"] = int(np.argmax(np.asarray(prediction_proba, dtype=float)))
+        if target_class is not None:
+            metadata["explained_class"] = int(target_class)
         return metadata
 
-    def _local_target_vector(self, perturbations: np.ndarray, predictions: np.ndarray) -> np.ndarray:
+    def _local_target_vector(
+        self,
+        perturbations: np.ndarray,
+        predictions: np.ndarray,
+        *,
+        target_class: Optional[int],
+    ) -> np.ndarray:
         """Return numeric targets for the local surrogate regression."""
         proba = self._predict_proba(perturbations)
         if proba is not None:
@@ -232,28 +252,74 @@ class LIMEExplainer(BaseExplainer):
             if proba_arr.ndim == 2:
                 if proba_arr.shape[1] == 1:
                     return proba_arr.ravel()
-                if proba_arr.shape[1] == 2:
-                    return proba_arr[:, 1]
-                idx = self._prediction_indices(predictions)
-                rows = np.arange(len(idx))
-                idx = np.clip(idx, 0, proba_arr.shape[1] - 1)
-                return proba_arr[rows, idx]
+                if target_class is None:
+                    raise ValueError(
+                        "LIME target_class must be resolved from config or the original instance "
+                        "before building surrogate targets."
+                    )
+                if not 0 <= int(target_class) < proba_arr.shape[1]:
+                    raise ValueError(
+                        f"LIME target_class={target_class} is out of bounds for "
+                        f"{proba_arr.shape[1]} probability columns."
+                    )
+                return proba_arr[:, int(target_class)]
             flat = proba_arr.reshape(proba_arr.shape[0], -1)
             return flat[:, 0]
         return self._encode_prediction_labels(predictions)
 
-    def _prediction_indices(self, predictions: np.ndarray) -> np.ndarray:
-        preds = np.asarray(predictions)
-        if preds.ndim > 1 and preds.shape[1] == 1:
-            preds = preds.ravel()
+    def _resolve_target_class(self, prediction_proba: Optional[np.ndarray]) -> Optional[int]:
+        """
+        Resolve the single class index explained by one LIME surrogate.
+
+        Binary classification keeps the repository's existing positive-class
+        convention (class index 1) unless an explicit ``lime_target_class`` is
+        configured. Multiclass defaults to the original instance's predicted
+        class, and that same fixed class is used for every perturbation.
+        """
+        explicit_target = self._expl_cfg.get("lime_target_class")
+        if explicit_target is not None:
+            target_class = int(explicit_target)
+            class_count = self._class_count(prediction_proba)
+            if class_count is not None and not 0 <= target_class < class_count:
+                raise ValueError(
+                    f"experiment.explanation.lime_target_class={target_class} is out of bounds "
+                    f"for {class_count} classes."
+                )
+            return target_class
+
+        class_count = self._class_count(prediction_proba)
+        if class_count == 2:
+            return 1
+
+        proba_row = self._probability_row(prediction_proba)
+        if proba_row is not None and proba_row.size > 0:
+            return int(np.argmax(proba_row))
+        return None
+
+    def _class_count(self, prediction_proba: Optional[np.ndarray]) -> Optional[int]:
+        proba_row = self._probability_row(prediction_proba)
+        if proba_row is not None and proba_row.size > 1:
+            return int(proba_row.size)
+
         classes = getattr(self.model, "classes_", None)
-        if classes is not None:
-            mapping = {cls: idx for idx, cls in enumerate(list(classes))}
-            return np.array([mapping.get(val, 0) for val in preds], dtype=int)
-        if np.issubdtype(preds.dtype, np.number):
-            return preds.astype(int).reshape(-1)
-        _, inverse = np.unique(preds, return_inverse=True)
-        return inverse.astype(int)
+        if classes is None:
+            return None
+        try:
+            return int(len(classes))
+        except TypeError:
+            return None
+
+    def _probability_row(self, prediction_proba: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if prediction_proba is None:
+            return None
+        proba_arr = np.asarray(prediction_proba, dtype=float)
+        if proba_arr.size == 0:
+            return None
+        if proba_arr.ndim == 0:
+            return proba_arr.reshape(1)
+        if proba_arr.ndim == 1:
+            return proba_arr.reshape(-1)
+        return np.asarray(proba_arr[0], dtype=float).reshape(-1)
 
     def _encode_prediction_labels(self, predictions: np.ndarray) -> np.ndarray:
         preds = np.asarray(predictions)

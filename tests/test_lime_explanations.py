@@ -50,6 +50,7 @@ def test_lime_yaml_config_and_grid_are_exposed() -> None:
     assert explanation_cfg["lime_noise_scale"] == 0.1
     assert explanation_cfg["lime_kernel_width"] == 2.0
     assert float(explanation_cfg["lime_alpha"]) == 1e-2
+    assert explanation_cfg["lime_target_class"] is None
 
     grid = load_explainer_hyperparameter_grid()
     assert "lime" in grid
@@ -160,3 +161,166 @@ def test_generate_client_local_lime_explanations_schema_and_metadata(
         np.mean(client_data.X_train, axis=0),
     )
     assert any(abs(value) > 0.0 for value in explanation["attributions"])
+
+
+class _BinarySwitchingModel:
+    _estimator_type = "classifier"
+    classes_ = np.asarray([0, 1], dtype=np.int64)
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        X_arr = np.asarray(X, dtype=float).reshape(-1, 2)
+        positive = np.clip(0.15 + 0.6 * X_arr[:, 0], 1.0e-6, 1.0 - 1.0e-6)
+        negative = 1.0 - positive
+        return np.column_stack([negative, positive])
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.argmax(self.predict_proba(X), axis=1)
+
+    def predict_numeric(self, X: np.ndarray) -> np.ndarray:
+        return self.predict(X)
+
+
+class _MulticlassSwitchingModel:
+    _estimator_type = "classifier"
+    classes_ = np.asarray([0, 1, 2], dtype=np.int64)
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        X_arr = np.asarray(X, dtype=float).reshape(-1, 2)
+        scores = np.column_stack(
+            [
+                2.0 - X_arr[:, 0],
+                1.5 + X_arr[:, 0] - X_arr[:, 1],
+                1.0 + 1.2 * X_arr[:, 1],
+            ]
+        )
+        shifted = scores - np.max(scores, axis=1, keepdims=True)
+        exp_scores = np.exp(shifted)
+        return exp_scores / np.sum(exp_scores, axis=1, keepdims=True)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.argmax(self.predict_proba(X), axis=1)
+
+    def predict_numeric(self, X: np.ndarray) -> np.ndarray:
+        return self.predict(X)
+
+
+def _toy_lime_dataset() -> LocalExplanationDataset:
+    X_train = np.asarray(
+        [
+            [0.0, 0.0],
+            [0.5, 0.3],
+            [1.2, 0.2],
+            [0.2, 1.5],
+        ],
+        dtype=float,
+    )
+    y_train = np.asarray([0, 0, 1, 2], dtype=np.int64)
+    return LocalExplanationDataset(
+        X_train=X_train,
+        y_train=y_train,
+        feature_names=["feature_0", "feature_1"],
+    )
+
+
+def _make_lime_explainer(model, **expl_cfg) -> LIMEExplainer:
+    config = {
+        "name": "lime",
+        "type": "lime",
+        "experiment": {
+            "explanation": {
+                "random_state": 3,
+                "lime_num_samples": 8,
+                "lime_noise_scale": 0.05,
+                "lime_kernel_width": 1.5,
+                "lime_alpha": 0.01,
+                **expl_cfg,
+            }
+        },
+    }
+    explainer = LIMEExplainer(config=config, model=model, dataset=_toy_lime_dataset())
+    explainer.fit(explainer.dataset.X_train, explainer.dataset.y_train)
+    return explainer
+
+
+def test_lime_binary_uses_fixed_positive_class_convention_consistently() -> None:
+    explainer = _make_lime_explainer(_BinarySwitchingModel())
+    instance = np.asarray([0.2, 0.0], dtype=float)
+
+    explanation = explainer.explain_instance(instance)
+    perturbations = np.asarray(
+        [
+            instance,
+            [1.4, 0.0],
+            [0.0, 0.0],
+        ],
+        dtype=float,
+    )
+    perturbation_targets = explainer._local_target_vector(
+        perturbations,
+        explainer.model.predict(perturbations),
+        target_class=explanation["metadata"]["explained_class"],
+    )
+
+    assert int(np.argmax(np.asarray(explanation["prediction_proba"], dtype=float))) == 0
+    assert explanation["metadata"]["explained_class"] == 1
+    np.testing.assert_allclose(
+        perturbation_targets,
+        explainer.model.predict_proba(perturbations)[:, 1],
+    )
+
+
+def test_lime_multiclass_keeps_original_instance_target_class_fixed() -> None:
+    explainer = _make_lime_explainer(_MulticlassSwitchingModel())
+    instance = np.asarray([0.1, 1.2], dtype=float)
+
+    explanation = explainer.explain_instance(instance)
+    perturbations = np.asarray(
+        [
+            instance,
+            [2.4, -0.2],
+            [-0.5, 0.1],
+        ],
+        dtype=float,
+    )
+    proba = explainer.model.predict_proba(perturbations)
+    perturbation_targets = explainer._local_target_vector(
+        perturbations,
+        explainer.model.predict(perturbations),
+        target_class=explanation["metadata"]["explained_class"],
+    )
+    dynamic_targets = proba[np.arange(len(proba)), np.argmax(proba, axis=1)]
+
+    assert explanation["metadata"]["explained_class"] == int(
+        np.argmax(np.asarray(explanation["prediction_proba"], dtype=float))
+    )
+    np.testing.assert_allclose(
+        perturbation_targets,
+        proba[:, explanation["metadata"]["explained_class"]],
+    )
+    assert not np.allclose(perturbation_targets, dynamic_targets)
+
+
+def test_lime_explicit_target_class_overrides_original_prediction() -> None:
+    explainer = _make_lime_explainer(_MulticlassSwitchingModel(), lime_target_class=1)
+    instance = np.asarray([0.1, 1.2], dtype=float)
+
+    explanation = explainer.explain_instance(instance)
+    perturbations = np.asarray(
+        [
+            instance,
+            [2.4, -0.2],
+            [-0.5, 0.1],
+        ],
+        dtype=float,
+    )
+    perturbation_targets = explainer._local_target_vector(
+        perturbations,
+        explainer.model.predict(perturbations),
+        target_class=explanation["metadata"]["explained_class"],
+    )
+
+    assert explanation["metadata"]["explained_class"] == 1
+    np.testing.assert_allclose(
+        perturbation_targets,
+        explainer.model.predict_proba(perturbations)[:, 1],
+    )

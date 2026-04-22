@@ -19,6 +19,7 @@ lime:
         lime_noise_scale: 0.1
         lime_kernel_width: 2.0
         lime_alpha: 1e-2
+        lime_target_class: null
 
 shap:
   <<: *tabular_explainer
