@@ -185,11 +185,15 @@ class LIMEExplainer(BaseExplainer):
         )
         perturbations = np.vstack([instance, perturbations])
 
-        preds = np.asarray(self._predict_numeric(perturbations))
+        proba = self._predict_proba(perturbations)
+        preds = None
+        if proba is None:
+            preds = np.asarray(self._predict_numeric(perturbations))
         target = self._local_target_vector(
             perturbations,
-            preds,
             target_class=target_class,
+            probabilities=proba,
+            predictions=preds,
         )
 
         distances = np.linalg.norm(perturbations - instance, axis=1)
@@ -219,8 +223,9 @@ class LIMEExplainer(BaseExplainer):
         baseline_instance = None
         if self._train_mean is not None:
             baseline_instance = np.asarray(self._train_mean, dtype=float).reshape(-1).tolist()
-            baseline_prediction = float(
-                np.asarray(self._predict_numeric(self._train_mean.reshape(1, -1))).ravel()[0]
+            baseline_prediction = self._baseline_prediction(
+                self._train_mean,
+                target_class=target_class,
             )
 
         metadata: Dict[str, Any] = {
@@ -240,12 +245,15 @@ class LIMEExplainer(BaseExplainer):
     def _local_target_vector(
         self,
         perturbations: np.ndarray,
-        predictions: np.ndarray,
         *,
         target_class: Optional[int],
+        probabilities: Optional[np.ndarray] = None,
+        predictions: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Return numeric targets for the local surrogate regression."""
-        proba = self._predict_proba(perturbations)
+        proba = probabilities
+        if proba is None:
+            proba = self._predict_proba(perturbations)
         if proba is not None:
             proba_arr = np.asarray(proba)
             if proba_arr.ndim == 1:
@@ -266,7 +274,26 @@ class LIMEExplainer(BaseExplainer):
                 return proba_arr[:, int(target_class)]
             flat = proba_arr.reshape(proba_arr.shape[0], -1)
             return flat[:, 0]
+        if predictions is None:
+            predictions = np.asarray(self._predict_numeric(perturbations))
         return self._encode_prediction_labels(predictions)
+
+    def _baseline_prediction(
+        self,
+        baseline: np.ndarray,
+        *,
+        target_class: Optional[int],
+    ) -> float:
+        baseline_2d = np.asarray(baseline, dtype=float).reshape(1, -1)
+        proba = self._predict_proba(baseline_2d)
+        if proba is not None:
+            proba_row = np.asarray(proba, dtype=float).reshape(1, -1)[0]
+            if target_class is not None and 0 <= int(target_class) < proba_row.size:
+                return float(proba_row[int(target_class)])
+            if proba_row.size == 2:
+                return float(proba_row[1])
+            return float(np.max(proba_row))
+        return float(np.asarray(self._predict_numeric(baseline_2d)).ravel()[0])
 
     def _resolve_target_class(self, prediction_proba: Optional[np.ndarray]) -> Optional[int]:
         """
