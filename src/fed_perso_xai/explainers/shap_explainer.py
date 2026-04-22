@@ -447,6 +447,7 @@ class SHAPExplainer(BaseExplainer):
             if proba.ndim == 0:
                 proba = proba.reshape(1, 1)
             elif proba.ndim == 1:
+                # TODO : this might fail when prediction_proba is 1D for a batched input (common for binary models that return one positive-class score per row)
                 proba = proba.reshape(1, -1)
             if class_count is None and proba.ndim > 1:
                 class_count = int(proba.shape[1])
