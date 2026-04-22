@@ -204,6 +204,24 @@ class _MulticlassSwitchingModel:
         return self.predict(X)
 
 
+class _SignedBinaryModel:
+    _estimator_type = "classifier"
+    classes_ = np.asarray([0, 1], dtype=np.int64)
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        X_arr = np.asarray(X, dtype=float).reshape(-1, 2)
+        logits = 1.5 * X_arr[:, 0] - 2.0 * X_arr[:, 1]
+        positive = 1.0 / (1.0 + np.exp(-logits))
+        negative = 1.0 - positive
+        return np.column_stack([negative, positive])
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.argmax(self.predict_proba(X), axis=1)
+
+    def predict_numeric(self, X: np.ndarray) -> np.ndarray:
+        return self.predict(X)
+
+
 def _toy_lime_dataset() -> LocalExplanationDataset:
     X_train = np.asarray(
         [
@@ -269,6 +287,21 @@ def test_lime_binary_uses_fixed_positive_class_convention_consistently() -> None
     )
 
 
+def test_lime_preserves_signed_surrogate_coefficients() -> None:
+    explainer = _make_lime_explainer(
+        _SignedBinaryModel(),
+        lime_num_samples=256,
+        lime_noise_scale=0.2,
+        lime_alpha=1e-4,
+    )
+
+    explanation = explainer.explain_instance(np.asarray([0.4, 0.1], dtype=float))
+    attributions = np.asarray(explanation["attributions"], dtype=float)
+
+    assert attributions[0] > 0.0
+    assert attributions[1] < 0.0
+
+
 def test_lime_multiclass_keeps_original_instance_target_class_fixed() -> None:
     explainer = _make_lime_explainer(_MulticlassSwitchingModel())
     instance = np.asarray([0.1, 1.2], dtype=float)
@@ -324,3 +357,36 @@ def test_lime_explicit_target_class_overrides_original_prediction() -> None:
         perturbation_targets,
         explainer.model.predict_proba(perturbations)[:, 1],
     )
+
+
+def test_lime_empty_training_cache_reinitializes_from_instance() -> None:
+    empty_dataset = LocalExplanationDataset(
+        X_train=np.empty((0, 2), dtype=float),
+        y_train=np.empty((0,), dtype=np.int64),
+        feature_names=["feature_0", "feature_1"],
+    )
+    explainer = LIMEExplainer(
+        config={
+            "name": "lime",
+            "type": "lime",
+            "experiment": {
+                "explanation": {
+                    "random_state": 4,
+                    "lime_num_samples": 16,
+                    "lime_noise_scale": 0.05,
+                    "lime_kernel_width": 1.5,
+                    "lime_alpha": 0.01,
+                }
+            },
+        },
+        model=_BinarySwitchingModel(),
+        dataset=empty_dataset,
+    )
+    explainer.fit(empty_dataset.X_train, empty_dataset.y_train)
+
+    explanation = explainer.explain_instance(np.asarray([0.25, 0.5], dtype=float))
+
+    assert explainer._train_std is not None
+    assert np.all(np.isfinite(explainer._train_std))
+    assert np.allclose(explainer._train_std, np.full(2, 1e-6))
+    assert np.all(np.isfinite(np.asarray(explanation["attributions"], dtype=float)))

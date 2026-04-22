@@ -150,15 +150,16 @@ class LIMEExplainer(BaseExplainer):
                 X_np,
                 expl_cfg=self._expl_cfg,
             )
+            std = np.std(X_np, axis=0)
+            std[std == 0.0] = 1e-6
+            self._train_std = std
         else:
             self._train_mean = None
-        std = np.std(X_np, axis=0)
-        std[std == 0.0] = 1e-6
-        self._train_std = std
+            self._train_std = None
 
     def _ensure_training_cache(self, fallback_instance: np.ndarray) -> None:
         """Guarantee that perturbation stats exist, even if fit() was skipped."""
-        if self._X_train is not None:
+        if self._X_train is not None and self._train_std is not None:
             return
         self._cache_training_stats(fallback_instance.reshape(1, -1), None)
 
@@ -197,7 +198,7 @@ class LIMEExplainer(BaseExplainer):
 
         linear_model = Ridge(alpha=alpha)
         linear_model.fit(perturbations, target, sample_weight=weights)
-        importance = np.abs(linear_model.coef_)
+        importance = np.asarray(linear_model.coef_, dtype=float)
 
         info = {
             "num_samples": n_samples,
