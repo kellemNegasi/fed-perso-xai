@@ -1,4 +1,5 @@
 """Stage-oriented orchestration entrypoints."""
+from .stage_b_training import train_federated_stage_b
 from .explanations import (
     ExplainerModelAdapter,
     LocalExplanationDataset,
@@ -21,4 +22,5 @@ __all__ = [
     "load_saved_model_for_explanations",
     "resolve_feature_names_for_explanations",
     "save_client_explanations",
+    "train_federated_stage_b",
 ]

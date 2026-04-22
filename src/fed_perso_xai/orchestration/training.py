@@ -11,7 +11,6 @@ from fed_perso_xai.data.serialization import (
     ArraySplit,
     copy_shared_artifacts,
     load_array_split,
-    load_client_datasets,
 )
 from fed_perso_xai.evaluation.comparison import build_baseline_comparison, write_comparison_report
 from fed_perso_xai.evaluation.contracts import (
@@ -26,18 +25,9 @@ from fed_perso_xai.evaluation.metrics import (
 )
 from fed_perso_xai.evaluation.predictions import build_prediction_artifact, save_prediction_artifact
 from fed_perso_xai.models import TabularClassifier, create_model
-from fed_perso_xai.utils.config import (
-    CentralizedTrainingConfig,
-    ComparisonConfig,
-    FederatedTrainingConfig,
-)
-from fed_perso_xai.utils.paths import (
-    centralized_run_dir,
-    comparison_run_dir,
-    federated_run_dir,
-    partition_root,
-    prepared_dir,
-)
+from fed_perso_xai.orchestration.stage_b_training import train_federated_stage_b
+from fed_perso_xai.utils.config import CentralizedTrainingConfig, ComparisonConfig, FederatedTrainingConfig
+from fed_perso_xai.utils.paths import centralized_run_dir, comparison_run_dir, federated_run_dir, prepared_dir
 from fed_perso_xai.utils.provenance import (
     build_reproducibility_metadata,
     build_run_id,
@@ -171,113 +161,9 @@ def train_centralized_from_prepared(
 def train_federated_from_prepared(
     config: FederatedTrainingConfig,
 ) -> tuple[Any, dict[str, Any]]:
-    """Load saved client arrays, run federated training, and persist outputs."""
+    """Backward-compatible wrapper around the standalone Stage B runner."""
 
-    try:
-        from fed_perso_xai.fl.client import ClientData
-        from fed_perso_xai.fl.simulation import require_flower_support, run_federated_training
-    except ImportError as exc:  # pragma: no cover - depends on optional deps
-        raise RuntimeError(
-            "Federated training requires Flower support. Install `fed-perso-xai[fl]` "
-            "for the debug runtime or `fed-perso-xai[ray]` for Ray-backed simulation."
-        ) from exc
-    try:
-        require_flower_support()
-    except ImportError as exc:  # pragma: no cover - depends on optional deps
-        raise RuntimeError(
-            "Federated training requires Flower support. Install `fed-perso-xai[fl]` "
-            "for the debug runtime or `fed-perso-xai[ray]` for Ray-backed simulation."
-        ) from exc
-
-    run_id = build_run_id(
-        experiment_type="federated",
-        dataset_name=config.dataset_name,
-        seed=config.seed,
-        num_clients=config.num_clients,
-        alpha=config.alpha,
-    )
-    data_root = partition_root(
-        config.paths.partition_root,
-        config.dataset_name,
-        config.num_clients,
-        config.alpha,
-        config.seed,
-    )
-    partition_metadata_path = _resolve_partition_metadata_path(data_root)
-    if not partition_metadata_path.exists():
-        raise FileNotFoundError(
-            f"Missing prepared partition metadata at '{partition_metadata_path}'. Run prepare-data first."
-        )
-
-    metadata = json.loads(partition_metadata_path.read_text(encoding="utf-8"))
-    _validate_partition_metadata(metadata=metadata, config=config, metadata_path=partition_metadata_path)
-
-    prepared_root = Path(metadata["prepared_root"])
-    client_datasets = [
-        ClientData(
-            client_id=client.client_id,
-            X_train=client.train.X,
-            y_train=client.train.y,
-            row_ids_train=client.train.row_ids,
-            X_test=client.test.X,
-            y_test=client.test.y,
-            row_ids_test=client.test.row_ids,
-        )
-        for client in load_client_datasets(data_root, config.num_clients)
-    ]
-    result_dir = federated_run_dir(
-        config.paths,
-        config.dataset_name,
-        config.num_clients,
-        config.alpha,
-        config.seed,
-    )
-    copy_shared_artifacts(prepared_root, result_dir)
-    shutil.copy2(partition_metadata_path, result_dir / "partition_metadata.json")
-    config_path = result_dir / "config_snapshot.json"
-    config_path.write_text(json.dumps(config.to_dict(), indent=2), encoding="utf-8")
-    reproducibility_path = result_dir / "reproducibility_metadata.json"
-    reproducibility_path.write_text(
-        json.dumps(build_reproducibility_metadata(seed=config.seed), indent=2),
-        encoding="utf-8",
-    )
-
-    artifacts, summary = run_federated_training(
-        client_datasets=client_datasets,
-        config=config,
-        result_dir=result_dir,
-        run_id=run_id,
-    )
-    summary["run_id"] = run_id
-    summary["mode"] = "federated"
-    summary["run_manifest_path"] = str(result_dir / "run_manifest.json")
-    metrics_path = artifacts.metrics_path
-    metrics_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-
-    manifest = _build_run_manifest(
-        root_dir=result_dir,
-        run_id=run_id,
-        mode="federated",
-        dataset_name=config.dataset_name,
-        config=config.to_dict(),
-        seed_values={"global_seed": config.seed},
-        artifact_paths={
-            "config_snapshot": config_path,
-            "metrics": metrics_path,
-            "model": artifacts.model_path,
-            "runtime_report": artifacts.runtime_path,
-            "preprocessor": result_dir / "preprocessor.joblib",
-            "feature_metadata": result_dir / "feature_metadata.json",
-            "dataset_metadata": result_dir / "dataset_metadata.json",
-            "split_metadata": result_dir / "split_metadata.json",
-            "partition_metadata": result_dir / "partition_metadata.json",
-            "reproducibility_metadata": reproducibility_path,
-            "predictions_client_test": artifacts.predictions_path,
-        },
-    )
-    manifest_path = result_dir / "run_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return artifacts, summary
+    return train_federated_stage_b(config)
 
 
 def compare_centralized_and_federated(
@@ -297,7 +183,9 @@ def compare_centralized_and_federated(
     ) / "metrics_summary.json"
     if not centralized_metrics_path.exists() or not federated_metrics_path.exists():
         raise FileNotFoundError(
-            "Both centralized and federated metrics_summary.json files must exist before comparison."
+            "Both centralized and federated metrics_summary.json files must exist before comparison. "
+            "Standalone Stage B federated training no longer emits predictive evaluation metrics; "
+            "comparison now requires a downstream evaluation stage."
         )
 
     centralized_summary = json.loads(centralized_metrics_path.read_text(encoding="utf-8"))
@@ -363,41 +251,6 @@ def _evaluate_split(
         metrics=metrics,
         predictions_path=str(prediction_path),
     )
-
-
-def _resolve_partition_metadata_path(root_dir: Path) -> Path:
-    explicit = root_dir / "partition_metadata.json"
-    if explicit.exists():
-        return explicit
-    return root_dir / "metadata.json"
-
-
-def _validate_partition_metadata(
-    *,
-    metadata: dict[str, Any],
-    config: FederatedTrainingConfig,
-    metadata_path: Path,
-) -> None:
-    expected_values = {
-        "dataset_name": config.dataset_name,
-        "seed": config.seed,
-        "num_clients": config.num_clients,
-        "alpha": config.alpha,
-    }
-    mismatches = []
-    for field_name, expected in expected_values.items():
-        actual = metadata.get(field_name)
-        if actual != expected:
-            mismatches.append(
-                f"{field_name}: expected {expected!r}, found {actual!r}"
-            )
-    if mismatches:
-        details = "; ".join(mismatches)
-        raise ValueError(
-            f"Prepared partition metadata at '{metadata_path}' does not match the requested run: {details}."
-        )
-
-
 def _build_run_manifest(
     *,
     root_dir: Path,

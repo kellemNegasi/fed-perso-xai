@@ -13,9 +13,14 @@ import numpy as np
 from fed_perso_xai.data.serialization import load_client_datasets
 from fed_perso_xai.explainers import DEFAULT_EXPLAINER_REGISTRY, make_explainer
 from fed_perso_xai.fl.client import ClientData
-from fed_perso_xai.models import create_model
+from fed_perso_xai.models import create_model, load_global_model
 from fed_perso_xai.utils.config import ArtifactPaths, LogisticRegressionConfig
-from fed_perso_xai.utils.paths import centralized_run_dir, federated_run_dir, partition_root
+from fed_perso_xai.utils.paths import (
+    centralized_run_dir,
+    federated_run_dir,
+    partition_root,
+    stage_b_model_metadata_path,
+)
 
 
 @dataclass(frozen=True)
@@ -212,6 +217,11 @@ def load_saved_model_for_explanations(
         raise ValueError(
             f"Unsupported model source '{model_source}'. Expected 'federated' or 'centralized'."
         )
+
+    stage_b_metadata_path = stage_b_model_metadata_path(result_dir)
+    if stage_b_metadata_path.exists():
+        loaded = load_global_model(result_dir)
+        return loaded.model, result_dir
 
     config_path = result_dir / "config_snapshot.json"
     model_path = result_dir / "model_parameters.npz"

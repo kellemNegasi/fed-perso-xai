@@ -74,6 +74,60 @@ def federated_run_dir(
     )
 
 
+def stage_b_model_dir(run_dir: Path) -> Path:
+    """Return the directory containing frozen Stage B model artifacts."""
+
+    return run_dir / "model"
+
+
+def stage_b_training_dir(run_dir: Path) -> Path:
+    """Return the directory containing Stage B training metadata artifacts."""
+
+    return run_dir / "training"
+
+
+def stage_b_global_model_path(run_dir: Path) -> Path:
+    """Return the frozen global model artifact path."""
+
+    return stage_b_model_dir(run_dir) / "global_model.npz"
+
+
+def stage_b_model_metadata_path(run_dir: Path) -> Path:
+    """Return the Stage B model metadata path."""
+
+    return stage_b_model_dir(run_dir) / "model_metadata.json"
+
+
+def stage_b_training_metadata_path(run_dir: Path) -> Path:
+    """Return the Stage B training metadata path."""
+
+    return stage_b_training_dir(run_dir) / "training_metadata.json"
+
+
+def stage_b_training_history_path(run_dir: Path) -> Path:
+    """Return the Stage B training history CSV path."""
+
+    return stage_b_training_dir(run_dir) / "training_history.csv"
+
+
+def stage_b_runtime_report_path(run_dir: Path) -> Path:
+    """Return the Stage B runtime report path."""
+
+    return stage_b_training_dir(run_dir) / "runtime_report.json"
+
+
+def stage_b_completion_marker_path(run_dir: Path) -> Path:
+    """Return the Stage B completion marker path."""
+
+    return stage_b_training_dir(run_dir) / "stage_b.done"
+
+
+def stage_b_run_manifest_path(run_dir: Path) -> Path:
+    """Return the Stage B manifest path."""
+
+    return run_dir / "run_manifest.json"
+
+
 def comparison_run_dir(
     paths: ArtifactPaths,
     dataset_name: str,

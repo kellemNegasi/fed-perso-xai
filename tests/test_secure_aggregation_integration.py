@@ -10,6 +10,7 @@ from fed_perso_xai.fl.client import (
     extract_shared_parameter_payload,
 )
 from fed_perso_xai.fl.strategy import _build_secure_aggregator, _weighted_average_parameter_sets
+from fed_perso_xai.models import load_global_model
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
 from fed_perso_xai.orchestration.training import train_federated_from_prepared
 from fed_perso_xai.utils.config import (
@@ -109,7 +110,7 @@ def test_debug_federated_training_supports_plain_and_secure_modes(
         )
     )
 
-    _, plain_summary = train_federated_from_prepared(
+    plain_artifacts, plain_summary = train_federated_from_prepared(
         FederatedTrainingConfig(
             dataset_name="adult_income",
             seed=31,
@@ -122,7 +123,7 @@ def test_debug_federated_training_supports_plain_and_secure_modes(
             secure_aggregation=False,
         )
     )
-    _, secure_summary = train_federated_from_prepared(
+    secure_artifacts, secure_summary = train_federated_from_prepared(
         FederatedTrainingConfig(
             dataset_name="adult_income",
             seed=31,
@@ -141,12 +142,12 @@ def test_debug_federated_training_supports_plain_and_secure_modes(
         )
     )
 
-    assert plain_summary["round_history"][0]["aggregation"]["mode"] == "plain"
-    assert secure_summary["round_history"][0]["aggregation"]["mode"] == "secure"
-    assert secure_summary["round_history"][0]["aggregation"]["helper_count"] == 5
+    assert plain_summary["round_history_summary"][0]["aggregation"]["mode"] == "plain"
+    assert secure_summary["round_history_summary"][0]["aggregation"]["mode"] == "secure"
+    assert secure_summary["round_history_summary"][0]["aggregation"]["helper_count"] == 5
 
-    plain_parameters = plain_summary["final_parameters"]
-    secure_parameters = secure_summary["final_parameters"]
+    plain_parameters = load_global_model(plain_artifacts.run_dir).model.get_parameters()
+    secure_parameters = load_global_model(secure_artifacts.run_dir).model.get_parameters()
     np.testing.assert_allclose(
         np.asarray(secure_parameters[0], dtype=np.float64),
         np.asarray(plain_parameters[0], dtype=np.float64),

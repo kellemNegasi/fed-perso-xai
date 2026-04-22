@@ -17,10 +17,10 @@ from fed_perso_xai.orchestration.explanations import (
     resolve_feature_names_for_explanations,
     save_client_explanations,
 )
+from fed_perso_xai.orchestration.stage_b_training import train_federated_stage_b
 from fed_perso_xai.orchestration.training import (
     compare_centralized_and_federated,
     train_centralized_from_prepared,
-    train_federated_from_prepared,
 )
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     train_parser = subparsers.add_parser(
         "train-federated",
-        help="Train a Flower-based federated logistic regression model.",
+        help="Run standalone Stage B federated training from persisted client partitions.",
     )
     _add_common_dataset_args(train_parser, dataset_choices)
     _add_shared_path_args(train_parser)
@@ -101,6 +101,17 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--secure-field-modulus", type=int, default=2_147_483_647)
     train_parser.add_argument("--secure-quantization-scale", type=int, default=1 << 16)
     train_parser.add_argument("--secure-seed", type=int, default=0)
+    train_parser.add_argument("--run-id")
+    train_parser.add_argument(
+        "--partitions",
+        type=Path,
+        help="Explicit path to the persisted partitioned client dataset root.",
+    )
+    train_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing completed Stage B run for the same deterministic output location.",
+    )
 
     compare_parser = subparsers.add_parser(
         "compare-baselines",
@@ -219,15 +230,20 @@ def main() -> None:
             secure_quantization_scale=args.secure_quantization_scale,
             secure_seed=args.secure_seed,
         )
-        artifacts, summary = train_federated_from_prepared(config)
+        artifacts, summary = train_federated_stage_b(
+            config,
+            run_id=args.run_id,
+            partition_data_root=args.partitions,
+            force=args.force,
+        )
         print(
             json.dumps(
                 {
-                    "metrics_path": str(artifacts.metrics_path),
-                    "model_path": str(artifacts.model_path),
-                    "aggregated_weighted": summary["evaluation"]["predictive"]["splits"][
-                        "client_test_weighted"
-                    ]["metrics"],
+                    "run_dir": str(artifacts.run_dir),
+                    "model_path": str(artifacts.model_artifact_path),
+                    "training_metadata_path": str(artifacts.training_metadata_path),
+                    "status": summary["status"],
+                    "rounds_completed": summary["rounds_completed"],
                 },
                 indent=2,
             )
