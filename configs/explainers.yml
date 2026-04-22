@@ -3,6 +3,24 @@ templates:
     supported_data_types:
       - tabular
 
+lime:
+  <<: *tabular_explainer
+  type: lime
+  description: "Local linear surrogate LIME with client-local training statistics."
+  params:
+    experiment:
+      explanation:
+        max_instances: 100
+        method_max_instances: 200
+        sampling_strategy: random
+        random_state: 42
+        background_data_source: client_local_train
+        lime_num_samples: 100
+        lime_noise_scale: 0.1
+        lime_kernel_width: 2.0
+        lime_alpha: 1e-2
+        lime_target_class: null
+
 shap:
   <<: *tabular_explainer
   type: shap

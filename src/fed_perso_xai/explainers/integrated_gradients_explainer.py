@@ -71,7 +71,7 @@ class IntegratedGradientsExplainer(BaseExplainer):
         self._ensure_training_cache(inst_vec)
 
         (attributions, info), t_attr = self._timeit(self._integrated_gradients, inst_vec)
-        prediction, t_pred = self._timeit(self._predict_numeric, inst2d)
+        prediction, t_pred = self._timeit(self._predict, inst2d)
         prediction_proba = self._predict_proba(inst2d)
 
         metadata = {
@@ -81,17 +81,14 @@ class IntegratedGradientsExplainer(BaseExplainer):
             "epsilon": info["epsilon"],
         }
 
-        pred_arr = np.asarray(prediction).ravel()
-        pred_value = float(pred_arr[0]) if pred_arr.size else float(pred_arr)
+        pred_value = self._prediction_output_value(prediction)
 
         proba_value = None
         if prediction_proba is not None:
             proba_value = np.asarray(prediction_proba)[0]
-        target_class = self._expl_cfg.get("ig_target_class")
+        target_class = info["explained_class"]
         if target_class is not None:
             metadata["explained_class"] = int(target_class)
-        elif proba_value is not None:
-            metadata["explained_class"] = int(np.argmax(np.asarray(proba_value, dtype=float)))
 
         return self._standardize_explanation_output(
             attributions=attributions.tolist(),
@@ -113,7 +110,7 @@ class IntegratedGradientsExplainer(BaseExplainer):
             return []
 
         batch_start = time.time()
-        preds = np.asarray(self._predict_numeric(X_np))
+        preds = np.asarray(self._predict(X_np), dtype=object)
         proba = self._predict_proba(X_np)
 
         results: List[Dict[str, Any]] = []
@@ -121,8 +118,7 @@ class IntegratedGradientsExplainer(BaseExplainer):
             self._ensure_training_cache(inst_vec)
             attributions, info = self._integrated_gradients(inst_vec)
 
-            pred_row = np.asarray(preds[idx]).ravel()
-            pred_value = float(pred_row[0]) if pred_row.size else float(pred_row)
+            pred_value = self._prediction_output_value(preds[idx])
 
             proba_value = None
             if proba is not None:
@@ -134,11 +130,9 @@ class IntegratedGradientsExplainer(BaseExplainer):
                 "n_steps": info["n_steps"],
                 "epsilon": info["epsilon"],
             }
-            target_class = self._expl_cfg.get("ig_target_class")
+            target_class = info["explained_class"]
             if target_class is not None:
                 metadata["explained_class"] = int(target_class)
-            elif proba_value is not None:
-                metadata["explained_class"] = int(np.argmax(np.asarray(proba_value, dtype=float)))
 
             results.append(
                 self._standardize_explanation_output(
@@ -199,6 +193,7 @@ class IntegratedGradientsExplainer(BaseExplainer):
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         baseline, baseline_source = self._baseline(instance)
         diff = instance - baseline
+        target_class = self._resolve_target_class(instance)
 
         n_steps = max(10, int(self._expl_cfg.get("ig_steps", 100)))
         epsilon = float(self._expl_cfg.get("ig_epsilon", 1e-4))
@@ -208,7 +203,11 @@ class IntegratedGradientsExplainer(BaseExplainer):
 
         for i, alpha in enumerate(alphas):
             point = baseline + alpha * diff
-            gradients[i] = self._finite_difference_gradient(point, epsilon)
+            gradients[i] = self._finite_difference_gradient(
+                point,
+                epsilon,
+                target_class=target_class,
+            )
 
         avg_grad = gradients.mean(axis=0)
         attributions = diff * avg_grad
@@ -218,6 +217,7 @@ class IntegratedGradientsExplainer(BaseExplainer):
             "baseline_instance": np.asarray(baseline, dtype=float).reshape(-1).tolist(),
             "n_steps": n_steps,
             "epsilon": epsilon,
+            "explained_class": target_class,
         }
         return attributions, info
 
@@ -228,7 +228,11 @@ class IntegratedGradientsExplainer(BaseExplainer):
         return zeros, "zeros"
 
     def _finite_difference_gradient(
-        self, point: np.ndarray, epsilon: float
+        self,
+        point: np.ndarray,
+        epsilon: float,
+        *,
+        target_class: Optional[int],
     ) -> np.ndarray:
         n_features = len(point)
         if n_features == 0:
@@ -237,21 +241,41 @@ class IntegratedGradientsExplainer(BaseExplainer):
         indices = np.arange(n_features)
         perturbations[:n_features, indices] += epsilon
         perturbations[n_features:, indices] -= epsilon
-        scores = self._batched_scalar_predictions(perturbations)
+        scores = self._batched_scalar_predictions(perturbations, target_class=target_class)
         plus_vals = scores[:n_features]
         minus_vals = scores[n_features:]
         grad = (plus_vals - minus_vals) / (2 * epsilon)
         return grad
 
-    def _scalar_prediction(self, point: np.ndarray) -> float:
+    def _resolve_target_class(self, instance: np.ndarray) -> Optional[int]:
+        target = self._expl_cfg.get("ig_target_class")
+        if target is not None:
+            return int(target)
+
+        prediction_proba = self._predict_proba(instance.reshape(1, -1))
+        if prediction_proba is None:
+            return None
+
+        proba = np.asarray(prediction_proba, dtype=float)
+        if proba.ndim == 0:
+            return 0
+        if proba.ndim == 1:
+            proba = proba.reshape(1, -1)
+        if proba.shape[1] == 0:
+            return None
+        return int(np.argmax(proba[0]))
+
+    def _scalar_prediction(
+        self,
+        point: np.ndarray,
+        *,
+        target_class: Optional[int],
+    ) -> float:
         row = point.reshape(1, -1)
         if hasattr(self.model, "predict_proba"):
             proba = np.asarray(self.model.predict_proba(row)).ravel()
-            target = self._expl_cfg.get("ig_target_class")
-            if target is not None:
-                target_idx = int(target)
-                if 0 <= target_idx < len(proba):
-                    return float(proba[target_idx])
+            if target_class is not None and 0 <= int(target_class) < len(proba):
+                return float(proba[int(target_class)])
             if len(proba) > 1:
                 return float(proba[1])
             return float(proba[0])
@@ -259,14 +283,16 @@ class IntegratedGradientsExplainer(BaseExplainer):
         preds = np.asarray(self._predict_numeric(row)).ravel()
         return float(preds[0])
 
-    def _batched_scalar_predictions(self, points: np.ndarray) -> np.ndarray:
+    def _batched_scalar_predictions(
+        self,
+        points: np.ndarray,
+        *,
+        target_class: Optional[int],
+    ) -> np.ndarray:
         if hasattr(self.model, "predict_proba"):
             proba = np.asarray(self.model.predict_proba(points))
-            target = self._expl_cfg.get("ig_target_class")
-            if target is not None:
-                target_idx = int(target)
-                if proba.ndim > 1 and 0 <= target_idx < proba.shape[1]:
-                    return proba[:, target_idx].astype(float)
+            if target_class is not None and proba.ndim > 1 and 0 <= int(target_class) < proba.shape[1]:
+                return proba[:, int(target_class)].astype(float)
             if proba.ndim > 1:
                 if proba.shape[1] > 1:
                     return proba[:, 1].astype(float)
