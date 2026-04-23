@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import importlib.metadata
+import hashlib
+import json
 import platform
 import subprocess
 from pathlib import Path
@@ -21,15 +23,27 @@ def build_run_id(
     seed: int,
     num_clients: int | None = None,
     alpha: float | None = None,
+    model_name: str | None = None,
+    timestamp: str | None = None,
+    run_defining_payload: dict[str, Any] | None = None,
 ) -> str:
     """Build a stable run identifier."""
 
     parts = [experiment_type, dataset_name]
+    if timestamp:
+        compact = timestamp.replace("-", "").replace(":", "").replace("+00:00", "z")
+        compact = compact.replace("T", "t").replace(".", "")
+        parts.append(compact.lower())
+    if model_name:
+        parts.append(model_name)
     if num_clients is not None:
         parts.append(f"{num_clients}clients")
     if alpha is not None:
         parts.append(f"alpha{float(alpha)}")
     parts.append(f"seed{seed}")
+    if run_defining_payload:
+        serialized = json.dumps(run_defining_payload, sort_keys=True, separators=(",", ":"))
+        parts.append(hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12])
     return "-".join(parts)
 
 

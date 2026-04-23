@@ -22,6 +22,8 @@ from fed_perso_xai.utils.paths import (
     federated_completion_marker_path,
     federated_model_path,
     federated_model_metadata_path,
+    federated_run_artifact_dir,
+    federated_run_metadata_path,
     federated_run_manifest_path,
     federated_runtime_report_path,
     federated_training_history_path,
@@ -59,13 +61,6 @@ def train_federated_from_partitions(
 ) -> tuple[FederatedTrainingArtifacts, dict[str, Any]]:
     """Train a federated model from persisted client partitions."""
 
-    resolved_run_id = run_id or build_run_id(
-        experiment_type="federated-training",
-        dataset_name=config.dataset_name,
-        seed=config.seed,
-        num_clients=config.num_clients,
-        alpha=config.alpha,
-    )
     resolved_partition_root = partition_data_root or partition_root(
         config.paths.partition_root,
         config.dataset_name,
@@ -83,6 +78,7 @@ def train_federated_from_partitions(
     artifacts = _build_federated_training_artifacts(result_dir)
     config_snapshot = config.to_dict()
     config_hash = _stable_json_sha256(config_snapshot)
+    run_started_at = current_utc_timestamp()
 
     partition_metadata_path = _resolve_partition_metadata_path(resolved_partition_root)
     if not partition_metadata_path.exists():
@@ -102,6 +98,41 @@ def train_federated_from_partitions(
     )
 
     existing_metadata = _load_completed_federated_training_metadata(artifacts)
+    if run_id is None and existing_metadata is not None and not force:
+        mismatches = _describe_federated_training_reuse_mismatches(
+            metadata=existing_metadata,
+            expected_run_id=str(existing_metadata.get("run_id", "")),
+            expected_config_hash=config_hash,
+            expected_partition_signature=partition_signature,
+        )
+        if not mismatches:
+            metadata = dict(existing_metadata)
+            metadata["status"] = "skipped_existing"
+            metadata["skipped"] = True
+            return artifacts, metadata
+
+    resolved_run_id = run_id or build_run_id(
+        experiment_type="federated-training",
+        dataset_name=config.dataset_name,
+        seed=config.seed,
+        num_clients=config.num_clients,
+        alpha=config.alpha,
+        model_name=config.model_name,
+        timestamp=run_started_at,
+        run_defining_payload={
+            "dataset_name": config.dataset_name,
+            "model_name": config.model_name,
+            "model": config_snapshot.get("model"),
+            "num_clients": config.num_clients,
+            "alpha": config.alpha,
+            "rounds": config.rounds,
+            "strategy_name": config.strategy_name,
+            "simulation_backend": config.simulation_backend,
+            "seed": config.seed,
+            "secure_aggregation": config.secure_aggregation,
+        },
+    )
+
     if existing_metadata is not None:
         mismatches = _describe_federated_training_reuse_mismatches(
             metadata=existing_metadata,
@@ -152,7 +183,7 @@ def train_federated_from_partitions(
         encoding="utf-8",
     )
 
-    started_at = current_utc_timestamp()
+    started_at = run_started_at
     training_result = run_federated_training(
         client_datasets=client_datasets,
         config=config,
@@ -199,6 +230,7 @@ def train_federated_from_partitions(
             "partition_metadata_sha256": partition_signature["partition_metadata_sha256"],
             "num_clients": int(config.num_clients),
             "alpha": float(config.alpha),
+            "feature_metadata_path": str(partition_metadata.get("feature_metadata_path", "")),
         },
     }
     artifacts.model_metadata_path.parent.mkdir(parents=True, exist_ok=True)
@@ -268,6 +300,30 @@ def train_federated_from_partitions(
     manifest_path = federated_run_manifest_path(result_dir)
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
+    run_artifact_dir = _sync_federated_run_artifact(
+        paths=config.paths,
+        run_id=resolved_run_id,
+        canonical_run_dir=result_dir,
+        partition_metadata=partition_metadata,
+        training_metadata=training_metadata,
+        model_metadata=model_metadata,
+        artifact_paths={
+            "config_snapshot": config_snapshot_path,
+            "model_artifact": model_artifact_path,
+            "model_metadata": artifacts.model_metadata_path,
+            "training_metadata": artifacts.training_metadata_path,
+            "training_history": artifacts.training_history_path,
+            "runtime_report": artifacts.runtime_report_path,
+            "run_manifest": manifest_path,
+            "preprocessor": result_dir / "preprocessor.joblib",
+            "feature_metadata": result_dir / "feature_metadata.json",
+            "dataset_metadata": result_dir / "dataset_metadata.json",
+            "split_metadata": result_dir / "split_metadata.json",
+            "partition_metadata": result_dir / "partition_metadata.json",
+            "reproducibility_metadata": reproducibility_path,
+        },
+    )
+
     artifacts.completion_marker_path.write_text(
         json.dumps(
             {
@@ -279,6 +335,7 @@ def train_federated_from_partitions(
                     artifacts.training_metadata_path,
                     result_dir,
                 ),
+                "run_artifact_dir": str(run_artifact_dir),
             },
             indent=2,
         ),
@@ -454,3 +511,115 @@ def _relative_if_exists(path: Path, run_dir: Path) -> str | None:
 def _stable_json_sha256(payload: dict[str, Any]) -> str:
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _sync_federated_run_artifact(
+    *,
+    paths: Any,
+    run_id: str,
+    canonical_run_dir: Path,
+    partition_metadata: dict[str, Any],
+    training_metadata: dict[str, Any],
+    model_metadata: dict[str, Any],
+    artifact_paths: dict[str, Path],
+) -> Path:
+    run_artifact_dir = federated_run_artifact_dir(paths, run_id)
+    if run_artifact_dir.exists():
+        shutil.rmtree(run_artifact_dir)
+    run_artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    for key, source in artifact_paths.items():
+        if not source.exists():
+            continue
+        if key == "model_artifact":
+            destination = run_artifact_dir / "model" / "global_model.npz"
+        elif key == "model_metadata":
+            destination = run_artifact_dir / "model" / "model_metadata.json"
+        elif key == "training_metadata":
+            destination = run_artifact_dir / "training" / "training_metadata.json"
+        elif key == "training_history":
+            destination = run_artifact_dir / "training" / "training_history.csv"
+        elif key == "runtime_report":
+            destination = run_artifact_dir / "training" / "runtime_report.json"
+        elif key == "run_manifest":
+            destination = run_artifact_dir / "run_manifest.json"
+        else:
+            destination = run_artifact_dir / source.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+    run_metadata = {
+        "artifact_type": "federated_run",
+        "artifact_version": "federated_run_v2",
+        "run_id": run_id,
+        "created_at": training_metadata["started_at"],
+        "completed_at": training_metadata["completed_at"],
+        "status": training_metadata["status"],
+        "model_type": training_metadata["model_type"],
+        "dataset_name": training_metadata["dataset_name"],
+        "training_config": training_metadata["training_config"],
+        "training_config_sha256": training_metadata["training_config_sha256"],
+        "seed_values": training_metadata["seed_values"],
+        "canonical_run_dir": str(canonical_run_dir),
+        "model_artifact_path": "model/global_model.npz",
+        "model_metadata_path": "model/model_metadata.json",
+        "training_metadata_path": "training/training_metadata.json",
+        "run_manifest_path": "run_manifest.json",
+        "feature_metadata_path": "feature_metadata.json" if (run_artifact_dir / "feature_metadata.json").exists() else None,
+        "partition_reference": {
+            "partition_data_root": training_metadata["partition_data_root"],
+            "partition_metadata_path": training_metadata["partition_metadata_path"],
+            "partition_metadata_sha256": training_metadata["partition_metadata_sha256"],
+            "feature_metadata_path": partition_metadata.get("feature_metadata_path"),
+            "prepared_root": training_metadata["prepared_root"],
+            "num_clients": training_metadata["num_clients"],
+            "alpha": training_metadata["alpha"],
+        },
+        "model_summary": {
+            "n_features": model_metadata["n_features"],
+            "parameter_count": model_metadata["parameter_count"],
+            "serialization_format": model_metadata["serialization_format"],
+            "class_labels": model_metadata["class_labels"],
+        },
+        "artifacts": {
+            key: str(path.relative_to(run_artifact_dir))
+            for key, path in {
+                key: (
+                    run_artifact_dir / "model" / "global_model.npz"
+                    if key == "model_artifact"
+                    else run_artifact_dir / "model" / "model_metadata.json"
+                    if key == "model_metadata"
+                    else run_artifact_dir / "training" / "training_metadata.json"
+                    if key == "training_metadata"
+                    else run_artifact_dir / "training" / "training_history.csv"
+                    if key == "training_history"
+                    else run_artifact_dir / "training" / "runtime_report.json"
+                    if key == "runtime_report"
+                    else run_artifact_dir / "run_manifest.json"
+                    if key == "run_manifest"
+                    else run_artifact_dir / source.name
+                )
+                for key, source in artifact_paths.items()
+                if (
+                    (run_artifact_dir / "model" / "global_model.npz").exists()
+                    if key == "model_artifact"
+                    else (run_artifact_dir / "model" / "model_metadata.json").exists()
+                    if key == "model_metadata"
+                    else (run_artifact_dir / "training" / "training_metadata.json").exists()
+                    if key == "training_metadata"
+                    else (run_artifact_dir / "training" / "training_history.csv").exists()
+                    if key == "training_history"
+                    else (run_artifact_dir / "training" / "runtime_report.json").exists()
+                    if key == "runtime_report"
+                    else (run_artifact_dir / "run_manifest.json").exists()
+                    if key == "run_manifest"
+                    else (run_artifact_dir / source.name).exists()
+                )
+            }
+        },
+    }
+    federated_run_metadata_path(run_artifact_dir).write_text(
+        json.dumps(run_metadata, indent=2),
+        encoding="utf-8",
+    )
+    return run_artifact_dir

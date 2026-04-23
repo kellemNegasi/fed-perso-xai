@@ -1,4 +1,5 @@
 """High-level orchestration entrypoints."""
+from .explain_eval import run_explain_eval_job
 from .federated_training import train_federated_from_partitions
 from .explanations import (
     ExplainerModelAdapter,
@@ -20,6 +21,7 @@ __all__ = [
     "load_client_data_for_explanations",
     "load_feature_names_from_metadata",
     "load_saved_model_for_explanations",
+    "run_explain_eval_job",
     "resolve_feature_names_for_explanations",
     "save_client_explanations",
     "train_federated_from_partitions",

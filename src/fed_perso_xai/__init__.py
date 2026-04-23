@@ -1,5 +1,6 @@
 """Federated Perso-XAI baseline package."""
 
+from .orchestration import run_explain_eval_job
 from .utils.config import (
     ArtifactPaths,
     CentralizedTrainingConfig,
@@ -20,4 +21,5 @@ __all__ = [
     "LogisticRegressionConfig",
     "PartitionConfig",
     "PreprocessingConfig",
+    "run_explain_eval_job",
 ]
