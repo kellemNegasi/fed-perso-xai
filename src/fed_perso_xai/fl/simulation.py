@@ -1,12 +1,10 @@
-"""Flower runtime integration for stage-1 federated experiments."""
+"""Flower runtime integration for baseline federated experiments."""
 
 from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
-import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -28,30 +26,13 @@ except ImportError:  # pragma: no cover - exercised via optional dependency path
     ServerAppComponents = None  # type: ignore[assignment]
     ServerConfig = None  # type: ignore[assignment]
 
-from fed_perso_xai.evaluation.metrics import (
-    aggregate_weighted_metrics,
-    compute_pooled_classification_metrics,
-    summarize_class_balance,
-    summarize_probability_distribution,
-    sweep_classification_thresholds,
-)
-from fed_perso_xai.evaluation.predictions import (
-    build_prediction_artifact,
-    save_prediction_artifact,
-)
-from fed_perso_xai.evaluation.contracts import (
-    ClientEvaluationReport,
-    ExtensionEvaluationBundle,
-    PredictiveEvaluationBundle,
-    SplitEvaluationReport,
-)
 from fed_perso_xai.fl.client import ClientData, FederatedLogisticRegressionClient
 from fed_perso_xai.fl.strategy import (
     FederatedRunRecorder,
     StrategyFactory,
     create_strategy_factory,
 )
-from fed_perso_xai.models import create_model, initialize_model_parameters
+from fed_perso_xai.models import initialize_model_parameters
 from fed_perso_xai.utils.config import FederatedTrainingConfig
 
 
@@ -77,13 +58,12 @@ class FlowerRuntimePlan:
 
 @dataclass(frozen=True)
 class SimulationArtifacts:
-    """Training outputs for one federated run."""
+    """In-memory training outputs for one federated run."""
 
-    result_dir: Path
-    metrics_path: Path
-    model_path: Path
-    predictions_path: Path
-    runtime_path: Path
+    final_parameters: list[np.ndarray]
+    round_history: list[dict[str, object]]
+    runtime_report: dict[str, Any]
+    actual_backend: str
 
 
 def plan_flower_runtime(config: FederatedTrainingConfig) -> FlowerRuntimePlan:
@@ -132,17 +112,14 @@ def run_federated_training(
     *,
     client_datasets: list[ClientData],
     config: FederatedTrainingConfig,
-    result_dir: Path,
-    run_id: str,
     strategy_factory: StrategyFactory | None = None,
-) -> tuple[SimulationArtifacts, dict[str, Any]]:
-    """Run federated training and persist final metrics and parameters."""
+) -> SimulationArtifacts:
+    """Run federated training and return final parameters plus runtime metadata."""
 
     require_flower_support()
     if not client_datasets:
         raise ValueError("client_datasets must not be empty.")
 
-    result_dir.mkdir(parents=True, exist_ok=True)
     runtime_plan = plan_flower_runtime(config)
     initial_parameters = initialize_model_parameters(
         config.model_name,
@@ -162,16 +139,6 @@ def run_federated_training(
         strategy_factory=factory,
         initial_parameters=initial_parameters,
     )
-
-    summary, predictions_path = _evaluate_and_persist_results(
-        client_datasets=client_datasets,
-        config=config,
-        result_dir=result_dir,
-        recorder=recorder,
-        final_parameters=final_parameters,
-        run_id=run_id,
-        actual_backend=actual_backend,
-    )
     runtime_report = {
         "requested_backend": runtime_plan.requested_backend,
         "planned_backend": runtime_plan.resolved_backend,
@@ -182,28 +149,14 @@ def run_federated_training(
         "warnings": runtime_plan.warnings + runtime_warnings,
         "rounds_completed": len(recorder.round_history),
     }
-    runtime_path = result_dir / "runtime_report.json"
-    runtime_path.write_text(json.dumps(runtime_report, indent=2), encoding="utf-8")
-
-    metrics_path = result_dir / "metrics_summary.json"
-    model_path = result_dir / "model_parameters.npz"
-    summary["runtime"] = runtime_report
-    summary["simulation_backend"] = actual_backend
-    metrics_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    np.savez_compressed(
-        model_path,
-        weights=np.asarray(final_parameters[0], dtype=np.float64),
-        bias=np.asarray(final_parameters[1], dtype=np.float64),
-    )
-    return (
-        SimulationArtifacts(
-            result_dir=result_dir,
-            metrics_path=metrics_path,
-            model_path=model_path,
-            predictions_path=predictions_path,
-            runtime_path=runtime_path,
-        ),
-        summary,
+    return SimulationArtifacts(
+        final_parameters=[
+            np.asarray(parameter, dtype=np.float64).copy()
+            for parameter in final_parameters
+        ],
+        round_history=[dict(item) for item in recorder.round_history],
+        runtime_report=runtime_report,
+        actual_backend=actual_backend,
     )
 
 
@@ -384,128 +337,6 @@ def _run_debug_sequential_runtime(
 
     recorder.final_parameters = parameters
     return parameters
-
-
-def _evaluate_and_persist_results(
-    *,
-    client_datasets: list[ClientData],
-    config: FederatedTrainingConfig,
-    result_dir: Path,
-    recorder: FederatedRunRecorder,
-    final_parameters: list[np.ndarray],
-    run_id: str,
-    actual_backend: str,
-) -> tuple[dict[str, Any], Path]:
-    per_client: list[ClientEvaluationReport] = []
-    aggregated_inputs: list[tuple[int, dict[str, float]]] = []
-    pooled_probabilities: list[np.ndarray] = []
-    pooled_labels: list[np.ndarray] = []
-    pooled_row_ids: list[np.ndarray] = []
-    pooled_client_ids: list[np.ndarray] = []
-
-    for dataset in client_datasets:
-        model = create_model(
-            config.model_name,
-            n_features=dataset.X_test.shape[1],
-            config=config.model,
-        )
-        model.set_parameters(final_parameters)
-        probabilities = model.predict_proba(dataset.X_test)
-        loss = model.loss(dataset.X_test, dataset.y_test)
-        metrics = compute_pooled_classification_metrics(
-            y_true=dataset.y_test,
-            y_prob=probabilities,
-            loss=loss,
-        )
-        per_client.append(
-            ClientEvaluationReport(
-                client_id=dataset.client_id,
-                split_name="client_test",
-                num_examples=int(dataset.y_test.shape[0]),
-                class_balance=summarize_class_balance(dataset.y_test),
-                probability_summary=summarize_probability_distribution(probabilities),
-                metrics=metrics,
-            )
-        )
-        aggregated_inputs.append((int(dataset.y_test.shape[0]), metrics))
-        pooled_probabilities.append(probabilities)
-        pooled_labels.append(dataset.y_test)
-        pooled_row_ids.append(dataset.row_ids_test)
-        pooled_client_ids.append(
-            np.full(dataset.y_test.shape[0], dataset.client_id, dtype=np.int64)
-        )
-
-    aggregated_metrics = aggregate_weighted_metrics(aggregated_inputs)
-    pooled_y_true = np.concatenate(pooled_labels, axis=0)
-    pooled_y_prob = np.concatenate(pooled_probabilities, axis=0)
-    pooled_loss = float(
-        np.average(
-            [row.metrics["loss"] for row in per_client],
-            weights=[row.num_examples for row in per_client],
-        )
-    )
-    pooled_metrics = compute_pooled_classification_metrics(
-        y_true=pooled_y_true,
-        y_prob=pooled_y_prob,
-        loss=pooled_loss,
-    )
-    threshold_sweep = sweep_classification_thresholds(y_true=pooled_y_true, y_prob=pooled_y_prob)
-    predictions = build_prediction_artifact(
-        run_id=run_id,
-        dataset_name=config.dataset_name,
-        split_name="client_test",
-        y_true=pooled_y_true,
-        y_prob=pooled_y_prob,
-        row_ids=np.concatenate(pooled_row_ids, axis=0),
-        client_ids=np.concatenate(pooled_client_ids, axis=0),
-    )
-    predictions_path = save_prediction_artifact(result_dir / "predictions_client_test.npz", predictions)
-
-    predictive_evaluation = PredictiveEvaluationBundle(
-        splits={
-            "client_test_weighted": SplitEvaluationReport(
-                split_name="client_test_weighted",
-                provenance={
-                    "source": "weighted_client_evaluation",
-                    "client_count": len(client_datasets),
-                    "backend": actual_backend,
-                },
-                class_balance=summarize_class_balance(pooled_y_true),
-                probability_summary=summarize_probability_distribution(pooled_y_prob),
-                metrics=aggregated_metrics,
-            ),
-            "client_test_pooled": SplitEvaluationReport(
-                split_name="client_test",
-                provenance={
-                    "source": "pooled_client_predictions",
-                    "client_count": len(client_datasets),
-                    "backend": actual_backend,
-                },
-                class_balance=summarize_class_balance(pooled_y_true),
-                probability_summary=summarize_probability_distribution(pooled_y_prob),
-                metrics=pooled_metrics,
-                predictions_path=str(predictions_path),
-            ),
-        },
-        per_client=per_client,
-    )
-    summary = {
-        "run_id": run_id,
-        "experiment_type": "federated",
-        "dataset_name": config.dataset_name,
-        "result_dir": str(result_dir),
-        "config": config.to_dict(),
-        "round_history": recorder.round_history,
-        "evaluation": {
-            "predictive": predictive_evaluation.to_dict(),
-            "extensions": ExtensionEvaluationBundle().to_dict(),
-        },
-        "threshold_analysis": threshold_sweep,
-        "final_parameters": [final_parameters[0].tolist(), final_parameters[1].tolist()],
-        "predictions_path": str(predictions_path),
-    }
-    return summary, predictions_path
-
 
 def _canonicalize_backend(requested_backend: str) -> str:
     try:

@@ -1,4 +1,4 @@
-"""CLI entrypoints for the stage-1 experiment workflow."""
+"""CLI entrypoints for the baseline experiment workflow."""
 
 from __future__ import annotations
 
@@ -14,13 +14,14 @@ from fed_perso_xai.orchestration.explanations import (
     generate_client_local_explanations,
     load_client_data_for_explanations,
     load_saved_model_for_explanations,
+    resolve_partition_data_root_for_explanations,
     resolve_feature_names_for_explanations,
     save_client_explanations,
 )
+from fed_perso_xai.orchestration.federated_training import train_federated_from_partitions
 from fed_perso_xai.orchestration.training import (
     compare_centralized_and_federated,
     train_centralized_from_prepared,
-    train_federated_from_prepared,
 )
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
@@ -44,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     dataset_choices = DEFAULT_DATASET_REGISTRY.list_keys()
     model_choices = DEFAULT_MODEL_REGISTRY.list_keys()
     strategy_choices = DEFAULT_STRATEGY_REGISTRY.list_keys()
-    parser = argparse.ArgumentParser(description="Federated Perso-XAI stage-1 baseline.")
+    parser = argparse.ArgumentParser(description="Federated Perso-XAI baseline.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     prepare_parser = subparsers.add_parser(
@@ -70,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     train_parser = subparsers.add_parser(
         "train-federated",
-        help="Train a Flower-based federated logistic regression model.",
+        help="Train a federated model from persisted client partitions.",
     )
     _add_common_dataset_args(train_parser, dataset_choices)
     _add_shared_path_args(train_parser)
@@ -101,6 +102,17 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--secure-field-modulus", type=int, default=2_147_483_647)
     train_parser.add_argument("--secure-quantization-scale", type=int, default=1 << 16)
     train_parser.add_argument("--secure-seed", type=int, default=0)
+    train_parser.add_argument("--run-id")
+    train_parser.add_argument(
+        "--partitions",
+        type=Path,
+        help="Explicit path to the persisted partitioned client dataset root.",
+    )
+    train_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing completed federated run for the same deterministic output location.",
+    )
 
     compare_parser = subparsers.add_parser(
         "compare-baselines",
@@ -117,6 +129,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_shared_path_args(explain_parser)
     explain_parser.add_argument("--client-id", type=int, required=True)
     explain_parser.add_argument("--model-source", choices=MODEL_SOURCE_CHOICES, default="federated")
+    explain_parser.add_argument(
+        "--partitions",
+        type=Path,
+        help="Explicit path to the persisted partitioned client dataset root.",
+    )
     explain_parser.add_argument("--split", choices=["train", "test"], default="test")
     explain_parser.add_argument("--output", type=Path)
     explain_parser.add_argument("--background-sample-size", type=int)
@@ -219,15 +236,20 @@ def main() -> None:
             secure_quantization_scale=args.secure_quantization_scale,
             secure_seed=args.secure_seed,
         )
-        artifacts, summary = train_federated_from_prepared(config)
+        artifacts, summary = train_federated_from_partitions(
+            config,
+            run_id=args.run_id,
+            partition_data_root=args.partitions,
+            force=args.force,
+        )
         print(
             json.dumps(
                 {
-                    "metrics_path": str(artifacts.metrics_path),
-                    "model_path": str(artifacts.model_path),
-                    "aggregated_weighted": summary["evaluation"]["predictive"]["splits"][
-                        "client_test_weighted"
-                    ]["metrics"],
+                    "run_dir": str(artifacts.run_dir),
+                    "model_path": str(artifacts.model_artifact_path),
+                    "training_metadata_path": str(artifacts.training_metadata_path),
+                    "status": summary["status"],
+                    "rounds_completed": summary["rounds_completed"],
                 },
                 indent=2,
             )
@@ -256,6 +278,15 @@ def main() -> None:
 
     if args.command == "explain-shap":
         paths = _build_artifact_paths(args)
+        partition_data_root = resolve_partition_data_root_for_explanations(
+            paths=paths,
+            dataset_name=args.dataset,
+            seed=args.seed,
+            model_source=args.model_source,
+            num_clients=args.num_clients,
+            alpha=args.alpha,
+            partition_data_root=args.partitions,
+        )
         client_data = load_client_data_for_explanations(
             paths=paths,
             dataset_name=args.dataset,
@@ -263,6 +294,7 @@ def main() -> None:
             alpha=args.alpha,
             seed=args.seed,
             client_id=args.client_id,
+            partition_data_root=partition_data_root,
         )
         model, result_dir = load_saved_model_for_explanations(
             paths=paths,
@@ -279,6 +311,7 @@ def main() -> None:
             model_source=args.model_source,
             num_clients=args.num_clients,
             alpha=args.alpha,
+            partition_data_root=partition_data_root,
         )
         payload = generate_client_local_explanations(
             client_data=client_data,
@@ -299,6 +332,7 @@ def main() -> None:
                 {
                     "output_path": str(output_path),
                     "model_source": args.model_source,
+                    "partition_data_root": str(partition_data_root),
                     "client_id": args.client_id,
                     "split": args.split,
                     "n_explanations": payload["n_explanations"],

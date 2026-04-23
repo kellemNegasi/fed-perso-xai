@@ -1,4 +1,4 @@
-"""Dataset registry and dataset-specific hooks for tabular stage-1 experiments."""
+"""Dataset registry and dataset-specific hooks for tabular baseline experiments."""
 
 from __future__ import annotations
 

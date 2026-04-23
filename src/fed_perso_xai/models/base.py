@@ -9,7 +9,7 @@ import numpy as np
 
 
 class TabularClassifier(Protocol):
-    """Protocol shared by centralized and federated stage-1 models."""
+    """Protocol shared by centralized and federated baseline models."""
 
     def fit(self, X: np.ndarray, y: np.ndarray, seed: int) -> float:
         """Fit on a training split and return the final training loss."""

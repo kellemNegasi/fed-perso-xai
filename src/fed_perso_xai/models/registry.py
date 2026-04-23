@@ -91,8 +91,20 @@ def create_model(
         raise TypeError(
             f"Model '{model_name}' expects config type {spec.config_type.__name__}, "
             f"received {type(config).__name__}."
-        )
+    )
     return spec.build_model(n_features, config)
+
+
+def build_model_config(
+    model_name: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    registry: ModelRegistry | None = None,
+) -> Any:
+    """Build the typed config object for one model from serialized values."""
+
+    spec = (registry or DEFAULT_MODEL_REGISTRY).get(model_name)
+    return spec.config_type(**dict(payload or {}))
 
 
 def initialize_model_parameters(

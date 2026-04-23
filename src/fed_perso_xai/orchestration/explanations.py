@@ -13,9 +13,15 @@ import numpy as np
 from fed_perso_xai.data.serialization import load_client_datasets
 from fed_perso_xai.explainers import DEFAULT_EXPLAINER_REGISTRY, make_explainer
 from fed_perso_xai.fl.client import ClientData
-from fed_perso_xai.models import create_model
+from fed_perso_xai.models import create_model, load_global_model
 from fed_perso_xai.utils.config import ArtifactPaths, LogisticRegressionConfig
-from fed_perso_xai.utils.paths import centralized_run_dir, federated_run_dir, partition_root
+from fed_perso_xai.utils.paths import (
+    centralized_run_dir,
+    federated_run_dir,
+    partition_root,
+    federated_model_metadata_path,
+    federated_training_metadata_path,
+)
 
 
 @dataclass(frozen=True)
@@ -34,7 +40,7 @@ class LocalExplanationDataset:
 
 
 class ExplainerModelAdapter:
-    """Expose sklearn-like classifier methods around the stage-1 model contract."""
+    """Expose sklearn-like classifier methods around the baseline model contract."""
 
     _estimator_type = "classifier"
     classes_ = np.asarray([0, 1], dtype=np.int64)
@@ -169,10 +175,17 @@ def load_client_data_for_explanations(
     alpha: float,
     seed: int,
     client_id: int,
+    partition_data_root: Path | None = None,
 ) -> ClientData:
     """Load one saved client partition for explanation generation."""
 
-    root_dir = partition_root(paths.partition_root, dataset_name, num_clients, alpha, seed)
+    root_dir = partition_data_root or partition_root(
+        paths.partition_root,
+        dataset_name,
+        num_clients,
+        alpha,
+        seed,
+    )
     datasets = load_client_datasets(root_dir, num_clients)
     try:
         client = next(item for item in datasets if item.client_id == client_id)
@@ -192,6 +205,42 @@ def load_client_data_for_explanations(
     )
 
 
+def resolve_partition_data_root_for_explanations(
+    *,
+    paths: ArtifactPaths,
+    dataset_name: str,
+    seed: int,
+    model_source: str,
+    num_clients: int,
+    alpha: float,
+    partition_data_root: Path | None = None,
+) -> Path:
+    """Resolve the persisted client partition root used for explanation loading."""
+
+    if partition_data_root is not None:
+        return partition_data_root
+
+    default_partition_root = partition_root(paths.partition_root, dataset_name, num_clients, alpha, seed)
+
+    normalized_source = model_source.strip().lower()
+    if normalized_source == "federated":
+        result_dir = federated_run_dir(paths, dataset_name, num_clients, alpha, seed)
+        training_metadata_path = federated_training_metadata_path(result_dir)
+        if training_metadata_path.exists():
+            training_metadata = json.loads(training_metadata_path.read_text(encoding="utf-8"))
+            recorded_partition_root = training_metadata.get("partition_data_root")
+            if not isinstance(recorded_partition_root, str) or not recorded_partition_root.strip():
+                raise ValueError(
+                    "Federated training metadata is missing 'partition_data_root', so the "
+                    "explanation data source cannot be resolved safely."
+                )
+            recorded_partition_path = Path(recorded_partition_root)
+            if recorded_partition_path.exists() or not default_partition_root.exists():
+                return recorded_partition_path
+
+    return default_partition_root
+
+
 def load_saved_model_for_explanations(
     *,
     paths: ArtifactPaths,
@@ -201,7 +250,7 @@ def load_saved_model_for_explanations(
     num_clients: int,
     alpha: float,
 ) -> tuple[Any, Path]:
-    """Load a saved stage-1 model artifact and rebuild the model wrapper."""
+    """Load a saved baseline model artifact and rebuild the model wrapper."""
 
     normalized_source = model_source.strip().lower()
     if normalized_source == "federated":
@@ -212,6 +261,11 @@ def load_saved_model_for_explanations(
         raise ValueError(
             f"Unsupported model source '{model_source}'. Expected 'federated' or 'centralized'."
         )
+
+    federated_metadata_path = federated_model_metadata_path(result_dir)
+    if federated_metadata_path.exists():
+        loaded = load_global_model(result_dir)
+        return loaded.model, result_dir
 
     config_path = result_dir / "config_snapshot.json"
     model_path = result_dir / "model_parameters.npz"
@@ -244,6 +298,7 @@ def resolve_feature_names_for_explanations(
     model_source: str,
     num_clients: int,
     alpha: float,
+    partition_data_root: Path | None = None,
 ) -> tuple[list[str], Path]:
     """Resolve feature metadata from the selected run, with partition fallback."""
 
@@ -261,10 +316,16 @@ def resolve_feature_names_for_explanations(
     if candidate.exists():
         return load_feature_names_from_metadata(candidate), candidate
 
-    partition_metadata_path = (
-        partition_root(paths.partition_root, dataset_name, num_clients, alpha, seed)
-        / "partition_metadata.json"
+    resolved_partition_root = resolve_partition_data_root_for_explanations(
+        paths=paths,
+        dataset_name=dataset_name,
+        seed=seed,
+        model_source=model_source,
+        num_clients=num_clients,
+        alpha=alpha,
+        partition_data_root=partition_data_root,
     )
+    partition_metadata_path = resolved_partition_root / "partition_metadata.json"
     if not partition_metadata_path.exists():
         raise FileNotFoundError(
             f"Missing feature metadata in '{candidate}' and partition metadata in '{partition_metadata_path}'."

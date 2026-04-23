@@ -331,7 +331,7 @@ if fl is not None:
         ) -> list[np.ndarray]:
             """Return server parameters after aggregation.
 
-            Stage 1 uses full-model aggregation. This function currently acts as
+            The current baseline uses full-model aggregation. This function currently acts as
             a pass-through. It exists to support future partial/shared-only
             recomposition when local parameters are introduced.
             """
@@ -358,7 +358,7 @@ else:
 
 @dataclass(frozen=True)
 class FedAvgStrategyFactory:
-    """Default strategy factory for the stage-1 predictive baseline."""
+    """Default strategy factory for the predictive baseline."""
 
     training_config: FederatedTrainingConfig
 

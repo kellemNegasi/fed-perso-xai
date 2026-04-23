@@ -1,4 +1,4 @@
-"""Flower client adapters for the stage-1 federated baseline."""
+"""Flower client adapters for the federated baseline."""
 
 from __future__ import annotations
 
@@ -49,9 +49,9 @@ class ClientData:
 class SharedParameterPayload:
     """Subset of model parameters that participates in server aggregation.
 
-    Stage 1 has no personalized server-excluded tensors yet, so all model
+    The current baseline has no personalized server-excluded tensors yet, so all model
     parameters are currently treated as shared/global. The helper is kept
-    explicit so later phases can leave local tensors on the client.
+    explicit so later iterations can leave local tensors on the client.
     """
 
     shared_parameters: list[np.ndarray]
@@ -131,7 +131,7 @@ if fl is not None:
             metrics: dict[str, Any] = {
                 "train_loss": float(train_loss),
                 "client_id": str(self.data.client_id),
-                # Stage 1 aggregates the full predictive model. Future stages
+                # The current baseline aggregates the full predictive model. Future versions
                 # may introduce explicit shared/local parameter splits.
                 "aggregation_scope": "full_model",
                 "shared_parameter_count": int(len(shared_payload.shared_parameters)),

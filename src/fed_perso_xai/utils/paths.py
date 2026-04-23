@@ -74,6 +74,60 @@ def federated_run_dir(
     )
 
 
+def federated_model_dir(run_dir: Path) -> Path:
+    """Return the directory containing frozen federated model artifacts."""
+
+    return run_dir / "model"
+
+
+def federated_training_dir(run_dir: Path) -> Path:
+    """Return the directory containing federated training metadata artifacts."""
+
+    return run_dir / "training"
+
+
+def federated_model_path(run_dir: Path) -> Path:
+    """Return the frozen global model artifact path."""
+
+    return federated_model_dir(run_dir) / "global_model.npz"
+
+
+def federated_model_metadata_path(run_dir: Path) -> Path:
+    """Return the federated model metadata path."""
+
+    return federated_model_dir(run_dir) / "model_metadata.json"
+
+
+def federated_training_metadata_path(run_dir: Path) -> Path:
+    """Return the federated training metadata path."""
+
+    return federated_training_dir(run_dir) / "training_metadata.json"
+
+
+def federated_training_history_path(run_dir: Path) -> Path:
+    """Return the federated training history CSV path."""
+
+    return federated_training_dir(run_dir) / "training_history.csv"
+
+
+def federated_runtime_report_path(run_dir: Path) -> Path:
+    """Return the federated runtime report path."""
+
+    return federated_training_dir(run_dir) / "runtime_report.json"
+
+
+def federated_completion_marker_path(run_dir: Path) -> Path:
+    """Return the federated training completion marker path."""
+
+    return federated_training_dir(run_dir) / "training.done"
+
+
+def federated_run_manifest_path(run_dir: Path) -> Path:
+    """Return the federated training manifest path."""
+
+    return run_dir / "run_manifest.json"
+
+
 def comparison_run_dir(
     paths: ArtifactPaths,
     dataset_name: str,

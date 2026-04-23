@@ -1,6 +1,6 @@
 # fed-perso-xai
 
-`fed-perso-xai` is the stage-1 baseline for the larger federated Perso-XAI project. This repository is intentionally limited to predictive-model training with logistic regression, but its data, evaluation, and artifact contracts are shaped for later explanation-generation and recommender stages.
+`fed-perso-xai` is the baseline implementation for the larger federated Perso-XAI project. This repository is intentionally limited to predictive-model training with logistic regression, but its data, evaluation, and artifact contracts are shaped for later explanation-generation and recommender work.
 
 Implemented now:
 
@@ -22,11 +22,11 @@ Not implemented yet:
 ## Repository Layout
 
 - `src/fed_perso_xai/data`: dataset specs, loaders, preprocessing, partitioning, serialization
-- `src/fed_perso_xai/models`: stage-1 logistic-regression baseline
+- `src/fed_perso_xai/models`: logistic-regression baseline
 - `src/fed_perso_xai/fl`: Flower client, strategy, and simulation runtime integration
 - `src/fed_perso_xai/evaluation`: predictive metrics, prediction artifacts, comparison reports
 - `src/fed_perso_xai/orchestration`: prepare-data and training entrypoints
-- `tests`: smoke and contract tests for stage-1
+- `tests`: smoke and contract tests for the baseline
 
 ## Installation
 
@@ -258,7 +258,7 @@ same shared/global tensors:
 - plain weighted averaging
 - protocol-first secure aggregation using in-process simulated helpers
 
-The stage-1 model has no personalized server-excluded tensors yet, so the
+The baseline model has no personalized server-excluded tensors yet, so the
 client adapter currently marks all model parameters as shared. The extraction
 and merge helpers are still explicit so later phases can keep local/personal
 parameters on-device while only aggregating the shared subset.
@@ -385,7 +385,7 @@ The report structure is intended to accept future explanation or recommender met
 
 ## Tests
 
-Run the stage-1 test suite with:
+Run the baseline test suite with:
 
 ```bash
 python3 -m pytest -q
