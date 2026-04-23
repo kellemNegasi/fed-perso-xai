@@ -80,10 +80,23 @@ def federated_runs_root(paths: ArtifactPaths) -> Path:
     return paths.federated_root / "runs"
 
 
+def _artifact_path_segment(value: str, *, label: str) -> str:
+    """Validate one filesystem-safe path segment used in artifact registries."""
+
+    segment = str(value)
+    if not segment:
+        raise ValueError(f"{label} must not be empty.")
+    if segment in {".", ".."}:
+        raise ValueError(f"{label} must not be '.' or '..'.")
+    if "/" in segment or "\\" in segment:
+        raise ValueError(f"{label} must be a single path segment without path separators.")
+    return segment
+
+
 def federated_run_artifact_dir(paths: ArtifactPaths, run_id: str) -> Path:
     """Return the run-addressable artifact directory for one federated run."""
 
-    return federated_runs_root(paths) / run_id
+    return federated_runs_root(paths) / _artifact_path_segment(run_id, label="run_id")
 
 
 def federated_run_metadata_path(run_artifact_dir: Path) -> Path:
@@ -95,7 +108,7 @@ def federated_run_metadata_path(run_artifact_dir: Path) -> Path:
 def federated_client_artifact_dir(run_artifact_dir: Path, client_id: str) -> Path:
     """Return the client-scoped artifact directory under one run."""
 
-    return run_artifact_dir / "clients" / client_id
+    return run_artifact_dir / "clients" / _artifact_path_segment(client_id, label="client_id")
 
 
 def federated_client_metadata_path(run_artifact_dir: Path, client_id: str) -> Path:
@@ -117,7 +130,11 @@ def federated_selection_artifact_dir(
 ) -> Path:
     """Return the directory for one fixed client-split selection manifest."""
 
-    return federated_client_artifact_dir(run_artifact_dir, client_id) / "selections" / selection_id
+    return (
+        federated_client_artifact_dir(run_artifact_dir, client_id)
+        / "selections"
+        / _artifact_path_segment(selection_id, label="selection_id")
+    )
 
 
 def federated_selection_metadata_path(
@@ -138,7 +155,11 @@ def federated_shard_artifact_dir(
 ) -> Path:
     """Return the shard-scoped artifact directory for one client split shard."""
 
-    return federated_selection_artifact_dir(run_artifact_dir, client_id, selection_id) / "shards" / shard_id
+    return (
+        federated_selection_artifact_dir(run_artifact_dir, client_id, selection_id)
+        / "shards"
+        / _artifact_path_segment(shard_id, label="shard_id")
+    )
 
 
 def federated_shard_metadata_path(
@@ -164,7 +185,7 @@ def federated_detailed_explanations_dir(
     return (
         federated_shard_artifact_dir(run_artifact_dir, client_id, selection_id, shard_id)
         / "detailed_explanations"
-        / explainer_name
+        / _artifact_path_segment(explainer_name, label="explainer_name")
     )
 
 
@@ -180,7 +201,7 @@ def federated_metrics_results_dir(
     return (
         federated_shard_artifact_dir(run_artifact_dir, client_id, selection_id, shard_id)
         / "metrics_results"
-        / explainer_name
+        / _artifact_path_segment(explainer_name, label="explainer_name")
     )
 
 
