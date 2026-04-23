@@ -104,39 +104,65 @@ def federated_client_metadata_path(run_artifact_dir: Path, client_id: str) -> Pa
     return federated_client_artifact_dir(run_artifact_dir, client_id) / "client_metadata.json"
 
 
+def federated_selection_id(*, split: str, max_instances: int, random_state: int) -> str:
+    """Return the stable selection-manifest identifier for one client split selection."""
+
+    return f"{split}__max-{int(max_instances)}__seed-{int(random_state)}"
+
+
+def federated_selection_artifact_dir(
+    run_artifact_dir: Path,
+    client_id: str,
+    selection_id: str,
+) -> Path:
+    """Return the directory for one fixed client-split selection manifest."""
+
+    return federated_client_artifact_dir(run_artifact_dir, client_id) / "selections" / selection_id
+
+
+def federated_selection_metadata_path(
+    run_artifact_dir: Path,
+    client_id: str,
+    selection_id: str,
+) -> Path:
+    """Return the selection-manifest metadata path."""
+
+    return federated_selection_artifact_dir(run_artifact_dir, client_id, selection_id) / "selection_metadata.json"
+
+
 def federated_shard_artifact_dir(
     run_artifact_dir: Path,
     client_id: str,
-    split: str,
+    selection_id: str,
     shard_id: str,
 ) -> Path:
     """Return the shard-scoped artifact directory for one client split shard."""
 
-    return federated_client_artifact_dir(run_artifact_dir, client_id) / f"{split}_shards" / shard_id
+    return federated_selection_artifact_dir(run_artifact_dir, client_id, selection_id) / "shards" / shard_id
 
 
 def federated_shard_metadata_path(
     run_artifact_dir: Path,
     client_id: str,
-    split: str,
+    selection_id: str,
     shard_id: str,
 ) -> Path:
     """Return the shard-level metadata path."""
 
-    return federated_shard_artifact_dir(run_artifact_dir, client_id, split, shard_id) / "shard_metadata.json"
+    return federated_shard_artifact_dir(run_artifact_dir, client_id, selection_id, shard_id) / "shard_metadata.json"
 
 
 def federated_detailed_explanations_dir(
     run_artifact_dir: Path,
     client_id: str,
-    split: str,
+    selection_id: str,
     shard_id: str,
     explainer_name: str,
 ) -> Path:
     """Return the explainer-specific directory for detailed explanation outputs."""
 
     return (
-        federated_shard_artifact_dir(run_artifact_dir, client_id, split, shard_id)
+        federated_shard_artifact_dir(run_artifact_dir, client_id, selection_id, shard_id)
         / "detailed_explanations"
         / explainer_name
     )
@@ -145,14 +171,14 @@ def federated_detailed_explanations_dir(
 def federated_metrics_results_dir(
     run_artifact_dir: Path,
     client_id: str,
-    split: str,
+    selection_id: str,
     shard_id: str,
     explainer_name: str,
 ) -> Path:
     """Return the explainer-specific directory for metric outputs."""
 
     return (
-        federated_shard_artifact_dir(run_artifact_dir, client_id, split, shard_id)
+        federated_shard_artifact_dir(run_artifact_dir, client_id, selection_id, shard_id)
         / "metrics_results"
         / explainer_name
     )
@@ -161,12 +187,12 @@ def federated_metrics_results_dir(
 def federated_job_status_dir(
     run_artifact_dir: Path,
     client_id: str,
-    split: str,
+    selection_id: str,
     shard_id: str,
 ) -> Path:
     """Return the shard-local status directory for explain/evaluate jobs."""
 
-    return federated_shard_artifact_dir(run_artifact_dir, client_id, split, shard_id) / "_status"
+    return federated_shard_artifact_dir(run_artifact_dir, client_id, selection_id, shard_id) / "_status"
 
 
 def federated_model_dir(run_dir: Path) -> Path:

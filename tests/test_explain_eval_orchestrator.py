@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fed_perso_xai.data.serialization import ArraySplit, save_federated_dataset
+from fed_perso_xai.data.serialization import save_federated_dataset
 from fed_perso_xai.models import create_model, save_global_model_parameters
 from fed_perso_xai.orchestration.explain_eval import run_explain_eval_job
 from fed_perso_xai.utils.config import ArtifactPaths, LogisticRegressionConfig
@@ -199,6 +199,7 @@ def test_explain_eval_job_writes_parquet_json_and_metadata(tmp_path, synthetic_c
 
     explanations_path = Path(payload["artifacts"]["detailed_explanations_path"])
     metrics_path = Path(payload["artifacts"]["metrics_results_path"])
+    selection_metadata_path = Path(payload["artifacts"]["selection_metadata_path"])
     job_metadata_path = Path(payload["artifacts"]["job_metadata_path"])
     done_path = Path(payload["artifacts"]["done_marker_path"])
     shard_metadata_path = Path(payload["artifacts"]["shard_metadata_path"])
@@ -207,6 +208,7 @@ def test_explain_eval_job_writes_parquet_json_and_metadata(tmp_path, synthetic_c
     assert explanations_path.suffix == ".parquet"
     assert explanations_path.exists()
     assert metrics_path.exists()
+    assert selection_metadata_path.exists()
     assert job_metadata_path.exists()
     assert shard_metadata_path.exists()
     assert client_metadata_path.exists()
@@ -276,6 +278,109 @@ def test_sampling_is_stable_and_changes_with_seed(tmp_path, synthetic_client_spl
 
 
 @pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_selected_subset_is_formed_once_then_partitioned_into_shards(
+    tmp_path,
+    synthetic_client_splits,
+    monkeypatch,
+) -> None:
+    from fed_perso_xai.orchestration import explain_eval as module
+
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    monkeypatch.setattr(module, "DEFAULT_SHARD_SIZE", 2)
+
+    shard_0 = run_explain_eval_job(
+        run_id=run_id,
+        client_id="client_000",
+        shard_id="shard_000",
+        explainer_name="lime",
+        config_id="lime__kernel-1.5__samples-50",
+        max_instances=5,
+        random_state=17,
+        paths=paths,
+        metric_names=["compactness_size"],
+    )
+    shard_1 = run_explain_eval_job(
+        run_id=run_id,
+        client_id="client_000",
+        shard_id="shard_001",
+        explainer_name="lime",
+        config_id="lime__kernel-2.0__samples-50",
+        max_instances=5,
+        random_state=17,
+        paths=paths,
+        metric_names=["compactness_size"],
+    )
+    shard_2 = run_explain_eval_job(
+        run_id=run_id,
+        client_id="client_000",
+        shard_id="shard_002",
+        explainer_name="lime",
+        config_id="lime__kernel-3.0__samples-50",
+        max_instances=5,
+        random_state=17,
+        paths=paths,
+        metric_names=["compactness_size"],
+    )
+
+    for payload in (shard_0, shard_1, shard_2):
+        selection_metadata = json.loads(
+            Path(payload["artifacts"]["selection_metadata_path"]).read_text(encoding="utf-8")
+        )
+        assert selection_metadata["selection_subset_size"] == 5
+        assert len(selection_metadata["selection_dataset_indices"]) == 5
+
+    combined = (
+        shard_0["selected_dataset_indices"]
+        + shard_1["selected_dataset_indices"]
+        + shard_2["selected_dataset_indices"]
+    )
+    selection_reference = json.loads(
+        Path(shard_0["artifacts"]["selection_metadata_path"]).read_text(encoding="utf-8")
+    )["selection_dataset_indices"]
+
+    assert combined == selection_reference
+    assert len(shard_0["selected_dataset_indices"]) == 2
+    assert len(shard_1["selected_dataset_indices"]) == 2
+    assert len(shard_2["selected_dataset_indices"]) == 1
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_selection_metadata_is_reused_for_same_selection(tmp_path, synthetic_client_splits) -> None:
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    job_a = run_explain_eval_job(
+        run_id=run_id,
+        client_id="client_000",
+        shard_id="shard_000",
+        explainer_name="lime",
+        config_id="lime__kernel-1.5__samples-50",
+        max_instances=3,
+        random_state=11,
+        paths=paths,
+        metric_names=["compactness_size"],
+    )
+    selection_metadata_path = Path(job_a["artifacts"]["selection_metadata_path"])
+    first_metadata = json.loads(selection_metadata_path.read_text(encoding="utf-8"))
+
+    time.sleep(0.01)
+
+    job_b = run_explain_eval_job(
+        run_id=run_id,
+        client_id="client_000",
+        shard_id="shard_000",
+        explainer_name="lime",
+        config_id="lime__kernel-2.0__samples-50",
+        max_instances=3,
+        random_state=11,
+        paths=paths,
+        metric_names=["compactness_size"],
+    )
+    second_metadata = json.loads(selection_metadata_path.read_text(encoding="utf-8"))
+
+    assert job_b["artifacts"]["selection_metadata_path"] == job_a["artifacts"]["selection_metadata_path"]
+    assert second_metadata == first_metadata
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
 def test_rerun_skips_and_force_overrides(tmp_path, synthetic_client_splits) -> None:
     paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
     first = run_explain_eval_job(
@@ -316,6 +421,23 @@ def test_rerun_skips_and_force_overrides(tmp_path, synthetic_client_splits) -> N
 
 
 @pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_negative_shard_id_is_rejected(tmp_path, synthetic_client_splits) -> None:
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    with pytest.raises(ValueError, match="Shard index must be non-negative"):
+        run_explain_eval_job(
+            run_id=run_id,
+            client_id="client_000",
+            shard_id="shard_-1",
+            explainer_name="lime",
+            config_id="lime__kernel-1.5__samples-50",
+            max_instances=3,
+            random_state=11,
+            paths=paths,
+            metric_names=["compactness_size"],
+        )
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
 def test_done_marker_is_not_written_on_failure(tmp_path, synthetic_client_splits, monkeypatch) -> None:
     from fed_perso_xai.orchestration import explain_eval as module
 
@@ -340,7 +462,17 @@ def test_done_marker_is_not_written_on_failure(tmp_path, synthetic_client_splits
             metric_names=["compactness_size"],
         )
 
-    shard_root = paths.federated_root / "runs" / run_id / "clients" / "client_000" / "test_shards" / "shard_000"
+    shard_root = (
+        paths.federated_root
+        / "runs"
+        / run_id
+        / "clients"
+        / "client_000"
+        / "selections"
+        / "test__max-2__seed-5"
+        / "shards"
+        / "shard_000"
+    )
     assert not (shard_root / "_status" / "lime__kernel-2.0__samples-100.done").exists()
 
 

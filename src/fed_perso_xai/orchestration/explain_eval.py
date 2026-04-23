@@ -1,10 +1,18 @@
-"""Standalone post-training explain+evaluate orchestration for federated runs."""
+"""Standalone post-training explain+evaluate orchestration for federated runs.
+
+Artifact model:
+- one client-level metadata file per run/client
+- one shared selection manifest per (run_id, client_id, split, max_instances, random_state)
+- one shard manifest per (selection_id, shard_id)
+- one explain/eval job per (selection_id, shard_id, explainer_name, config_id)
+"""
 
 from __future__ import annotations
 
 import json
 import os
 import uuid
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,6 +43,8 @@ from fed_perso_xai.utils.paths import (
     federated_detailed_explanations_dir,
     federated_job_status_dir,
     federated_metrics_results_dir,
+    federated_selection_id,
+    federated_selection_metadata_path,
     federated_shard_metadata_path,
 )
 from fed_perso_xai.utils.provenance import current_utc_timestamp
@@ -49,6 +59,7 @@ class ExplainEvalJobArtifacts:
     run_artifact_dir: Path
     explanations_path: Path
     metrics_path: Path
+    selection_metadata_path: Path
     shard_metadata_path: Path
     client_metadata_path: Path
     job_metadata_path: Path
@@ -75,10 +86,15 @@ def run_explain_eval_job(
     run_context = resolve_federated_run_context(paths=artifact_paths, run_id=run_id)
     normalized_client_id, client_numeric_id = _normalize_client_id(client_id)
     split_name = _normalize_split_name(split)
+    selection_id = federated_selection_id(
+        split=split_name,
+        max_instances=max_instances,
+        random_state=random_state,
+    )
     artifacts = _build_job_artifacts(
         run_context=run_context,
         client_id=normalized_client_id,
-        split=split_name,
+        selection_id=selection_id,
         shard_id=shard_id,
         explainer_name=explainer_name,
         config_id=config_id,
@@ -99,27 +115,34 @@ def run_explain_eval_job(
         client_numeric_id=client_numeric_id,
     )
     X_split, y_split, row_ids_split = client_data.get_split(split_name)
-    shard_view = _resolve_shard(
+    selected_view = _select_split_instances(
         X=X_split,
         y=y_split,
         row_ids=row_ids_split,
-        shard_id=shard_id,
-    )
-    sampled = _select_job_instances(
-        shard_indices=shard_view["dataset_indices"],
         max_instances=max_instances,
         random_state=random_state,
         run_id=run_id,
         client_id=normalized_client_id,
+        split=split_name,
+    )
+    shard_view = _resolve_selected_shard(
+        X=selected_view["X"],
+        y=selected_view["y"],
+        row_ids=selected_view["row_ids"],
+        dataset_indices=selected_view["dataset_indices"],
         shard_id=shard_id,
     )
-    selected_positions = sampled["selected_positions"]
-    X_job = np.asarray(shard_view["X"][selected_positions], dtype=np.float64)
-    y_job = np.asarray(shard_view["y"][selected_positions], dtype=np.int64)
-    row_ids_job = np.asarray(shard_view["row_ids"][selected_positions], dtype=str)
-    dataset_indices_job = np.asarray(shard_view["dataset_indices"][selected_positions], dtype=np.int64)
+    X_job = np.asarray(shard_view["X"], dtype=np.float64)
+    y_job = np.asarray(shard_view["y"], dtype=np.int64)
+    row_ids_job = np.asarray(shard_view["row_ids"], dtype=str)
+    dataset_indices_job = np.asarray(shard_view["dataset_indices"], dtype=np.int64)
 
     resolved_config = resolve_explainer_config(explainer_name, config_id)
+    resolved_config = _pin_explainer_to_assigned_rows(
+        resolved_config,
+        assigned_instance_count=int(len(X_job)),
+        random_state=random_state,
+    )
     dataset = LocalExplanationDataset(
         X_train=np.asarray(client_data.X_train, dtype=np.float64),
         y_train=np.asarray(client_data.y_train, dtype=np.int64),
@@ -133,10 +156,16 @@ def run_explain_eval_job(
     )
     explainer_results = explainer.explain_dataset(X_job, y_job)
 
+    explainer_sample_indices = explainer.sample_indices()
+    if explainer_sample_indices is not None:
+        row_ids_job = row_ids_job[explainer_sample_indices]
+        dataset_indices_job = dataset_indices_job[explainer_sample_indices]
+
     explanation_rows = _build_explanation_rows(
         run_id=run_id,
         client_id=normalized_client_id,
         split=split_name,
+        selection_id=selection_id,
         shard_id=shard_id,
         explainer_name=explainer_name,
         config_id=config_id,
@@ -156,32 +185,44 @@ def run_explain_eval_job(
         run_id=run_id,
         client_id=normalized_client_id,
         split=split_name,
+        selection_id=selection_id,
         shard_id=shard_id,
         resolved_config=resolved_config,
         row_ids=row_ids_job,
         dataset_indices=dataset_indices_job,
         explanations=explainer_results["explanations"],
         shard_view=shard_view,
+        selected_view=selected_view,
         run_context=run_context,
     )
 
+    selection_metadata = {
+        "run_id": run_id,
+        "client_id": normalized_client_id,
+        "split": split_name,
+        "selection_id": selection_id,
+        "original_split_size": int(len(X_split)),
+        "selection_subset_size": int(len(selected_view["X"])),
+        "selection_dataset_indices": selected_view["dataset_indices"].tolist(),
+        "selection_row_ids": selected_view["row_ids"].tolist(),
+        "random_state": int(random_state),
+        "max_instances": int(max_instances),
+        "selection_seed": int(selected_view["selection_seed"]),
+        "selection_strategy": "stable_random_without_replacement",
+        "generated_at": current_utc_timestamp(),
+    }
     shard_metadata = {
         "run_id": run_id,
         "client_id": normalized_client_id,
         "split": split_name,
+        "selection_id": selection_id,
         "shard_id": shard_id,
         "rows_per_shard": DEFAULT_SHARD_SIZE,
-        "dataset_index_start": int(shard_view["dataset_indices"][0]) if len(shard_view["dataset_indices"]) else 0,
-        "dataset_index_end_exclusive": int(shard_view["dataset_indices"][-1]) + 1 if len(shard_view["dataset_indices"]) else 0,
-        "original_split_size": int(len(X_split)),
+        "shard_index_within_selection": int(shard_view["shard_index"]),
+        "shard_count_for_selection": int(shard_view["shard_count"]),
+        "selected_position_start": int(shard_view["selection_position_start"]),
+        "selected_position_end_exclusive": int(shard_view["selection_position_end_exclusive"]),
         "shard_size": int(len(shard_view["X"])),
-        "selected_subset_size": int(len(selected_positions)),
-        "selected_dataset_indices": dataset_indices_job.tolist(),
-        "selected_row_ids": row_ids_job.tolist(),
-        "random_state": int(random_state),
-        "max_instances": int(max_instances),
-        "selection_seed": int(sampled["selection_seed"]),
-        "selection_strategy": "stable_random_without_replacement",
         "generated_at": current_utc_timestamp(),
     }
     client_metadata = {
@@ -200,11 +241,13 @@ def run_explain_eval_job(
         "client_id": normalized_client_id,
         "client_numeric_id": client_numeric_id,
         "split": split_name,
+        "selection_id": selection_id,
         "shard_id": shard_id,
         "explainer_name": explainer_name,
         "config_id": config_id,
         "selected_config": resolved_config,
         "metric_set": metrics_payload["metric_names"],
+        "selection_subset_size": int(len(selected_view["X"])),
         "selected_dataset_indices": dataset_indices_job.tolist(),
         "selected_row_ids": row_ids_job.tolist(),
         "max_instances": int(max_instances),
@@ -212,6 +255,7 @@ def run_explain_eval_job(
         "artifacts": {
             "detailed_explanations_path": str(artifacts.explanations_path),
             "metrics_results_path": str(artifacts.metrics_path),
+            "selection_metadata_path": str(artifacts.selection_metadata_path),
             "shard_metadata_path": str(artifacts.shard_metadata_path),
             "client_metadata_path": str(artifacts.client_metadata_path),
             "job_metadata_path": str(artifacts.job_metadata_path),
@@ -221,6 +265,7 @@ def run_explain_eval_job(
     }
 
     _write_json_atomic(artifacts.client_metadata_path, client_metadata)
+    _write_json_if_missing_atomic(artifacts.selection_metadata_path, selection_metadata)
     _write_json_atomic(artifacts.shard_metadata_path, shard_metadata)
     _write_parquet_atomic(artifacts.explanations_path, explanation_rows)
     _write_json_atomic(artifacts.metrics_path, metrics_payload)
@@ -232,6 +277,7 @@ def run_explain_eval_job(
             "run_id": run_id,
             "client_id": normalized_client_id,
             "split": split_name,
+            "selection_id": selection_id,
             "shard_id": shard_id,
             "explainer_name": explainer_name,
             "config_id": config_id,
@@ -246,7 +292,7 @@ def _load_client_data(
     *,
     run_context: FederatedRunContext,
     client_numeric_id: int,
-):
+) -> ClientData:
     training_metadata = json.loads(run_context.training_metadata_path.read_text(encoding="utf-8"))
     client_datasets = load_client_datasets(
         run_context.partition_root,
@@ -254,63 +300,92 @@ def _load_client_data(
     )
     try:
         loaded = next(item for item in client_datasets if item.client_id == client_numeric_id)
-        return ClientData(
-            client_id=loaded.client_id,
-            X_train=loaded.train.X,
-            y_train=loaded.train.y,
-            row_ids_train=loaded.train.row_ids,
-            X_test=loaded.test.X,
-            y_test=loaded.test.y,
-            row_ids_test=loaded.test.row_ids,
-        )
     except StopIteration as exc:
         raise ValueError(
             f"Client '{client_numeric_id}' was not found under '{run_context.partition_root}'."
         ) from exc
+    return ClientData(
+        client_id=loaded.client_id,
+        X_train=loaded.train.X,
+        y_train=loaded.train.y,
+        row_ids_train=loaded.train.row_ids,
+        X_test=loaded.test.X,
+        y_test=loaded.test.y,
+        row_ids_test=loaded.test.row_ids,
+    )
 
 
-def _resolve_shard(*, X: np.ndarray, y: np.ndarray, row_ids: np.ndarray, shard_id: str) -> dict[str, Any]:
+def _select_split_instances(
+    *,
+    X: np.ndarray,
+    y: np.ndarray,
+    row_ids: np.ndarray,
+    max_instances: int,
+    random_state: int,
+    run_id: str,
+    client_id: str,
+    split: str,
+) -> dict[str, Any]:
+    if max_instances <= 0:
+        raise ValueError("max_instances must be positive.")
+    total = int(len(X))
+    dataset_indices = np.arange(total, dtype=np.int64)
+    selection_id = federated_selection_id(
+        split=split,
+        max_instances=max_instances,
+        random_state=random_state,
+    )
+    selection_seed = _stable_selection_seed(
+        run_id=run_id,
+        client_id=client_id,
+        split=split,
+        random_state=random_state,
+        max_instances=max_instances,
+    )
+    if total <= max_instances:
+        selected_positions = np.arange(total, dtype=np.int64)
+    else:
+        rng = np.random.default_rng(selection_seed)
+        selected_positions = np.sort(rng.choice(total, size=max_instances, replace=False).astype(np.int64))
+    return {
+        "selection_id": selection_id,
+        "max_instances": int(max_instances),
+        "random_state": int(random_state),
+        "selection_seed": selection_seed,
+        "selected_positions": selected_positions,
+        "dataset_indices": dataset_indices[selected_positions],
+        "X": np.asarray(X[selected_positions], dtype=np.float64),
+        "y": np.asarray(y[selected_positions], dtype=np.int64),
+        "row_ids": np.asarray(row_ids[selected_positions], dtype=str),
+    }
+
+
+def _resolve_selected_shard(
+    *,
+    X: np.ndarray,
+    y: np.ndarray,
+    row_ids: np.ndarray,
+    dataset_indices: np.ndarray,
+    shard_id: str,
+) -> dict[str, Any]:
     shard_index = _parse_shard_id(shard_id)
     total = int(len(X))
     start = shard_index * DEFAULT_SHARD_SIZE
     end = min(total, start + DEFAULT_SHARD_SIZE)
     if start >= total:
         raise ValueError(
-            f"Shard '{shard_id}' is out of range for split size {total} with shard size {DEFAULT_SHARD_SIZE}."
+            f"Shard '{shard_id}' is out of range for selected subset size {total} with shard size {DEFAULT_SHARD_SIZE}."
         )
-    dataset_indices = np.arange(start, end, dtype=np.int64)
+    shard_count = int((total + DEFAULT_SHARD_SIZE - 1) // DEFAULT_SHARD_SIZE)
     return {
         "shard_index": shard_index,
-        "dataset_indices": dataset_indices,
+        "shard_count": shard_count,
+        "selection_position_start": start,
+        "selection_position_end_exclusive": end,
+        "dataset_indices": np.asarray(dataset_indices[start:end], dtype=np.int64),
         "X": np.asarray(X[start:end], dtype=np.float64),
         "y": np.asarray(y[start:end], dtype=np.int64),
         "row_ids": np.asarray(row_ids[start:end], dtype=str),
-    }
-
-
-def _select_job_instances(
-    *,
-    shard_indices: np.ndarray,
-    max_instances: int,
-    random_state: int,
-    run_id: str,
-    client_id: str,
-    shard_id: str,
-) -> dict[str, Any]:
-    if max_instances <= 0:
-        raise ValueError("max_instances must be positive.")
-    shard_size = int(len(shard_indices))
-    if shard_size <= max_instances:
-        return {
-            "selected_positions": np.arange(shard_size, dtype=np.int64),
-            "selection_seed": _stable_selection_seed(run_id, client_id, shard_id, random_state, max_instances),
-        }
-    selection_seed = _stable_selection_seed(run_id, client_id, shard_id, random_state, max_instances)
-    rng = np.random.default_rng(selection_seed)
-    positions = np.sort(rng.choice(shard_size, size=max_instances, replace=False).astype(np.int64))
-    return {
-        "selected_positions": positions,
-        "selection_seed": selection_seed,
     }
 
 
@@ -319,6 +394,7 @@ def _build_explanation_rows(
     run_id: str,
     client_id: str,
     split: str,
+    selection_id: str,
     shard_id: str,
     explainer_name: str,
     config_id: str,
@@ -340,6 +416,7 @@ def _build_explanation_rows(
                 "run_id": run_id,
                 "client_id": client_id,
                 "split": split,
+                "selection_id": selection_id,
                 "shard_id": shard_id,
                 "explainer_name": explainer_name,
                 "config_id": config_id,
@@ -374,16 +451,19 @@ def _evaluate_job_metrics(
     run_id: str,
     client_id: str,
     split: str,
+    selection_id: str,
     shard_id: str,
     resolved_config: dict[str, Any],
     row_ids: np.ndarray,
     dataset_indices: np.ndarray,
     explanations: list[dict[str, Any]],
     shard_view: dict[str, Any],
+    selected_view: dict[str, Any],
     run_context: FederatedRunContext,
 ) -> dict[str, Any]:
     active_metric_names = metric_names or [
-        name for name in DEFAULT_METRIC_REGISTRY.list_keys() if DEFAULT_METRIC_REGISTRY.is_available(name)
+        name for name in DEFAULT_METRIC_REGISTRY.list_keys()
+        if DEFAULT_METRIC_REGISTRY.is_available(name)
     ]
     metric_objs = {name: make_metric(name) for name in active_metric_names}
     metric_caps = {name: metric_capabilities(metric) for name, metric in metric_objs.items()}
@@ -440,6 +520,7 @@ def _evaluate_job_metrics(
         "run_id": run_id,
         "client_id": client_id,
         "split": split,
+        "selection_id": selection_id,
         "shard_id": shard_id,
         "explainer_name": explainer_name,
         "config_id": config_id,
@@ -454,10 +535,21 @@ def _evaluate_job_metrics(
         "selected_config": resolved_config,
         "metric_names": active_metric_names,
         "metric_metadata": metric_metadata,
+        "selection_metadata": {
+            "selection_id": selected_view["selection_id"],
+            "selection_subset_size": int(len(selected_view["X"])),
+            "selection_dataset_indices": selected_view["dataset_indices"].tolist(),
+            "random_state": int(selected_view["random_state"]),
+            "max_instances": int(selected_view["max_instances"]),
+            "selection_seed": int(selected_view["selection_seed"]),
+        },
         "shard_metadata": {
             "rows_per_shard": DEFAULT_SHARD_SIZE,
-            "dataset_index_start": int(shard_view["dataset_indices"][0]) if len(shard_view["dataset_indices"]) else 0,
-            "dataset_index_end_exclusive": int(shard_view["dataset_indices"][-1]) + 1 if len(shard_view["dataset_indices"]) else 0,
+            "selection_id": selected_view["selection_id"],
+            "shard_index_within_selection": int(shard_view["shard_index"]),
+            "shard_count_for_selection": int(shard_view["shard_count"]),
+            "selected_position_start": int(shard_view["selection_position_start"]),
+            "selected_position_end_exclusive": int(shard_view["selection_position_end_exclusive"]),
             "shard_size": int(len(shard_view["X"])),
             "selected_instance_count": int(len(explanations)),
         },
@@ -473,7 +565,7 @@ def _build_job_artifacts(
     *,
     run_context: FederatedRunContext,
     client_id: str,
-    split: str,
+    selection_id: str,
     shard_id: str,
     explainer_name: str,
     config_id: str,
@@ -481,31 +573,36 @@ def _build_job_artifacts(
     explanations_dir = federated_detailed_explanations_dir(
         run_context.run_artifact_dir,
         client_id,
-        split,
+        selection_id,
         shard_id,
         explainer_name,
     )
     metrics_dir = federated_metrics_results_dir(
         run_context.run_artifact_dir,
         client_id,
-        split,
+        selection_id,
         shard_id,
         explainer_name,
     )
     status_dir = federated_job_status_dir(
         run_context.run_artifact_dir,
         client_id,
-        split,
+        selection_id,
         shard_id,
     )
     return ExplainEvalJobArtifacts(
         run_artifact_dir=run_context.run_artifact_dir,
         explanations_path=explanations_dir / f"{config_id}.parquet",
         metrics_path=metrics_dir / f"{config_id}.json",
+        selection_metadata_path=federated_selection_metadata_path(
+            run_context.run_artifact_dir,
+            client_id,
+            selection_id,
+        ),
         shard_metadata_path=federated_shard_metadata_path(
             run_context.run_artifact_dir,
             client_id,
-            split,
+            selection_id,
             shard_id,
         ),
         client_metadata_path=federated_client_metadata_path(
@@ -523,6 +620,7 @@ def _job_is_complete(artifacts: ExplainEvalJobArtifacts) -> bool:
         for path in (
             artifacts.explanations_path,
             artifacts.metrics_path,
+            artifacts.selection_metadata_path,
             artifacts.shard_metadata_path,
             artifacts.client_metadata_path,
             artifacts.job_metadata_path,
@@ -552,27 +650,45 @@ def _normalize_split_name(split: str) -> str:
 def _parse_shard_id(shard_id: str) -> int:
     if not shard_id.startswith("shard_"):
         raise ValueError(f"Invalid shard_id '{shard_id}'. Expected format 'shard_000'.")
-    return int(shard_id.split("_", 1)[1])
+    shard_index = int(shard_id.split("_", 1)[1])
+    if shard_index < 0:
+        raise ValueError(f"Invalid shard_id '{shard_id}'. Shard index must be non-negative.")
+    return shard_index
 
 
 def _stable_selection_seed(
     run_id: str,
     client_id: str,
-    shard_id: str,
+    split: str,
     random_state: int,
     max_instances: int,
-) -> int:
+    ) -> int:
     seed_payload = json.dumps(
         {
             "run_id": run_id,
             "client_id": client_id,
-            "shard_id": shard_id,
+            "split": split,
             "random_state": int(random_state),
             "max_instances": int(max_instances),
         },
         sort_keys=True,
     )
-    return int.from_bytes(seed_payload.encode("utf-8"), "little", signed=False) % (2**32)
+    digest = hashlib.sha256(seed_payload.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "little", signed=False)
+
+
+def _pin_explainer_to_assigned_rows(
+    resolved_config: dict[str, Any],
+    *,
+    assigned_instance_count: int,
+    random_state: int,
+) -> dict[str, Any]:
+    pinned = dict(resolved_config)
+    pinned["max_instances"] = int(assigned_instance_count)
+    pinned["method_max_instances"] = int(assigned_instance_count)
+    pinned["sampling_strategy"] = "sequential"
+    pinned["random_state"] = int(random_state)
+    return pinned
 
 
 def _json_scalar(value: Any) -> str:
@@ -586,11 +702,22 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp_path.replace(path)
 
 
+def _write_json_if_missing_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(to_serializable(payload), indent=2)
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(serialized)
+    except FileExistsError:
+        # Another concurrent job won the manifest creation race.
+        return
+
+
 def _write_parquet_atomic(path: Path, rows: list[dict[str, Any]]) -> None:
     try:
         import pyarrow as pa
         import pyarrow.parquet as pq
-    except ImportError as exc:  # pragma: no cover - exercised when parquet deps are missing
+    except ImportError as exc:  # pragma: no cover
         raise ImportError(
             "Writing explanation artifacts requires 'pyarrow'. Install the project dependencies "
             "with Parquet support before running explain+evaluate jobs."
@@ -603,6 +730,7 @@ def _write_parquet_atomic(path: Path, rows: list[dict[str, Any]]) -> None:
             ("run_id", pa.string()),
             ("client_id", pa.string()),
             ("split", pa.string()),
+            ("selection_id", pa.string()),
             ("shard_id", pa.string()),
             ("explainer_name", pa.string()),
             ("config_id", pa.string()),
