@@ -10,9 +10,10 @@ wheels/
 .venv
 *.npz
 *.gz
-datasets/
-federated/
-prepared/
-centralized/
+datasets
+federated
+prepared
+centralized
 *.zip
 *.json
+results
