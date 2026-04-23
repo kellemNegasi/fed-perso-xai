@@ -310,6 +310,8 @@ def _load_completed_federated_training_metadata(
         and artifacts.completion_marker_path.exists()
     ):
         return None
+    # TODO this load could fail if the json is truncated or invalid, which could happen if a previous run was interrupted during writing. 
+    # We should detect and handle that case more gracefully, perhaps by treating it as an incomplete run and allowing a new run to proceed without force=True.
     metadata = json.loads(artifacts.training_metadata_path.read_text(encoding="utf-8"))
     if metadata.get("status") != "completed" or not bool(metadata.get("training_success")):
         return None
