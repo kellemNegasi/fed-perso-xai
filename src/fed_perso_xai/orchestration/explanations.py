@@ -220,6 +220,8 @@ def resolve_partition_data_root_for_explanations(
     if partition_data_root is not None:
         return partition_data_root
 
+    default_partition_root = partition_root(paths.partition_root, dataset_name, num_clients, alpha, seed)
+
     normalized_source = model_source.strip().lower()
     if normalized_source == "federated":
         result_dir = federated_run_dir(paths, dataset_name, num_clients, alpha, seed)
@@ -232,9 +234,11 @@ def resolve_partition_data_root_for_explanations(
                     "Federated training metadata is missing 'partition_data_root', so the "
                     "explanation data source cannot be resolved safely."
                 )
-            return Path(recorded_partition_root)
+            recorded_partition_path = Path(recorded_partition_root)
+            if recorded_partition_path.exists() or not default_partition_root.exists():
+                return recorded_partition_path
 
-    return partition_root(paths.partition_root, dataset_name, num_clients, alpha, seed)
+    return default_partition_root
 
 
 def load_saved_model_for_explanations(
