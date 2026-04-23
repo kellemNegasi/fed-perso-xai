@@ -5,7 +5,13 @@ from .causal_shap_explainer import CausalSHAPExplainer
 from .factory import make_explainer
 from .integrated_gradients_explainer import IntegratedGradientsExplainer
 from .lime_explainer import LIMEExplainer
-from .registry import DEFAULT_EXPLAINER_REGISTRY, ExplainerRegistry, load_explainer_hyperparameter_grid
+from .registry import (
+    DEFAULT_EXPLAINER_REGISTRY,
+    ExplainerRegistry,
+    build_explainer_config_registry,
+    load_explainer_hyperparameter_grid,
+    resolve_explainer_config,
+)
 from .shap_explainer import SHAPExplainer
 
 __all__ = [
@@ -16,6 +22,8 @@ __all__ = [
     "IntegratedGradientsExplainer",
     "LIMEExplainer",
     "SHAPExplainer",
+    "build_explainer_config_registry",
     "load_explainer_hyperparameter_grid",
     "make_explainer",
+    "resolve_explainer_config",
 ]

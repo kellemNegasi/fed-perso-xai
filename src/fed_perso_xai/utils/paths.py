@@ -74,6 +74,148 @@ def federated_run_dir(
     )
 
 
+def federated_runs_root(paths: ArtifactPaths) -> Path:
+    """Return the stable registry root keyed by run_id."""
+
+    return paths.federated_root / "runs"
+
+
+def _artifact_path_segment(value: str, *, label: str) -> str:
+    """Validate one filesystem-safe path segment used in artifact registries."""
+
+    segment = str(value)
+    if not segment:
+        raise ValueError(f"{label} must not be empty.")
+    if segment in {".", ".."}:
+        raise ValueError(f"{label} must not be '.' or '..'.")
+    if "/" in segment or "\\" in segment:
+        raise ValueError(f"{label} must be a single path segment without path separators.")
+    return segment
+
+
+def federated_run_artifact_dir(paths: ArtifactPaths, run_id: str) -> Path:
+    """Return the run-addressable artifact directory for one federated run."""
+
+    return federated_runs_root(paths) / _artifact_path_segment(run_id, label="run_id")
+
+
+def federated_run_metadata_path(run_artifact_dir: Path) -> Path:
+    """Return the run-level metadata path inside a run-addressable artifact root."""
+
+    return run_artifact_dir / "run_metadata.json"
+
+
+def federated_client_artifact_dir(run_artifact_dir: Path, client_id: str) -> Path:
+    """Return the client-scoped artifact directory under one run."""
+
+    return run_artifact_dir / "clients" / _artifact_path_segment(client_id, label="client_id")
+
+
+def federated_client_metadata_path(run_artifact_dir: Path, client_id: str) -> Path:
+    """Return the client-level metadata path under one run."""
+
+    return federated_client_artifact_dir(run_artifact_dir, client_id) / "client_metadata.json"
+
+
+def federated_selection_id(*, split: str, max_instances: int, random_state: int) -> str:
+    """Return the stable selection-manifest identifier for one client split selection."""
+
+    return f"{split}__max-{int(max_instances)}__seed-{int(random_state)}"
+
+
+def federated_selection_artifact_dir(
+    run_artifact_dir: Path,
+    client_id: str,
+    selection_id: str,
+) -> Path:
+    """Return the directory for one fixed client-split selection manifest."""
+
+    return (
+        federated_client_artifact_dir(run_artifact_dir, client_id)
+        / "selections"
+        / _artifact_path_segment(selection_id, label="selection_id")
+    )
+
+
+def federated_selection_metadata_path(
+    run_artifact_dir: Path,
+    client_id: str,
+    selection_id: str,
+) -> Path:
+    """Return the selection-manifest metadata path."""
+
+    return federated_selection_artifact_dir(run_artifact_dir, client_id, selection_id) / "selection_metadata.json"
+
+
+def federated_shard_artifact_dir(
+    run_artifact_dir: Path,
+    client_id: str,
+    selection_id: str,
+    shard_id: str,
+) -> Path:
+    """Return the shard-scoped artifact directory for one client split shard."""
+
+    return (
+        federated_selection_artifact_dir(run_artifact_dir, client_id, selection_id)
+        / "shards"
+        / _artifact_path_segment(shard_id, label="shard_id")
+    )
+
+
+def federated_shard_metadata_path(
+    run_artifact_dir: Path,
+    client_id: str,
+    selection_id: str,
+    shard_id: str,
+) -> Path:
+    """Return the shard-level metadata path."""
+
+    return federated_shard_artifact_dir(run_artifact_dir, client_id, selection_id, shard_id) / "shard_metadata.json"
+
+
+def federated_detailed_explanations_dir(
+    run_artifact_dir: Path,
+    client_id: str,
+    selection_id: str,
+    shard_id: str,
+    explainer_name: str,
+) -> Path:
+    """Return the explainer-specific directory for detailed explanation outputs."""
+
+    return (
+        federated_shard_artifact_dir(run_artifact_dir, client_id, selection_id, shard_id)
+        / "detailed_explanations"
+        / _artifact_path_segment(explainer_name, label="explainer_name")
+    )
+
+
+def federated_metrics_results_dir(
+    run_artifact_dir: Path,
+    client_id: str,
+    selection_id: str,
+    shard_id: str,
+    explainer_name: str,
+) -> Path:
+    """Return the explainer-specific directory for metric outputs."""
+
+    return (
+        federated_shard_artifact_dir(run_artifact_dir, client_id, selection_id, shard_id)
+        / "metrics_results"
+        / _artifact_path_segment(explainer_name, label="explainer_name")
+    )
+
+
+def federated_job_status_dir(
+    run_artifact_dir: Path,
+    client_id: str,
+    selection_id: str,
+    shard_id: str,
+) -> Path:
+    """Return the shard-local status directory for explain/evaluate jobs."""
+
+    return federated_shard_artifact_dir(run_artifact_dir, client_id, selection_id, shard_id) / "_status"
+
+
 def federated_model_dir(run_dir: Path) -> Path:
     """Return the directory containing frozen federated model artifacts."""
 

@@ -10,6 +10,7 @@ from fed_perso_xai.data.catalog import DEFAULT_DATASET_REGISTRY
 from fed_perso_xai.fl.strategy import DEFAULT_STRATEGY_REGISTRY
 from fed_perso_xai.models.registry import DEFAULT_MODEL_REGISTRY
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
+from fed_perso_xai.orchestration.explain_eval import run_explain_eval_job
 from fed_perso_xai.orchestration.explanations import (
     generate_client_local_explanations,
     load_client_data_for_explanations,
@@ -147,6 +148,21 @@ def build_parser() -> argparse.ArgumentParser:
     explain_parser.add_argument("--shap-nsamples", type=int)
     explain_parser.add_argument("--shap-l1-reg")
     explain_parser.add_argument("--shap-l1-reg-k", type=int)
+
+    explain_eval_parser = subparsers.add_parser(
+        "run-explain-eval-job",
+        help="Run one standalone post-training explain+evaluate job for a federated run_id.",
+    )
+    _add_shared_path_args(explain_eval_parser)
+    explain_eval_parser.add_argument("--run-id", required=True)
+    explain_eval_parser.add_argument("--client-id", required=True)
+    explain_eval_parser.add_argument("--split", choices=["train", "test"], default="test")
+    explain_eval_parser.add_argument("--shard-id", default="shard_000")
+    explain_eval_parser.add_argument("--explainer", required=True)
+    explain_eval_parser.add_argument("--config-id", required=True)
+    explain_eval_parser.add_argument("--max-instances", type=int, default=50)
+    explain_eval_parser.add_argument("--random-state", type=int, default=42)
+    explain_eval_parser.add_argument("--force", action="store_true")
     return parser
 
 
@@ -341,6 +357,22 @@ def main() -> None:
                 indent=2,
             )
         )
+        return
+
+    if args.command == "run-explain-eval-job":
+        payload = run_explain_eval_job(
+            run_id=args.run_id,
+            client_id=args.client_id,
+            split=args.split,
+            shard_id=args.shard_id,
+            explainer_name=args.explainer,
+            config_id=args.config_id,
+            max_instances=args.max_instances,
+            random_state=args.random_state,
+            force=args.force,
+            paths=_build_artifact_paths(args),
+        )
+        print(json.dumps(payload, indent=2))
         return
 
     raise ValueError(f"Unhandled command '{args.command}'.")
