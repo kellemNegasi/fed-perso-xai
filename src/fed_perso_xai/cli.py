@@ -1,4 +1,4 @@
-"""CLI entrypoints for the stage-1 experiment workflow."""
+"""CLI entrypoints for the baseline experiment workflow."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from fed_perso_xai.orchestration.explanations import (
     resolve_feature_names_for_explanations,
     save_client_explanations,
 )
-from fed_perso_xai.orchestration.stage_b_training import train_federated_stage_b
+from fed_perso_xai.orchestration.federated_training import train_federated_from_partitions
 from fed_perso_xai.orchestration.training import (
     compare_centralized_and_federated,
     train_centralized_from_prepared,
@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     dataset_choices = DEFAULT_DATASET_REGISTRY.list_keys()
     model_choices = DEFAULT_MODEL_REGISTRY.list_keys()
     strategy_choices = DEFAULT_STRATEGY_REGISTRY.list_keys()
-    parser = argparse.ArgumentParser(description="Federated Perso-XAI stage-1 baseline.")
+    parser = argparse.ArgumentParser(description="Federated Perso-XAI baseline.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     prepare_parser = subparsers.add_parser(
@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     train_parser = subparsers.add_parser(
         "train-federated",
-        help="Run standalone Stage B federated training from persisted client partitions.",
+        help="Train a federated model from persisted client partitions.",
     )
     _add_common_dataset_args(train_parser, dataset_choices)
     _add_shared_path_args(train_parser)
@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite an existing completed Stage B run for the same deterministic output location.",
+        help="Overwrite an existing completed federated run for the same deterministic output location.",
     )
 
     compare_parser = subparsers.add_parser(
@@ -236,7 +236,7 @@ def main() -> None:
             secure_quantization_scale=args.secure_quantization_scale,
             secure_seed=args.secure_seed,
         )
-        artifacts, summary = train_federated_stage_b(
+        artifacts, summary = train_federated_from_partitions(
             config,
             run_id=args.run_id,
             partition_data_root=args.partitions,

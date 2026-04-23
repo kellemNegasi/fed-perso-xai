@@ -1,4 +1,4 @@
-"""Flower runtime integration for stage-1 federated experiments."""
+"""Flower runtime integration for baseline federated experiments."""
 
 from __future__ import annotations
 

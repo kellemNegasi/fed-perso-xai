@@ -1,4 +1,4 @@
-"""Configuration dataclasses for the stage-1 experiment workflow."""
+"""Configuration dataclasses for the baseline experiment workflow."""
 
 from __future__ import annotations
 

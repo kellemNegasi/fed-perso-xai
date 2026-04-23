@@ -11,7 +11,7 @@ import numpy as np
 
 from fed_perso_xai.models.base import TabularClassifier
 from fed_perso_xai.models.registry import build_model_config, create_model
-from fed_perso_xai.utils.paths import stage_b_global_model_path, stage_b_model_metadata_path
+from fed_perso_xai.utils.paths import federated_model_path, federated_model_metadata_path
 
 
 @dataclass(frozen=True)
@@ -50,10 +50,10 @@ def load_global_model_parameters(path: Path) -> list[np.ndarray]:
 
 
 def load_global_model(run_dir: Path) -> LoadedGlobalModelArtifact:
-    """Load a frozen global model artifact from a completed Stage B run."""
+    """Load a frozen global model artifact from a completed federated run."""
 
-    metadata_path = stage_b_model_metadata_path(run_dir)
-    model_path = stage_b_global_model_path(run_dir)
+    metadata_path = federated_model_metadata_path(run_dir)
+    model_path = federated_model_path(run_dir)
     if not metadata_path.exists():
         raise FileNotFoundError(f"Missing model metadata at '{metadata_path}'.")
     if not model_path.exists():

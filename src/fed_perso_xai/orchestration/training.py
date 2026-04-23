@@ -25,7 +25,7 @@ from fed_perso_xai.evaluation.metrics import (
 )
 from fed_perso_xai.evaluation.predictions import build_prediction_artifact, save_prediction_artifact
 from fed_perso_xai.models import TabularClassifier, create_model
-from fed_perso_xai.orchestration.stage_b_training import train_federated_stage_b
+from fed_perso_xai.orchestration.federated_training import train_federated_from_partitions
 from fed_perso_xai.utils.config import CentralizedTrainingConfig, ComparisonConfig, FederatedTrainingConfig
 from fed_perso_xai.utils.paths import centralized_run_dir, comparison_run_dir, federated_run_dir, prepared_dir
 from fed_perso_xai.utils.provenance import (
@@ -161,9 +161,9 @@ def train_centralized_from_prepared(
 def train_federated_from_prepared(
     config: FederatedTrainingConfig,
 ) -> tuple[Any, dict[str, Any]]:
-    """Backward-compatible wrapper around the standalone Stage B runner."""
+    """Backward-compatible wrapper around federated training from partitions."""
 
-    return train_federated_stage_b(config)
+    return train_federated_from_partitions(config)
 
 
 def compare_centralized_and_federated(
@@ -184,7 +184,7 @@ def compare_centralized_and_federated(
     if not centralized_metrics_path.exists() or not federated_metrics_path.exists():
         raise FileNotFoundError(
             "Both centralized and federated metrics_summary.json files must exist before comparison. "
-            "Standalone Stage B federated training no longer emits predictive evaluation metrics; "
+            "Standalone federated training no longer emits predictive evaluation metrics; "
             "comparison now requires a downstream evaluation stage."
         )
 

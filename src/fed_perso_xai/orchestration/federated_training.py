@@ -1,4 +1,4 @@
-"""Standalone Stage B federated training orchestration."""
+"""Federated training orchestration from persisted client partitions."""
 
 from __future__ import annotations
 
@@ -19,13 +19,13 @@ from fed_perso_xai.utils.config import FederatedTrainingConfig
 from fed_perso_xai.utils.paths import (
     federated_run_dir,
     partition_root,
-    stage_b_completion_marker_path,
-    stage_b_global_model_path,
-    stage_b_model_metadata_path,
-    stage_b_run_manifest_path,
-    stage_b_runtime_report_path,
-    stage_b_training_history_path,
-    stage_b_training_metadata_path,
+    federated_completion_marker_path,
+    federated_model_path,
+    federated_model_metadata_path,
+    federated_run_manifest_path,
+    federated_runtime_report_path,
+    federated_training_history_path,
+    federated_training_metadata_path,
 )
 from fed_perso_xai.utils.provenance import (
     build_reproducibility_metadata,
@@ -37,8 +37,8 @@ from fed_perso_xai.utils.provenance import (
 
 
 @dataclass(frozen=True)
-class StageBArtifacts:
-    """Stable filesystem pointers for one Stage B run."""
+class FederatedTrainingArtifacts:
+    """Stable filesystem pointers for one federated training run."""
 
     run_dir: Path
     model_artifact_path: Path
@@ -50,17 +50,17 @@ class StageBArtifacts:
     config_snapshot_path: Path
 
 
-def train_federated_stage_b(
+def train_federated_from_partitions(
     config: FederatedTrainingConfig,
     *,
     run_id: str | None = None,
     partition_data_root: Path | None = None,
     force: bool = False,
-) -> tuple[StageBArtifacts, dict[str, Any]]:
-    """Run standalone Stage B federated training from persisted client partitions."""
+) -> tuple[FederatedTrainingArtifacts, dict[str, Any]]:
+    """Train a federated model from persisted client partitions."""
 
     resolved_run_id = run_id or build_run_id(
-        experiment_type="federated-stage-b",
+        experiment_type="federated-training",
         dataset_name=config.dataset_name,
         seed=config.seed,
         num_clients=config.num_clients,
@@ -80,7 +80,7 @@ def train_federated_stage_b(
         config.alpha,
         config.seed,
     )
-    artifacts = _build_stage_b_artifacts(result_dir)
+    artifacts = _build_federated_training_artifacts(result_dir)
     config_snapshot = config.to_dict()
     config_hash = _stable_json_sha256(config_snapshot)
 
@@ -101,9 +101,9 @@ def train_federated_stage_b(
         partition_metadata=partition_metadata,
     )
 
-    existing_metadata = _load_completed_stage_b_metadata(artifacts)
+    existing_metadata = _load_completed_federated_training_metadata(artifacts)
     if existing_metadata is not None:
-        mismatches = _describe_stage_b_reuse_mismatches(
+        mismatches = _describe_federated_training_reuse_mismatches(
             metadata=existing_metadata,
             expected_run_id=resolved_run_id,
             expected_config_hash=config_hash,
@@ -117,7 +117,7 @@ def train_federated_stage_b(
         if mismatches and not force:
             mismatch_text = "; ".join(mismatches)
             raise FileExistsError(
-                "A completed Stage B run already exists at "
+                "A completed federated training run already exists at "
                 f"'{result_dir}' with different inputs ({mismatch_text}). "
                 "Re-run with force=True / --force to overwrite that completed run."
             )
@@ -138,8 +138,9 @@ def train_federated_stage_b(
         for client in load_client_datasets(resolved_partition_root, config.num_clients)
     ]
     if not client_datasets:
-        raise ValueError("No client datasets were loaded for Stage B training.")
-
+        raise ValueError("No client datasets were loaded for federated training.")
+    # TODO: Remove or invalidate legacy comparison inputs when starting a new run
+    # to prevent stale-result reports during reruns and forced reruns.
     result_dir.mkdir(parents=True, exist_ok=True)
     copy_shared_artifacts(prepared_root, result_dir)
     shutil.copy2(partition_metadata_path, result_dir / "partition_metadata.json")
@@ -175,7 +176,7 @@ def train_federated_stage_b(
 
     model_metadata = {
         "artifact_type": "frozen_global_model",
-        "artifact_version": "stage_b_model_v1",
+        "artifact_version": "federated_model_v1",
         "run_id": resolved_run_id,
         "model_type": config.model_name,
         "model_config": dict(config_snapshot.get("model") or {}),
@@ -190,7 +191,7 @@ def train_federated_stage_b(
             "preprocessor_artifact": _relative_if_exists(result_dir / "preprocessor.joblib", result_dir),
             "feature_metadata_artifact": _relative_if_exists(result_dir / "feature_metadata.json", result_dir),
             "prepared_root": str(prepared_root),
-            "assumption": "Frozen shared preprocessing fitted once during Stage A.",
+            "assumption": "Frozen shared preprocessing fitted once during data preparation.",
         },
         "partition_reference": {
             "partition_root": partition_signature["partition_data_root"],
@@ -204,7 +205,7 @@ def train_federated_stage_b(
     artifacts.model_metadata_path.write_text(json.dumps(model_metadata, indent=2), encoding="utf-8")
 
     training_metadata = {
-        "stage": "stage_b",
+        "mode": "federated_training",
         "status": "completed",
         "run_id": resolved_run_id,
         "dataset_name": config.dataset_name,
@@ -235,7 +236,7 @@ def train_federated_stage_b(
         "force_requested": bool(force),
         "client_count_loaded": int(len(client_datasets)),
         "partition_client_count": int(len(partition_metadata.get("clients", []))),
-        "stage_success": True,
+        "training_success": True,
         "round_history_summary": training_result.round_history,
     }
     artifacts.training_metadata_path.parent.mkdir(parents=True, exist_ok=True)
@@ -244,7 +245,7 @@ def train_federated_stage_b(
         encoding="utf-8",
     )
 
-    manifest = _build_stage_b_manifest(
+    manifest = _build_federated_training_manifest(
         run_dir=result_dir,
         run_id=resolved_run_id,
         dataset_name=config.dataset_name,
@@ -264,13 +265,13 @@ def train_federated_stage_b(
             "reproducibility_metadata": reproducibility_path,
         },
     )
-    stage_b_manifest_path = stage_b_run_manifest_path(result_dir)
-    stage_b_manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    manifest_path = federated_run_manifest_path(result_dir)
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     artifacts.completion_marker_path.write_text(
         json.dumps(
             {
-                "stage": "stage_b",
+                "mode": "federated_training",
                 "status": "completed",
                 "run_id": resolved_run_id,
                 "completed_at": completed_at,
@@ -286,21 +287,21 @@ def train_federated_stage_b(
     return artifacts, training_metadata
 
 
-def _build_stage_b_artifacts(run_dir: Path) -> StageBArtifacts:
-    return StageBArtifacts(
+def _build_federated_training_artifacts(run_dir: Path) -> FederatedTrainingArtifacts:
+    return FederatedTrainingArtifacts(
         run_dir=run_dir,
-        model_artifact_path=stage_b_global_model_path(run_dir),
-        model_metadata_path=stage_b_model_metadata_path(run_dir),
-        training_metadata_path=stage_b_training_metadata_path(run_dir),
-        training_history_path=stage_b_training_history_path(run_dir),
-        runtime_report_path=stage_b_runtime_report_path(run_dir),
-        completion_marker_path=stage_b_completion_marker_path(run_dir),
+        model_artifact_path=federated_model_path(run_dir),
+        model_metadata_path=federated_model_metadata_path(run_dir),
+        training_metadata_path=federated_training_metadata_path(run_dir),
+        training_history_path=federated_training_history_path(run_dir),
+        runtime_report_path=federated_runtime_report_path(run_dir),
+        completion_marker_path=federated_completion_marker_path(run_dir),
         config_snapshot_path=run_dir / "config_snapshot.json",
     )
 
 
-def _load_completed_stage_b_metadata(
-    artifacts: StageBArtifacts,
+def _load_completed_federated_training_metadata(
+    artifacts: FederatedTrainingArtifacts,
 ) -> dict[str, Any] | None:
     if not (
         artifacts.model_artifact_path.exists()
@@ -310,12 +311,12 @@ def _load_completed_stage_b_metadata(
     ):
         return None
     metadata = json.loads(artifacts.training_metadata_path.read_text(encoding="utf-8"))
-    if metadata.get("status") != "completed" or not bool(metadata.get("stage_success")):
+    if metadata.get("status") != "completed" or not bool(metadata.get("training_success")):
         return None
     return metadata
 
 
-def _describe_stage_b_reuse_mismatches(
+def _describe_federated_training_reuse_mismatches(
     *,
     metadata: dict[str, Any],
     expected_run_id: str,
@@ -409,7 +410,7 @@ def _write_training_history_csv(path: Path, round_history: list[dict[str, Any]])
     return path
 
 
-def _build_stage_b_manifest(
+def _build_federated_training_manifest(
     *,
     run_dir: Path,
     run_id: str,
@@ -418,9 +419,9 @@ def _build_stage_b_manifest(
     artifact_paths: dict[str, Path],
 ) -> dict[str, Any]:
     return {
-        "manifest_version": "stage_b_run_manifest_v1",
+        "manifest_version": "federated_run_manifest_v1",
         "run_id": run_id,
-        "mode": "federated_stage_b",
+        "mode": "federated_training",
         "dataset_name": dataset_name,
         "timestamp": current_utc_timestamp(),
         "git_commit_hash": resolve_git_commit_hash(run_dir),

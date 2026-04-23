@@ -19,8 +19,8 @@ from fed_perso_xai.utils.paths import (
     centralized_run_dir,
     federated_run_dir,
     partition_root,
-    stage_b_model_metadata_path,
-    stage_b_training_metadata_path,
+    federated_model_metadata_path,
+    federated_training_metadata_path,
 )
 
 
@@ -40,7 +40,7 @@ class LocalExplanationDataset:
 
 
 class ExplainerModelAdapter:
-    """Expose sklearn-like classifier methods around the stage-1 model contract."""
+    """Expose sklearn-like classifier methods around the baseline model contract."""
 
     _estimator_type = "classifier"
     classes_ = np.asarray([0, 1], dtype=np.int64)
@@ -225,7 +225,7 @@ def resolve_partition_data_root_for_explanations(
     normalized_source = model_source.strip().lower()
     if normalized_source == "federated":
         result_dir = federated_run_dir(paths, dataset_name, num_clients, alpha, seed)
-        training_metadata_path = stage_b_training_metadata_path(result_dir)
+        training_metadata_path = federated_training_metadata_path(result_dir)
         if training_metadata_path.exists():
             training_metadata = json.loads(training_metadata_path.read_text(encoding="utf-8"))
             recorded_partition_root = training_metadata.get("partition_data_root")
@@ -250,7 +250,7 @@ def load_saved_model_for_explanations(
     num_clients: int,
     alpha: float,
 ) -> tuple[Any, Path]:
-    """Load a saved stage-1 model artifact and rebuild the model wrapper."""
+    """Load a saved baseline model artifact and rebuild the model wrapper."""
 
     normalized_source = model_source.strip().lower()
     if normalized_source == "federated":
@@ -262,8 +262,8 @@ def load_saved_model_for_explanations(
             f"Unsupported model source '{model_source}'. Expected 'federated' or 'centralized'."
         )
 
-    stage_b_metadata_path = stage_b_model_metadata_path(result_dir)
-    if stage_b_metadata_path.exists():
+    federated_metadata_path = federated_model_metadata_path(result_dir)
+    if federated_metadata_path.exists():
         loaded = load_global_model(result_dir)
         return loaded.model, result_dir
 

@@ -1,4 +1,4 @@
-"""Models used in the stage-1 predictive baseline."""
+"""Models used in the predictive baseline."""
 
 from .base import TabularClassifier
 from .logistic_regression import LogisticRegressionModel, initialize_parameters

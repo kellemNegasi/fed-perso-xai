@@ -13,7 +13,7 @@ from fed_perso_xai.orchestration.training import (
     train_centralized_from_prepared,
     train_federated_from_prepared,
 )
-from fed_perso_xai.utils.paths import stage_b_global_model_path, stage_b_training_metadata_path
+from fed_perso_xai.utils.paths import federated_model_path, federated_training_metadata_path
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
     CentralizedTrainingConfig,
@@ -76,9 +76,9 @@ def test_centralized_run_manifest_creation(mock_openml, tmp_path) -> None:
     assert manifest["artifacts"]["metadata_artifacts"]["split_metadata"] == "split_metadata.json"
 
 
-def test_federated_stage_b_writes_loadable_model_artifacts(mock_openml, tmp_path) -> None:
+def test_federated_training_writes_loadable_model_artifacts(mock_openml, tmp_path) -> None:
     if not FLOWER_AVAILABLE:
-        pytest.skip("Flower is not installed; skipping federated Stage B contract test.")
+        pytest.skip("Flower is not installed; skipping federated training contract test.")
     mock_openml("adult_income")
     paths = _build_paths(tmp_path)
     prepare_federated_dataset(
@@ -112,8 +112,8 @@ def test_federated_stage_b_writes_loadable_model_artifacts(mock_openml, tmp_path
     )
 
     loaded = load_global_model(federated_artifacts.run_dir)
-    assert stage_b_global_model_path(federated_artifacts.run_dir).exists()
-    assert stage_b_training_metadata_path(federated_artifacts.run_dir).exists()
+    assert federated_model_path(federated_artifacts.run_dir).exists()
+    assert federated_training_metadata_path(federated_artifacts.run_dir).exists()
     assert federated_summary["status"] == "completed"
     assert federated_summary["model_type"] == "logistic_regression"
     assert loaded.metadata["run_id"] == federated_summary["run_id"]

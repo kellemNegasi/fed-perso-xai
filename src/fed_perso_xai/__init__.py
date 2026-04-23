@@ -1,4 +1,4 @@
-"""Federated Perso-XAI stage-1 baseline package."""
+"""Federated Perso-XAI baseline package."""
 
 from .utils.config import (
     ArtifactPaths,

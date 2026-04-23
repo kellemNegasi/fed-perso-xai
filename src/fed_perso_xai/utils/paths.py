@@ -74,56 +74,56 @@ def federated_run_dir(
     )
 
 
-def stage_b_model_dir(run_dir: Path) -> Path:
-    """Return the directory containing frozen Stage B model artifacts."""
+def federated_model_dir(run_dir: Path) -> Path:
+    """Return the directory containing frozen federated model artifacts."""
 
     return run_dir / "model"
 
 
-def stage_b_training_dir(run_dir: Path) -> Path:
-    """Return the directory containing Stage B training metadata artifacts."""
+def federated_training_dir(run_dir: Path) -> Path:
+    """Return the directory containing federated training metadata artifacts."""
 
     return run_dir / "training"
 
 
-def stage_b_global_model_path(run_dir: Path) -> Path:
+def federated_model_path(run_dir: Path) -> Path:
     """Return the frozen global model artifact path."""
 
-    return stage_b_model_dir(run_dir) / "global_model.npz"
+    return federated_model_dir(run_dir) / "global_model.npz"
 
 
-def stage_b_model_metadata_path(run_dir: Path) -> Path:
-    """Return the Stage B model metadata path."""
+def federated_model_metadata_path(run_dir: Path) -> Path:
+    """Return the federated model metadata path."""
 
-    return stage_b_model_dir(run_dir) / "model_metadata.json"
-
-
-def stage_b_training_metadata_path(run_dir: Path) -> Path:
-    """Return the Stage B training metadata path."""
-
-    return stage_b_training_dir(run_dir) / "training_metadata.json"
+    return federated_model_dir(run_dir) / "model_metadata.json"
 
 
-def stage_b_training_history_path(run_dir: Path) -> Path:
-    """Return the Stage B training history CSV path."""
+def federated_training_metadata_path(run_dir: Path) -> Path:
+    """Return the federated training metadata path."""
 
-    return stage_b_training_dir(run_dir) / "training_history.csv"
-
-
-def stage_b_runtime_report_path(run_dir: Path) -> Path:
-    """Return the Stage B runtime report path."""
-
-    return stage_b_training_dir(run_dir) / "runtime_report.json"
+    return federated_training_dir(run_dir) / "training_metadata.json"
 
 
-def stage_b_completion_marker_path(run_dir: Path) -> Path:
-    """Return the Stage B completion marker path."""
+def federated_training_history_path(run_dir: Path) -> Path:
+    """Return the federated training history CSV path."""
 
-    return stage_b_training_dir(run_dir) / "stage_b.done"
+    return federated_training_dir(run_dir) / "training_history.csv"
 
 
-def stage_b_run_manifest_path(run_dir: Path) -> Path:
-    """Return the Stage B manifest path."""
+def federated_runtime_report_path(run_dir: Path) -> Path:
+    """Return the federated runtime report path."""
+
+    return federated_training_dir(run_dir) / "runtime_report.json"
+
+
+def federated_completion_marker_path(run_dir: Path) -> Path:
+    """Return the federated training completion marker path."""
+
+    return federated_training_dir(run_dir) / "training.done"
+
+
+def federated_run_manifest_path(run_dir: Path) -> Path:
+    """Return the federated training manifest path."""
 
     return run_dir / "run_manifest.json"
 

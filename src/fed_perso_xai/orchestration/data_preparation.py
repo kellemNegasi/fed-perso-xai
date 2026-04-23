@@ -1,4 +1,4 @@
-"""High-level stage-1 data preparation pipeline."""
+"""High-level baseline data preparation pipeline."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def prepare_federated_dataset(
     *,
     registry: DatasetRegistry | None = None,
 ) -> PreparedDataResult:
-    """Load, preprocess, partition, split, and persist stage-1 prepared data."""
+    """Load, preprocess, partition, split, and persist prepared baseline data."""
 
     dataset = load_supported_dataset(
         config.dataset_name,
@@ -124,7 +124,7 @@ def prepare_federated_dataset(
                 "fitting_mode": config.preprocessing.fitting_mode,
                 "description": (
                     "The frozen preprocessor is fit once on the global raw training pool before "
-                    "client partitioning. This is an explicit stage-1 baseline assumption."
+                    "client partitioning. This is an explicit baseline assumption."
                 ),
             },
             "source_metadata": dataset.source_metadata,

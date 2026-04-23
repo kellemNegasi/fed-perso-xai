@@ -479,7 +479,7 @@ def test_explain_shap_cli_writes_output(monkeypatch, mock_openml, tmp_path) -> N
     assert payload["n_explanations"] == min(2, client.test.X.shape[0])
 
 
-def test_explain_shap_cli_uses_recorded_stage_b_partition_root(
+def test_explain_shap_cli_uses_recorded_training_partition_root(
     monkeypatch,
     mock_openml,
     tmp_path,

@@ -10,7 +10,7 @@ import pytest
 from fed_perso_xai.data.serialization import load_client_datasets
 from fed_perso_xai.models import load_global_model
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
-from fed_perso_xai.orchestration.stage_b_training import train_federated_stage_b
+from fed_perso_xai.orchestration.federated_training import train_federated_from_partitions
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
     DataPreparationConfig,
@@ -36,9 +36,9 @@ def _build_paths(tmp_path):
 
 @pytest.mark.skipif(
     not FLOWER_AVAILABLE,
-    reason="Flower is not installed; Stage B federated training tests require Flower.",
+    reason="Flower is not installed; federated training tests require Flower.",
 )
-def test_stage_b_loads_persisted_partitions_and_writes_artifacts(mock_openml, tmp_path) -> None:
+def test_federated_training_loads_persisted_partitions_and_writes_artifacts(mock_openml, tmp_path) -> None:
     mock_openml("adult_income")
     paths = _build_paths(tmp_path)
     prepare_federated_dataset(
@@ -57,7 +57,7 @@ def test_stage_b_loads_persisted_partitions_and_writes_artifacts(mock_openml, tm
         1.0,
         12,
     )
-    artifacts, metadata = train_federated_stage_b(
+    artifacts, metadata = train_federated_from_partitions(
         FederatedTrainingConfig(
             dataset_name="adult_income",
             seed=12,
@@ -68,7 +68,7 @@ def test_stage_b_loads_persisted_partitions_and_writes_artifacts(mock_openml, tm
             rounds=2,
             simulation_backend="debug-sequential",
         ),
-        run_id="stage-b-explicit-run",
+        run_id="federated-explicit-run",
         partition_data_root=explicit_partition_root,
     )
 
@@ -80,7 +80,7 @@ def test_stage_b_loads_persisted_partitions_and_writes_artifacts(mock_openml, tm
     assert metadata["partition_data_root"] == str(explicit_partition_root.resolve())
     assert metadata["partition_metadata_sha256"]
     assert metadata["status"] == "completed"
-    assert metadata["run_id"] == "stage-b-explicit-run"
+    assert metadata["run_id"] == "federated-explicit-run"
 
     loaded = load_global_model(artifacts.run_dir)
     client = load_client_datasets(explicit_partition_root, 3)[0]
@@ -92,9 +92,9 @@ def test_stage_b_loads_persisted_partitions_and_writes_artifacts(mock_openml, tm
 
 @pytest.mark.skipif(
     not FLOWER_AVAILABLE,
-    reason="Flower is not installed; Stage B federated training tests require Flower.",
+    reason="Flower is not installed; federated training tests require Flower.",
 )
-def test_stage_b_skip_existing_and_force_rerun(mock_openml, tmp_path) -> None:
+def test_federated_training_skip_existing_and_force_rerun(mock_openml, tmp_path) -> None:
     mock_openml("adult_income")
     paths = _build_paths(tmp_path)
     prepare_federated_dataset(
@@ -116,17 +116,17 @@ def test_stage_b_skip_existing_and_force_rerun(mock_openml, tmp_path) -> None:
         simulation_backend="debug-sequential",
     )
 
-    artifacts, initial_metadata = train_federated_stage_b(config)
+    artifacts, initial_metadata = train_federated_from_partitions(config)
     initial_text = artifacts.training_metadata_path.read_text(encoding="utf-8")
     assert initial_metadata["status"] == "completed"
 
-    _, skipped_metadata = train_federated_stage_b(config)
+    _, skipped_metadata = train_federated_from_partitions(config)
     assert skipped_metadata["status"] == "skipped_existing"
     assert skipped_metadata["skipped"] is True
     assert artifacts.training_metadata_path.read_text(encoding="utf-8") == initial_text
 
     time.sleep(0.01)
-    _, forced_metadata = train_federated_stage_b(config, force=True)
+    _, forced_metadata = train_federated_from_partitions(config, force=True)
     forced_text = artifacts.training_metadata_path.read_text(encoding="utf-8")
     assert forced_metadata["status"] == "completed"
     assert forced_metadata["force_requested"] is True
@@ -139,9 +139,9 @@ def test_stage_b_skip_existing_and_force_rerun(mock_openml, tmp_path) -> None:
 
 @pytest.mark.skipif(
     not FLOWER_AVAILABLE,
-    reason="Flower is not installed; Stage B federated training tests require Flower.",
+    reason="Flower is not installed; federated training tests require Flower.",
 )
-def test_stage_b_blocks_overwrite_of_completed_run_without_force(mock_openml, tmp_path) -> None:
+def test_federated_training_blocks_overwrite_of_completed_run_without_force(mock_openml, tmp_path) -> None:
     mock_openml("adult_income")
     paths = _build_paths(tmp_path)
     prepare_federated_dataset(
@@ -163,12 +163,12 @@ def test_stage_b_blocks_overwrite_of_completed_run_without_force(mock_openml, tm
         simulation_backend="debug-sequential",
     )
 
-    artifacts, initial_metadata = train_federated_stage_b(base_config, run_id="original-run")
+    artifacts, initial_metadata = train_federated_from_partitions(base_config, run_id="original-run")
     initial_text = artifacts.training_metadata_path.read_text(encoding="utf-8")
     assert initial_metadata["status"] == "completed"
 
     with pytest.raises(FileExistsError, match="different inputs"):
-        train_federated_stage_b(base_config, run_id="replacement-run")
+        train_federated_from_partitions(base_config, run_id="replacement-run")
 
     assert artifacts.training_metadata_path.read_text(encoding="utf-8") == initial_text
     assert load_global_model(artifacts.run_dir).metadata["run_id"] == "original-run"
@@ -176,9 +176,9 @@ def test_stage_b_blocks_overwrite_of_completed_run_without_force(mock_openml, tm
 
 @pytest.mark.skipif(
     not FLOWER_AVAILABLE,
-    reason="Flower is not installed; Stage B federated training tests require Flower.",
+    reason="Flower is not installed; federated training tests require Flower.",
 )
-def test_stage_b_blocks_reuse_when_partition_root_changes(mock_openml, tmp_path) -> None:
+def test_federated_training_blocks_reuse_when_partition_root_changes(mock_openml, tmp_path) -> None:
     mock_openml("adult_income")
     paths = _build_paths(tmp_path)
     prepare_federated_dataset(
@@ -204,7 +204,7 @@ def test_stage_b_blocks_reuse_when_partition_root_changes(mock_openml, tmp_path)
     alternate_partition_root.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(original_partition_root, alternate_partition_root)
 
-    artifacts, first_metadata = train_federated_stage_b(
+    artifacts, first_metadata = train_federated_from_partitions(
         config,
         run_id="stable-run",
         partition_data_root=original_partition_root,
@@ -212,13 +212,13 @@ def test_stage_b_blocks_reuse_when_partition_root_changes(mock_openml, tmp_path)
     assert first_metadata["partition_data_root"] == str(original_partition_root.resolve())
 
     with pytest.raises(FileExistsError, match="partition_data_root"):
-        train_federated_stage_b(
+        train_federated_from_partitions(
             config,
             run_id="stable-run",
             partition_data_root=alternate_partition_root,
         )
 
-    forced_artifacts, forced_metadata = train_federated_stage_b(
+    forced_artifacts, forced_metadata = train_federated_from_partitions(
         config,
         run_id="stable-run",
         partition_data_root=alternate_partition_root,
