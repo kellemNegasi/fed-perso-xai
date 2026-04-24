@@ -184,13 +184,22 @@ def load_client_datasets(root_dir: Path, num_clients: int) -> list[ClientDiskDat
     """Load all saved client partitions from disk."""
 
     return [
-        ClientDiskDataset(
-            client_id=client_id,
-            train=load_array_split(root_dir / f"client_{client_id}" / "train.npz"),
-            test=load_array_split(root_dir / f"client_{client_id}" / "test.npz"),
-        )
+        load_client_dataset(root_dir, client_id)
         for client_id in range(num_clients)
     ]
+
+
+def load_client_dataset(root_dir: Path, client_id: int) -> ClientDiskDataset:
+    """Load one saved client partition from disk."""
+
+    if client_id < 0:
+        raise ValueError("client_id must be non-negative.")
+    client_root = root_dir / f"client_{client_id}"
+    return ClientDiskDataset(
+        client_id=client_id,
+        train=load_array_split(client_root / "train.npz"),
+        test=load_array_split(client_root / "test.npz"),
+    )
 
 
 def copy_shared_artifacts(prepared_root: Path, destination_dir: Path) -> None:

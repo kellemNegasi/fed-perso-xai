@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fed_perso_xai.data.serialization import save_federated_dataset
+from fed_perso_xai.data.serialization import load_client_dataset, save_federated_dataset
 from fed_perso_xai.models import create_model, save_global_model_parameters
 from fed_perso_xai.orchestration.explain_eval import (
     plan_explain_eval_jobs,
@@ -242,6 +242,84 @@ def test_explain_eval_job_writes_parquet_json_and_metadata(tmp_path, synthetic_c
     assert len(metrics_payload["per_instance_results"]) == 4
 
 
+def test_load_client_dataset_loads_only_requested_client(tmp_path, synthetic_client_splits) -> None:
+    paths, _ = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    root_dir = paths.partition_root / "toy" / "3_clients" / "alpha_1.0" / "seed_7"
+
+    client = load_client_dataset(root_dir, 1)
+
+    assert client.client_id == 1
+    assert client.train.row_ids[0] == "train-1-0"
+    assert client.test.row_ids[0] == "test-1-0"
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_explain_eval_job_uses_single_client_loader(
+    tmp_path,
+    synthetic_client_splits,
+    monkeypatch,
+) -> None:
+    from fed_perso_xai.orchestration import explain_eval as module
+
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    requested_client_ids: list[int] = []
+    original_load_client_dataset = module.load_client_dataset
+
+    def tracking_single_loader(root_dir: Path, client_id: int):
+        requested_client_ids.append(client_id)
+        return original_load_client_dataset(root_dir, client_id)
+
+    monkeypatch.setattr(module, "load_client_dataset", tracking_single_loader)
+
+    payload = run_explain_eval_job(
+        run_id=run_id,
+        client_id="client_001",
+        explainer_name="lime",
+        config_id="lime__kernel-1.5__samples-50",
+        max_instances=2,
+        random_state=7,
+        paths=paths,
+        metric_names=["compactness_size"],
+    )
+
+    assert requested_client_ids == [1]
+    assert payload["client_id"] == "client_001"
+
+
+def test_plan_explain_eval_jobs_uses_partition_metadata_for_split_sizes(
+    tmp_path,
+    synthetic_client_splits,
+    monkeypatch,
+) -> None:
+    from fed_perso_xai.orchestration import explain_eval as module
+
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    plan_path = tmp_path / "plans" / "metadata_only_plan.jsonl"
+
+    def forbidden_single_loader(*args, **kwargs):
+        raise AssertionError("plan_explain_eval_jobs should use partition metadata for split sizes")
+
+    monkeypatch.setattr(module, "load_client_dataset", forbidden_single_loader)
+    summary = plan_explain_eval_jobs(
+        run_id=run_id,
+        output_path=plan_path,
+        clients="client_000",
+        explainers="lime",
+        config_ids="lime__kernel-1.5__samples-50",
+        max_instances=8,
+        random_state=7,
+        paths=paths,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in plan_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert summary["job_count"] == 2
+    assert {row["client_id"] for row in rows} == {"client_000"}
+    assert [row["shard_id"] for row in rows] == ["shard_000", "shard_001"]
+
+
 @pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
 def test_sampling_is_stable_and_changes_with_seed(tmp_path, synthetic_client_splits) -> None:
     paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
@@ -383,6 +461,48 @@ def test_selection_metadata_is_reused_for_same_selection(tmp_path, synthetic_cli
 
     assert job_b["artifacts"]["selection_metadata_path"] == job_a["artifacts"]["selection_metadata_path"]
     assert second_metadata == first_metadata
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_shared_client_and_shard_metadata_are_not_rewritten(
+    tmp_path,
+    synthetic_client_splits,
+) -> None:
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    job_a = run_explain_eval_job(
+        run_id=run_id,
+        client_id="client_000",
+        shard_id="shard_000",
+        explainer_name="lime",
+        config_id="lime__kernel-1.5__samples-50",
+        max_instances=3,
+        random_state=11,
+        paths=paths,
+        metric_names=["compactness_size"],
+    )
+    client_metadata_path = Path(job_a["artifacts"]["client_metadata_path"])
+    shard_metadata_path = Path(job_a["artifacts"]["shard_metadata_path"])
+    first_client_metadata = json.loads(client_metadata_path.read_text(encoding="utf-8"))
+    first_shard_metadata = json.loads(shard_metadata_path.read_text(encoding="utf-8"))
+
+    time.sleep(0.01)
+
+    job_b = run_explain_eval_job(
+        run_id=run_id,
+        client_id="client_000",
+        shard_id="shard_000",
+        explainer_name="lime",
+        config_id="lime__kernel-2.0__samples-50",
+        max_instances=3,
+        random_state=11,
+        paths=paths,
+        metric_names=["compactness_size"],
+    )
+
+    assert job_b["artifacts"]["client_metadata_path"] == job_a["artifacts"]["client_metadata_path"]
+    assert job_b["artifacts"]["shard_metadata_path"] == job_a["artifacts"]["shard_metadata_path"]
+    assert json.loads(client_metadata_path.read_text(encoding="utf-8")) == first_client_metadata
+    assert json.loads(shard_metadata_path.read_text(encoding="utf-8")) == first_shard_metadata
 
 
 @pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
@@ -543,7 +663,31 @@ def test_plan_explain_eval_jobs_writes_matrix_jsonl_and_ignores_random_grid(
     assert {row["client_id"] for row in rows} == {"client_000"}
     assert {row["shard_id"] for row in rows} == {"shard_000"}
     assert all("shap__" in row["config_id"] for row in rows)
-    assert rows[0]["paths"]["federated_root"] == str(paths.federated_root)
+    assert rows[0]["paths"]["federated_root"] == str(paths.federated_root.resolve())
+    assert Path(rows[0]["paths"]["federated_root"]).is_absolute()
+
+
+def test_plan_manifest_stores_absolute_artifact_roots(
+    tmp_path,
+    synthetic_client_splits,
+) -> None:
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    plan_path = tmp_path / "plans" / "absolute_roots.jsonl"
+
+    plan_explain_eval_jobs(
+        run_id=run_id,
+        output_path=plan_path,
+        clients="client_000",
+        explainers="lime",
+        config_ids="lime__kernel-1.5__samples-50",
+        max_instances=2,
+        random_state=9,
+        paths=paths,
+    )
+
+    row = json.loads(plan_path.read_text(encoding="utf-8").splitlines()[0])
+    for root_name, root_value in row["paths"].items():
+        assert Path(root_value).is_absolute(), root_name
 
 
 @pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")

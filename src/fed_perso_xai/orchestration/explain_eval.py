@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from fed_perso_xai.data.serialization import load_client_datasets
+from fed_perso_xai.data.serialization import load_client_dataset
 from fed_perso_xai.evaluators import (
     DEFAULT_METRIC_REGISTRY,
     evaluate_metrics_for_method,
@@ -54,7 +54,7 @@ from fed_perso_xai.utils.paths import (
 )
 from fed_perso_xai.utils.provenance import current_utc_timestamp
 
-DEFAULT_SHARD_SIZE = 1024
+DEFAULT_SHARD_SIZE = 5
 PLAN_SCHEMA_VERSION = "explain_eval_plan_jsonl_v1"
 
 
@@ -106,16 +106,20 @@ def plan_explain_eval_jobs(
         config_ids=config_ids,
     )
     skipped_non_matrix = _skipped_non_matrix_hyperparameters(explainer_names)
-    client_data_by_id = _load_client_data_map(run_context=run_context)
+    client_split_sizes = _load_partition_client_split_sizes(run_context=run_context)
 
     rows: list[dict[str, Any]] = []
     skipped_existing_count = 0
     skipped_empty_clients: list[str] = []
     for client_id in client_ids:
         normalized_client_id, client_numeric_id = _normalize_client_id(client_id)
-        client_data = client_data_by_id[client_numeric_id]
-        X_split, _, _ = client_data.get_split(split_name)
-        selected_size = min(int(len(X_split)), int(max_instances))
+        split_size = _plan_client_split_size(
+            run_context=run_context,
+            client_numeric_id=client_numeric_id,
+            split=split_name,
+            client_split_sizes=client_split_sizes,
+        )
+        selected_size = min(split_size, int(max_instances))
         if selected_size <= 0:
             skipped_empty_clients.append(normalized_client_id)
             continue
@@ -418,9 +422,9 @@ def run_explain_eval_job(
         "generated_at": current_utc_timestamp(),
     }
 
-    _write_json_atomic(artifacts.client_metadata_path, client_metadata)
+    _write_json_if_missing_atomic(artifacts.client_metadata_path, client_metadata)
     _write_json_if_missing_atomic(artifacts.selection_metadata_path, selection_metadata)
-    _write_json_atomic(artifacts.shard_metadata_path, shard_metadata)
+    _write_json_if_missing_atomic(artifacts.shard_metadata_path, shard_metadata)
     _write_parquet_atomic(artifacts.explanations_path, explanation_rows)
     _write_json_atomic(artifacts.metrics_path, metrics_payload)
     _write_json_atomic(artifacts.job_metadata_path, job_metadata)
@@ -448,16 +452,13 @@ def _load_client_data(
     client_numeric_id: int,
 ) -> ClientData:
     training_metadata = json.loads(run_context.training_metadata_path.read_text(encoding="utf-8"))
-    client_datasets = load_client_datasets(
-        run_context.partition_root,
-        int(training_metadata["num_clients"]),
-    )
-    try:
-        loaded = next(item for item in client_datasets if item.client_id == client_numeric_id)
-    except StopIteration as exc:
+    num_clients = int(training_metadata["num_clients"])
+    if client_numeric_id < 0 or client_numeric_id >= num_clients:
         raise ValueError(
-            f"Client '{client_numeric_id}' was not found under '{run_context.partition_root}'."
-        ) from exc
+            f"Client '{client_numeric_id}' is out of range for run '{run_context.run_id}' "
+            f"with {num_clients} clients."
+        )
+    loaded = load_client_dataset(run_context.partition_root, client_numeric_id)
     return ClientData(
         client_id=loaded.client_id,
         X_train=loaded.train.X,
@@ -467,29 +468,6 @@ def _load_client_data(
         y_test=loaded.test.y,
         row_ids_test=loaded.test.row_ids,
     )
-
-
-def _load_client_data_map(
-    *,
-    run_context: FederatedRunContext,
-) -> dict[int, ClientData]:
-    training_metadata = json.loads(run_context.training_metadata_path.read_text(encoding="utf-8"))
-    client_datasets = load_client_datasets(
-        run_context.partition_root,
-        int(training_metadata["num_clients"]),
-    )
-    return {
-        loaded.client_id: ClientData(
-            client_id=loaded.client_id,
-            X_train=loaded.train.X,
-            y_train=loaded.train.y,
-            row_ids_train=loaded.train.row_ids,
-            X_test=loaded.test.X,
-            y_test=loaded.test.y,
-            row_ids_test=loaded.test.row_ids,
-        )
-        for loaded in client_datasets
-    }
 
 
 def _select_split_instances(
@@ -833,6 +811,95 @@ def _resolve_plan_clients(
     return resolved
 
 
+def _load_partition_client_split_sizes(
+    *,
+    run_context: FederatedRunContext,
+) -> dict[int, dict[str, int]]:
+    for metadata_path in _partition_metadata_path_candidates(run_context):
+        if not metadata_path.exists():
+            continue
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        clients = payload.get("clients")
+        if not isinstance(clients, list):
+            continue
+        split_sizes: dict[int, dict[str, int]] = {}
+        for client in clients:
+            if not isinstance(client, dict) or "client_id" not in client:
+                continue
+            client_id = int(client["client_id"])
+            sizes: dict[str, int] = {}
+            if "train_size" in client:
+                sizes["train"] = int(client["train_size"])
+            if "test_size" in client:
+                sizes["test"] = int(client["test_size"])
+            if sizes:
+                split_sizes[client_id] = sizes
+        if split_sizes:
+            return split_sizes
+    return {}
+
+
+def _partition_metadata_path_candidates(run_context: FederatedRunContext) -> list[Path]:
+    candidates: list[Path] = []
+    partition_ref = run_context.metadata.get("partition_reference") or {}
+    if isinstance(partition_ref, dict):
+        _append_path_candidate(
+            candidates,
+            partition_ref.get("partition_metadata_path"),
+            base_dir=run_context.run_artifact_dir,
+        )
+
+    training_metadata = json.loads(run_context.training_metadata_path.read_text(encoding="utf-8"))
+    _append_path_candidate(
+        candidates,
+        training_metadata.get("partition_metadata_path"),
+        base_dir=run_context.run_artifact_dir,
+    )
+    candidates.extend(
+        [
+            run_context.partition_root / "partition_metadata.json",
+            run_context.partition_root / "metadata.json",
+        ]
+    )
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            deduped.append(candidate)
+            seen.add(key)
+    return deduped
+
+
+def _append_path_candidate(candidates: list[Path], raw_path: Any, *, base_dir: Path) -> None:
+    if raw_path is None:
+        return
+    path = Path(str(raw_path))
+    candidates.append(path if path.is_absolute() else base_dir / path)
+
+
+def _plan_client_split_size(
+    *,
+    run_context: FederatedRunContext,
+    client_numeric_id: int,
+    split: str,
+    client_split_sizes: dict[int, dict[str, int]],
+) -> int:
+    size = client_split_sizes.get(client_numeric_id, {}).get(split)
+    if size is not None:
+        return int(size)
+
+    # Metadata should normally provide split sizes. If it is unavailable or stale,
+    # load only the selected client rather than every client in the partition.
+    loaded = load_client_dataset(run_context.partition_root, client_numeric_id)
+    if split == "train":
+        return int(len(loaded.train.X))
+    if split == "test":
+        return int(len(loaded.test.X))
+    raise ValueError("split must be 'train' or 'test'.")
+
+
 def _resolve_plan_explainers(explainers: str) -> list[str]:
     if explainers.strip().lower() == "all":
         return DEFAULT_EXPLAINER_REGISTRY.list_keys()
@@ -909,12 +976,12 @@ def _read_plan_row(plan_path: Path, index: int) -> dict[str, Any]:
 
 def _artifact_paths_to_manifest(paths: ArtifactPaths) -> dict[str, str]:
     return {
-        "prepared_root": str(paths.prepared_root),
-        "partition_root": str(paths.partition_root),
-        "centralized_root": str(paths.centralized_root),
-        "federated_root": str(paths.federated_root),
-        "comparison_root": str(paths.comparison_root),
-        "cache_dir": str(paths.cache_dir),
+        "prepared_root": str(paths.prepared_root.resolve()),
+        "partition_root": str(paths.partition_root.resolve()),
+        "centralized_root": str(paths.centralized_root.resolve()),
+        "federated_root": str(paths.federated_root.resolve()),
+        "comparison_root": str(paths.comparison_root.resolve()),
+        "cache_dir": str(paths.cache_dir.resolve()),
     }
 
 
