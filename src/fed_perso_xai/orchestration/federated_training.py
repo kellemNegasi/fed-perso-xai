@@ -531,22 +531,25 @@ def _sync_federated_run_artifact(
     for key, source in artifact_paths.items():
         if not source.exists():
             continue
-        if key == "model_artifact":
-            destination = run_artifact_dir / "model" / "global_model.npz"
-        elif key == "model_metadata":
-            destination = run_artifact_dir / "model" / "model_metadata.json"
-        elif key == "training_metadata":
-            destination = run_artifact_dir / "training" / "training_metadata.json"
-        elif key == "training_history":
-            destination = run_artifact_dir / "training" / "training_history.csv"
-        elif key == "runtime_report":
-            destination = run_artifact_dir / "training" / "runtime_report.json"
-        elif key == "run_manifest":
-            destination = run_artifact_dir / "run_manifest.json"
-        else:
-            destination = run_artifact_dir / source.name
+        destination = _run_artifact_destination(
+            key=key,
+            source=source,
+            run_artifact_dir=run_artifact_dir,
+        )
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+
+    copied_artifacts = {
+        key: destination
+        for key, source in artifact_paths.items()
+        if (
+            destination := _run_artifact_destination(
+                key=key,
+                source=source,
+                run_artifact_dir=run_artifact_dir,
+            )
+        ).exists()
+    }
 
     run_metadata = {
         "artifact_type": "federated_run",
@@ -583,39 +586,7 @@ def _sync_federated_run_artifact(
         },
         "artifacts": {
             key: str(path.relative_to(run_artifact_dir))
-            for key, path in {
-                key: (
-                    run_artifact_dir / "model" / "global_model.npz"
-                    if key == "model_artifact"
-                    else run_artifact_dir / "model" / "model_metadata.json"
-                    if key == "model_metadata"
-                    else run_artifact_dir / "training" / "training_metadata.json"
-                    if key == "training_metadata"
-                    else run_artifact_dir / "training" / "training_history.csv"
-                    if key == "training_history"
-                    else run_artifact_dir / "training" / "runtime_report.json"
-                    if key == "runtime_report"
-                    else run_artifact_dir / "run_manifest.json"
-                    if key == "run_manifest"
-                    else run_artifact_dir / source.name
-                )
-                for key, source in artifact_paths.items()
-                if (
-                    (run_artifact_dir / "model" / "global_model.npz").exists()
-                    if key == "model_artifact"
-                    else (run_artifact_dir / "model" / "model_metadata.json").exists()
-                    if key == "model_metadata"
-                    else (run_artifact_dir / "training" / "training_metadata.json").exists()
-                    if key == "training_metadata"
-                    else (run_artifact_dir / "training" / "training_history.csv").exists()
-                    if key == "training_history"
-                    else (run_artifact_dir / "training" / "runtime_report.json").exists()
-                    if key == "runtime_report"
-                    else (run_artifact_dir / "run_manifest.json").exists()
-                    if key == "run_manifest"
-                    else (run_artifact_dir / source.name).exists()
-                )
-            }
+            for key, path in copied_artifacts.items()
         },
     }
     federated_run_metadata_path(run_artifact_dir).write_text(
@@ -623,3 +594,24 @@ def _sync_federated_run_artifact(
         encoding="utf-8",
     )
     return run_artifact_dir
+
+
+def _run_artifact_destination(
+    *,
+    key: str,
+    source: Path,
+    run_artifact_dir: Path,
+) -> Path:
+    if key == "model_artifact":
+        return run_artifact_dir / "model" / "global_model.npz"
+    if key == "model_metadata":
+        return run_artifact_dir / "model" / "model_metadata.json"
+    if key == "training_metadata":
+        return run_artifact_dir / "training" / "training_metadata.json"
+    if key == "training_history":
+        return run_artifact_dir / "training" / "training_history.csv"
+    if key == "runtime_report":
+        return run_artifact_dir / "training" / "runtime_report.json"
+    if key == "run_manifest":
+        return run_artifact_dir / "run_manifest.json"
+    return run_artifact_dir / source.name

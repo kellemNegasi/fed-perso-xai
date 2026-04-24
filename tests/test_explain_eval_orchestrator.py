@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -10,7 +11,11 @@ import pytest
 
 from fed_perso_xai.data.serialization import save_federated_dataset
 from fed_perso_xai.models import create_model, save_global_model_parameters
-from fed_perso_xai.orchestration.explain_eval import run_explain_eval_job
+from fed_perso_xai.orchestration.explain_eval import (
+    plan_explain_eval_jobs,
+    run_explain_eval_job,
+    run_explain_eval_plan_item,
+)
 from fed_perso_xai.utils.config import ArtifactPaths, LogisticRegressionConfig
 from fed_perso_xai.utils.paths import federated_run_artifact_dir, federated_run_metadata_path
 
@@ -503,3 +508,130 @@ def test_independent_jobs_do_not_collide_on_paths(tmp_path, synthetic_client_spl
     assert job_a["artifacts"]["metrics_results_path"] != job_b["artifacts"]["metrics_results_path"]
     assert Path(job_a["artifacts"]["detailed_explanations_path"]).exists()
     assert Path(job_b["artifacts"]["detailed_explanations_path"]).exists()
+
+
+def test_plan_explain_eval_jobs_writes_matrix_jsonl_and_ignores_random_grid(
+    tmp_path,
+    synthetic_client_splits,
+) -> None:
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    plan_path = tmp_path / "plans" / "explain_eval.jsonl"
+
+    summary = plan_explain_eval_jobs(
+        run_id=run_id,
+        output_path=plan_path,
+        clients="client_000",
+        explainers="shap",
+        max_instances=2,
+        random_state=9,
+        paths=paths,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in plan_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert summary["job_count"] == 24
+    assert summary["array_range"] == "0-23"
+    assert summary["configs_per_explainer"] == {"shap": 24}
+    assert summary["skipped_non_matrix_hyperparameters"] == {
+        "shap": ["shap_l1_reg_k", "shap_nsamples"],
+    }
+    assert len(rows) == 24
+    assert rows[0]["array_index"] == 0
+    assert rows[-1]["array_index"] == 23
+    assert {row["client_id"] for row in rows} == {"client_000"}
+    assert {row["shard_id"] for row in rows} == {"shard_000"}
+    assert all("shap__" in row["config_id"] for row in rows)
+    assert rows[0]["paths"]["federated_root"] == str(paths.federated_root)
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_run_explain_eval_plan_item_executes_one_planned_job(
+    tmp_path,
+    synthetic_client_splits,
+) -> None:
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    plan_path = tmp_path / "plans" / "single_lime_job.jsonl"
+    summary = plan_explain_eval_jobs(
+        run_id=run_id,
+        output_path=plan_path,
+        clients="0",
+        explainers="lime",
+        config_ids="lime__kernel-1.5__samples-50",
+        max_instances=2,
+        random_state=3,
+        paths=paths,
+    )
+    assert summary["job_count"] == 1
+
+    payload = run_explain_eval_plan_item(plan_path=plan_path, index=0)
+
+    assert payload["status"] == "completed"
+    assert payload["client_id"] == "client_000"
+    assert payload["explainer_name"] == "lime"
+    assert payload["config_id"] == "lime__kernel-1.5__samples-50"
+    assert Path(payload["artifacts"]["done_marker_path"]).exists()
+
+
+def test_explain_eval_plan_clis_are_wired_to_python_planner(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    from fed_perso_xai import cli as cli_module
+
+    calls: dict[str, dict[str, object]] = {}
+    plan_path = tmp_path / "plan.jsonl"
+
+    def fake_plan(**kwargs):
+        calls["plan"] = kwargs
+        return {"status": "planned", "job_count": 1}
+
+    def fake_plan_item(**kwargs):
+        calls["plan_item"] = kwargs
+        return {"status": "completed", "array_index": kwargs["index"]}
+
+    monkeypatch.setattr(cli_module, "plan_explain_eval_jobs", fake_plan)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fed-perso-xai",
+            "plan-explain-eval-jobs",
+            "--run-id",
+            "run-123",
+            "--clients",
+            "0",
+            "--explainers",
+            "lime",
+            "--configs",
+            "lime__kernel-1.5__samples-50",
+            "--output",
+            str(plan_path),
+        ],
+    )
+    cli_module.main()
+    plan_output = json.loads(capsys.readouterr().out)
+    assert plan_output["job_count"] == 1
+    assert calls["plan"]["run_id"] == "run-123"
+    assert calls["plan"]["output_path"] == plan_path
+
+    monkeypatch.setattr(cli_module, "run_explain_eval_plan_item", fake_plan_item)
+    monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "7")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fed-perso-xai",
+            "run-explain-eval-plan-item",
+            "--plan",
+            str(plan_path),
+        ],
+    )
+    cli_module.main()
+    item_output = json.loads(capsys.readouterr().out)
+    assert item_output == {"status": "completed", "array_index": 7}
+    assert calls["plan_item"]["plan_path"] == plan_path
+    assert calls["plan_item"]["index"] == 7
+    assert calls["plan_item"]["paths"] is None

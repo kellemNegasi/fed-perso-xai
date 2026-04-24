@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from fed_perso_xai.data.catalog import DEFAULT_DATASET_REGISTRY
 from fed_perso_xai.fl.strategy import DEFAULT_STRATEGY_REGISTRY
 from fed_perso_xai.models.registry import DEFAULT_MODEL_REGISTRY
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
-from fed_perso_xai.orchestration.explain_eval import run_explain_eval_job
+from fed_perso_xai.orchestration.explain_eval import (
+    plan_explain_eval_jobs,
+    run_explain_eval_job,
+    run_explain_eval_plan_item,
+)
 from fed_perso_xai.orchestration.explanations import (
     generate_client_local_explanations,
     load_client_data_for_explanations,
@@ -163,6 +168,48 @@ def build_parser() -> argparse.ArgumentParser:
     explain_eval_parser.add_argument("--max-instances", type=int, default=50)
     explain_eval_parser.add_argument("--random-state", type=int, default=42)
     explain_eval_parser.add_argument("--force", action="store_true")
+
+    explain_eval_plan_parser = subparsers.add_parser(
+        "plan-explain-eval-jobs",
+        help="Plan a client x shard x explainer x config explain+evaluate matrix as JSONL.",
+    )
+    _add_shared_path_args(explain_eval_plan_parser)
+    explain_eval_plan_parser.add_argument("--run-id", required=True)
+    explain_eval_plan_parser.add_argument(
+        "--clients",
+        default="all",
+        help="Comma-separated client ids, or 'all'. Accepts values like 0,1 or client_000,client_001.",
+    )
+    explain_eval_plan_parser.add_argument("--split", choices=["train", "test"], default="test")
+    explain_eval_plan_parser.add_argument(
+        "--explainers",
+        default="all",
+        help="Comma-separated explainer names, or 'all'.",
+    )
+    explain_eval_plan_parser.add_argument(
+        "--configs",
+        dest="config_ids",
+        default="all",
+        help="Comma-separated concrete config ids, or 'all'. Only list-valued matrix grids are expanded.",
+    )
+    explain_eval_plan_parser.add_argument("--max-instances", type=int, default=50)
+    explain_eval_plan_parser.add_argument("--random-state", type=int, default=42)
+    explain_eval_plan_parser.add_argument("--output", type=Path, required=True)
+    explain_eval_plan_parser.add_argument("--skip-existing", action="store_true")
+    explain_eval_plan_parser.add_argument("--force", action="store_true")
+
+    explain_eval_plan_item_parser = subparsers.add_parser(
+        "run-explain-eval-plan-item",
+        help="Run one JSONL explain+evaluate plan row, usually from a Slurm array task.",
+    )
+    _add_shared_path_args(explain_eval_plan_item_parser, default_to_none=True)
+    explain_eval_plan_item_parser.add_argument("--plan", type=Path, required=True)
+    explain_eval_plan_item_parser.add_argument(
+        "--index",
+        type=int,
+        help="Plan row index. Defaults to SLURM_ARRAY_TASK_ID when omitted.",
+    )
+    explain_eval_plan_item_parser.add_argument("--force", action="store_true")
     return parser
 
 
@@ -375,6 +422,41 @@ def main() -> None:
         print(json.dumps(payload, indent=2))
         return
 
+    if args.command == "plan-explain-eval-jobs":
+        payload = plan_explain_eval_jobs(
+            run_id=args.run_id,
+            output_path=args.output,
+            clients=args.clients,
+            split=args.split,
+            explainers=args.explainers,
+            config_ids=args.config_ids,
+            max_instances=args.max_instances,
+            random_state=args.random_state,
+            skip_existing=args.skip_existing,
+            force=args.force,
+            paths=_build_artifact_paths(args),
+        )
+        print(json.dumps(payload, indent=2))
+        return
+
+    if args.command == "run-explain-eval-plan-item":
+        index = args.index
+        if index is None:
+            try:
+                index = int(os.environ["SLURM_ARRAY_TASK_ID"])
+            except KeyError as exc:
+                raise ValueError(
+                    "--index is required when SLURM_ARRAY_TASK_ID is not set."
+                ) from exc
+        payload = run_explain_eval_plan_item(
+            plan_path=args.plan,
+            index=index,
+            force=args.force,
+            paths=_build_artifact_paths_or_none(args),
+        )
+        print(json.dumps(payload, indent=2))
+        return
+
     raise ValueError(f"Unhandled command '{args.command}'.")
 
 
@@ -385,13 +467,25 @@ def _add_common_dataset_args(parser: argparse.ArgumentParser, dataset_choices: l
     parser.add_argument("--seed", type=int, default=42)
 
 
-def _add_shared_path_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--prepared-root", type=Path, default=Path("prepared"))
-    parser.add_argument("--partition-root", type=Path, default=Path("datasets"))
-    parser.add_argument("--centralized-root", type=Path, default=Path("centralized"))
-    parser.add_argument("--federated-root", type=Path, default=Path("federated"))
-    parser.add_argument("--comparison-root", type=Path, default=Path("comparisons"))
-    parser.add_argument("--cache-dir", type=Path, default=Path("data/cache/openml"))
+def _add_shared_path_args(
+    parser: argparse.ArgumentParser,
+    *,
+    default_to_none: bool = False,
+) -> None:
+    defaults = {
+        "prepared_root": None if default_to_none else Path("prepared"),
+        "partition_root": None if default_to_none else Path("datasets"),
+        "centralized_root": None if default_to_none else Path("centralized"),
+        "federated_root": None if default_to_none else Path("federated"),
+        "comparison_root": None if default_to_none else Path("comparisons"),
+        "cache_dir": None if default_to_none else Path("data/cache/openml"),
+    }
+    parser.add_argument("--prepared-root", type=Path, default=defaults["prepared_root"])
+    parser.add_argument("--partition-root", type=Path, default=defaults["partition_root"])
+    parser.add_argument("--centralized-root", type=Path, default=defaults["centralized_root"])
+    parser.add_argument("--federated-root", type=Path, default=defaults["federated_root"])
+    parser.add_argument("--comparison-root", type=Path, default=defaults["comparison_root"])
+    parser.add_argument("--cache-dir", type=Path, default=defaults["cache_dir"])
 
 
 def _add_model_args(parser: argparse.ArgumentParser, model_choices: list[str]) -> None:
@@ -411,6 +505,24 @@ def _build_artifact_paths(args: argparse.Namespace) -> ArtifactPaths:
         comparison_root=args.comparison_root,
         cache_dir=args.cache_dir,
     )
+
+
+def _build_artifact_paths_or_none(args: argparse.Namespace) -> ArtifactPaths | None:
+    path_values = (
+        args.prepared_root,
+        args.partition_root,
+        args.centralized_root,
+        args.federated_root,
+        args.comparison_root,
+        args.cache_dir,
+    )
+    if all(value is None for value in path_values):
+        return None
+    if any(value is None for value in path_values):
+        raise ValueError(
+            "Either provide all artifact root overrides or none when running a plan item."
+        )
+    return _build_artifact_paths(args)
 
 
 def _build_model_config(args: argparse.Namespace) -> LogisticRegressionConfig:

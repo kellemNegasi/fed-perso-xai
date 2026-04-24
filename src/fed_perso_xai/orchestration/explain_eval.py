@@ -27,7 +27,12 @@ from fed_perso_xai.evaluators import (
     make_metric,
     metric_capabilities,
 )
-from fed_perso_xai.explainers import resolve_explainer_config
+from fed_perso_xai.explainers import (
+    DEFAULT_EXPLAINER_REGISTRY,
+    build_explainer_config_registry,
+    load_explainer_hyperparameter_grid,
+    resolve_explainer_config,
+)
 from fed_perso_xai.fl.client import ClientData
 from fed_perso_xai.models import load_global_model
 from fed_perso_xai.orchestration.explanations import (
@@ -50,6 +55,7 @@ from fed_perso_xai.utils.paths import (
 from fed_perso_xai.utils.provenance import current_utc_timestamp
 
 DEFAULT_SHARD_SIZE = 1024
+PLAN_SCHEMA_VERSION = "explain_eval_plan_jsonl_v1"
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,154 @@ class ExplainEvalJobArtifacts:
     client_metadata_path: Path
     job_metadata_path: Path
     done_marker_path: Path
+
+
+def plan_explain_eval_jobs(
+    *,
+    run_id: str,
+    output_path: Path,
+    clients: str = "all",
+    split: str = "test",
+    explainers: str = "all",
+    config_ids: str = "all",
+    max_instances: int = 50,
+    random_state: int = 42,
+    skip_existing: bool = False,
+    force: bool = False,
+    paths: ArtifactPaths | None = None,
+) -> dict[str, Any]:
+    """Write a JSONL matrix plan for post-training explain+evaluate jobs."""
+
+    if max_instances <= 0:
+        raise ValueError("max_instances must be positive.")
+    if skip_existing and force:
+        raise ValueError("skip_existing and force cannot both be enabled.")
+
+    artifact_paths = paths or ArtifactPaths()
+    run_context = resolve_federated_run_context(paths=artifact_paths, run_id=run_id)
+    split_name = _normalize_split_name(split)
+    client_ids = _resolve_plan_clients(
+        run_context=run_context,
+        clients=clients,
+    )
+    explainer_names = _resolve_plan_explainers(explainers)
+    configs_by_explainer = _resolve_plan_config_ids(
+        explainer_names=explainer_names,
+        config_ids=config_ids,
+    )
+    skipped_non_matrix = _skipped_non_matrix_hyperparameters(explainer_names)
+    client_data_by_id = _load_client_data_map(run_context=run_context)
+
+    rows: list[dict[str, Any]] = []
+    skipped_existing_count = 0
+    skipped_empty_clients: list[str] = []
+    for client_id in client_ids:
+        normalized_client_id, client_numeric_id = _normalize_client_id(client_id)
+        client_data = client_data_by_id[client_numeric_id]
+        X_split, _, _ = client_data.get_split(split_name)
+        selected_size = min(int(len(X_split)), int(max_instances))
+        if selected_size <= 0:
+            skipped_empty_clients.append(normalized_client_id)
+            continue
+
+        shard_count = int((selected_size + DEFAULT_SHARD_SIZE - 1) // DEFAULT_SHARD_SIZE)
+        selection_id = federated_selection_id(
+            split=split_name,
+            max_instances=max_instances,
+            random_state=random_state,
+        )
+        for shard_index in range(shard_count):
+            shard_id = f"shard_{shard_index:03d}"
+            for explainer_name in explainer_names:
+                for config_id in configs_by_explainer[explainer_name]:
+                    artifacts = _build_job_artifacts(
+                        run_context=run_context,
+                        client_id=normalized_client_id,
+                        selection_id=selection_id,
+                        shard_id=shard_id,
+                        explainer_name=explainer_name,
+                        config_id=config_id,
+                    )
+                    if skip_existing and _job_is_complete(artifacts):
+                        skipped_existing_count += 1
+                        continue
+                    rows.append(
+                        {
+                            "schema_version": PLAN_SCHEMA_VERSION,
+                            "array_index": len(rows),
+                            "run_id": run_id,
+                            "client_id": normalized_client_id,
+                            "client_numeric_id": client_numeric_id,
+                            "split": split_name,
+                            "selection_id": selection_id,
+                            "shard_id": shard_id,
+                            "explainer": explainer_name,
+                            "config_id": config_id,
+                            "max_instances": int(max_instances),
+                            "random_state": int(random_state),
+                            "force": bool(force),
+                            "paths": _artifact_paths_to_manifest(artifact_paths),
+                        }
+                    )
+
+    _write_jsonl_atomic(output_path, rows)
+    return {
+        "status": "planned",
+        "plan_path": str(output_path),
+        "schema_version": PLAN_SCHEMA_VERSION,
+        "run_id": run_id,
+        "split": split_name,
+        "job_count": len(rows),
+        "array_range": f"0-{len(rows) - 1}" if rows else None,
+        "clients": client_ids,
+        "explainers": explainer_names,
+        "configs_per_explainer": {
+            explainer_name: len(configs)
+            for explainer_name, configs in configs_by_explainer.items()
+        },
+        "max_instances": int(max_instances),
+        "random_state": int(random_state),
+        "rows_per_shard": DEFAULT_SHARD_SIZE,
+        "skip_existing": bool(skip_existing),
+        "skipped_existing": skipped_existing_count,
+        "skipped_empty_clients": skipped_empty_clients,
+        "skipped_non_matrix_hyperparameters": skipped_non_matrix,
+        "generated_at": current_utc_timestamp(),
+    }
+
+
+def run_explain_eval_plan_item(
+    *,
+    plan_path: Path,
+    index: int,
+    force: bool = False,
+    paths: ArtifactPaths | None = None,
+) -> dict[str, Any]:
+    """Run one JSONL plan row, addressed by Slurm array index."""
+
+    row = _read_plan_row(plan_path, index)
+    if row.get("schema_version") != PLAN_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported explain/eval plan schema version: {row.get('schema_version')!r}."
+        )
+    row_index = int(row["array_index"])
+    if row_index != int(index):
+        raise ValueError(
+            f"Plan row index mismatch: requested {index}, row contains {row_index}."
+        )
+    row_paths = paths or _artifact_paths_from_manifest(row.get("paths") or {})
+    return run_explain_eval_job(
+        run_id=str(row["run_id"]),
+        client_id=str(row["client_id"]),
+        split=str(row["split"]),
+        shard_id=str(row["shard_id"]),
+        explainer_name=str(row["explainer"]),
+        config_id=str(row["config_id"]),
+        max_instances=int(row["max_instances"]),
+        random_state=int(row["random_state"]),
+        force=bool(force or row.get("force", False)),
+        paths=row_paths,
+    )
 
 
 def run_explain_eval_job(
@@ -313,6 +467,29 @@ def _load_client_data(
         y_test=loaded.test.y,
         row_ids_test=loaded.test.row_ids,
     )
+
+
+def _load_client_data_map(
+    *,
+    run_context: FederatedRunContext,
+) -> dict[int, ClientData]:
+    training_metadata = json.loads(run_context.training_metadata_path.read_text(encoding="utf-8"))
+    client_datasets = load_client_datasets(
+        run_context.partition_root,
+        int(training_metadata["num_clients"]),
+    )
+    return {
+        loaded.client_id: ClientData(
+            client_id=loaded.client_id,
+            X_train=loaded.train.X,
+            y_train=loaded.train.y,
+            row_ids_train=loaded.train.row_ids,
+            X_test=loaded.test.X,
+            y_test=loaded.test.y,
+            row_ids_test=loaded.test.row_ids,
+        )
+        for loaded in client_datasets
+    }
 
 
 def _select_split_instances(
@@ -629,6 +806,131 @@ def _job_is_complete(artifacts: ExplainEvalJobArtifacts) -> bool:
     )
 
 
+def _resolve_plan_clients(
+    *,
+    run_context: FederatedRunContext,
+    clients: str,
+) -> list[str]:
+    training_metadata = json.loads(run_context.training_metadata_path.read_text(encoding="utf-8"))
+    num_clients = int(training_metadata["num_clients"])
+    if clients.strip().lower() == "all":
+        return [f"client_{client_id:03d}" for client_id in range(num_clients)]
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for raw_client_id in _split_csv(clients):
+        normalized, numeric = _normalize_client_id(raw_client_id)
+        if numeric < 0 or numeric >= num_clients:
+            raise ValueError(
+                f"Client '{raw_client_id}' is out of range for run '{run_context.run_id}' "
+                f"with {num_clients} clients."
+            )
+        if normalized not in seen:
+            resolved.append(normalized)
+            seen.add(normalized)
+    if not resolved:
+        raise ValueError("At least one client must be selected.")
+    return resolved
+
+
+def _resolve_plan_explainers(explainers: str) -> list[str]:
+    if explainers.strip().lower() == "all":
+        return DEFAULT_EXPLAINER_REGISTRY.list_keys()
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for explainer_name in _split_csv(explainers):
+        DEFAULT_EXPLAINER_REGISTRY.get(explainer_name)
+        if explainer_name not in seen:
+            resolved.append(explainer_name)
+            seen.add(explainer_name)
+    if not resolved:
+        raise ValueError("At least one explainer must be selected.")
+    return resolved
+
+
+def _resolve_plan_config_ids(
+    *,
+    explainer_names: list[str],
+    config_ids: str,
+) -> dict[str, list[str]]:
+    requested_ids = None if config_ids.strip().lower() == "all" else set(_split_csv(config_ids))
+    configs_by_explainer: dict[str, list[str]] = {}
+    unmatched_requested = set(requested_ids or set())
+    for explainer_name in explainer_names:
+        available = build_explainer_config_registry(explainer_name)
+        selected = sorted(available)
+        if requested_ids is not None:
+            selected = [config_id for config_id in selected if config_id in requested_ids]
+            unmatched_requested.difference_update(selected)
+        if not selected:
+            raise ValueError(
+                f"No config_ids selected for explainer '{explainer_name}'. "
+                f"Use 'all' or one of: {', '.join(sorted(available))}."
+            )
+        configs_by_explainer[explainer_name] = selected
+
+    if unmatched_requested:
+        raise ValueError(
+            "Requested config_id values were not found for the selected explainers: "
+            + ", ".join(sorted(unmatched_requested))
+        )
+    return configs_by_explainer
+
+
+def _skipped_non_matrix_hyperparameters(explainer_names: list[str]) -> dict[str, list[str]]:
+    raw_grid = load_explainer_hyperparameter_grid()
+    skipped: dict[str, list[str]] = {}
+    for explainer_name in explainer_names:
+        explainer_grid = raw_grid.get(explainer_name) or {}
+        skipped_keys = [
+            key
+            for key, value in explainer_grid.items()
+            if not (isinstance(value, list) and value)
+        ]
+        if skipped_keys:
+            skipped[explainer_name] = sorted(skipped_keys)
+    return skipped
+
+
+def _split_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _read_plan_row(plan_path: Path, index: int) -> dict[str, Any]:
+    if index < 0:
+        raise ValueError("Plan index must be non-negative.")
+    with plan_path.open("r", encoding="utf-8") as handle:
+        for line_index, line in enumerate(handle):
+            if line_index == index:
+                return json.loads(line)
+    raise IndexError(f"Plan index {index} is out of range for '{plan_path}'.")
+
+
+def _artifact_paths_to_manifest(paths: ArtifactPaths) -> dict[str, str]:
+    return {
+        "prepared_root": str(paths.prepared_root),
+        "partition_root": str(paths.partition_root),
+        "centralized_root": str(paths.centralized_root),
+        "federated_root": str(paths.federated_root),
+        "comparison_root": str(paths.comparison_root),
+        "cache_dir": str(paths.cache_dir),
+    }
+
+
+def _artifact_paths_from_manifest(payload: dict[str, Any]) -> ArtifactPaths:
+    if not payload:
+        return ArtifactPaths()
+    return ArtifactPaths(
+        prepared_root=Path(str(payload["prepared_root"])),
+        partition_root=Path(str(payload["partition_root"])),
+        centralized_root=Path(str(payload["centralized_root"])),
+        federated_root=Path(str(payload["federated_root"])),
+        comparison_root=Path(str(payload["comparison_root"])),
+        cache_dir=Path(str(payload["cache_dir"])),
+    )
+
+
 def _normalize_client_id(client_id: str | int) -> tuple[str, int]:
     if isinstance(client_id, int):
         return f"client_{client_id:03d}", client_id
@@ -711,6 +1013,17 @@ def _write_json_if_missing_atomic(path: Path, payload: dict[str, Any]) -> None:
     except FileExistsError:
         # Another concurrent job won the manifest creation race.
         return
+
+
+def _write_jsonl_atomic(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    serialized = "".join(
+        json.dumps(to_serializable(row), sort_keys=True) + "\n"
+        for row in rows
+    )
+    tmp_path.write_text(serialized, encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def _write_parquet_atomic(path: Path, rows: list[dict[str, Any]]) -> None:
