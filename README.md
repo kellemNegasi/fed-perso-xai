@@ -1,6 +1,6 @@
 # fed-perso-xai
 
-`fed-perso-xai` is the baseline implementation for the larger federated Perso-XAI project. This repository is intentionally limited to predictive-model training with logistic regression, but its data, evaluation, and artifact contracts are shaped for later explanation-generation and recommender work.
+`fed-perso-xai` is the baseline implementation for the larger federated Perso-XAI project. This repository currently covers predictive-model training with logistic regression plus post-training local explanation/evaluation jobs. Its data, evaluation, and artifact contracts are shaped for later recommender work.
 
 Implemented now:
 
@@ -10,11 +10,12 @@ Implemented now:
 - Flower-based federated simulation as the primary federated path
 - explicit prediction, metrics, manifest, and provenance artifacts
 - centralized-versus-federated comparison reporting
+- client-local explanation generation
+- standalone post-training explain/evaluate jobs for federated `run_id` artifacts
+- JSONL matrix planning for Slurm array execution over client, shard, explainer, and config jobs
 
 Not implemented yet:
 
-- explanation generation
-- explanation metrics
 - recommender training
 - pairwise comparison or preference learning
 - clustering
@@ -25,12 +26,12 @@ Not implemented yet:
 - `src/fed_perso_xai/models`: logistic-regression baseline
 - `src/fed_perso_xai/fl`: Flower client, strategy, and simulation runtime integration
 - `src/fed_perso_xai/evaluation`: predictive metrics, prediction artifacts, comparison reports
-- `src/fed_perso_xai/orchestration`: prepare-data and training entrypoints
+- `src/fed_perso_xai/orchestration`: prepare-data, training, explanation, and explain/evaluate entrypoints
 - `tests`: smoke and contract tests for the baseline
 
 ## Installation
 
-Base installation for data preparation, centralized training, and artifact inspection:
+Base installation for data preparation, training, explain/evaluate jobs, and artifact inspection:
 
 ```bash
 python3 -m pip install -e .
@@ -234,9 +235,18 @@ Federated outputs are written under:
 federated/<dataset>/<K>_clients/alpha_<alpha>/seed_<seed>/
 ```
 
+The federated training flow also writes a run-addressable artifact copy under:
+
+```text
+federated/runs/<run_id>/
+```
+
+That run-addressable directory is the stable input contract for post-training explain/evaluate jobs.
+
 Important artifacts:
 
 - `run_manifest.json`
+- `run_metadata.json` under `federated/runs/<run_id>/`
 - `config_snapshot.json`
 - `reproducibility_metadata.json`
 - `runtime_report.json`
@@ -324,6 +334,98 @@ Equivalent config snapshot fields inside a federated run:
 }
 ```
 
+## Post-Training Explain/Evaluate Jobs
+
+Explain/evaluate jobs run against a completed federated `run_id` under:
+
+```text
+federated/runs/<run_id>/
+```
+
+The atomic worker runs one client, split, shard, explainer, and config:
+
+```bash
+python3 -m fed_perso_xai run-explain-eval-job \
+  --run-id <run_id> \
+  --client-id client_000 \
+  --split test \
+  --shard-id shard_000 \
+  --explainer lime \
+  --config-id lime__kernel-1.5__samples-50 \
+  --max-instances 50 \
+  --random-state 42
+```
+
+Outputs are written below the run-addressable artifact directory:
+
+```text
+federated/runs/<run_id>/clients/<client>/selections/<selection_id>/shards/<shard>/
+```
+
+The explain/evaluate artifact layout includes:
+
+- `client_metadata.json`, written once per client
+- `selection_metadata.json`, written once per client selection
+- `shard_metadata.json`, written once per shard
+- `detailed_explanations/<explainer>/<config_id>.parquet`
+- `metrics_results/<explainer>/<config_id>.json`
+- `_status/<config_id>.json`
+- `_status/<config_id>.done`
+
+Shard size is currently `5` selected rows per shard. This intentionally keeps each array task small because explainer/config matrix expansion can already create many jobs.
+
+### Matrix Planning For Slurm
+
+Use the Python planner to generate one JSONL row per `client x shard x explainer x config` job:
+
+```bash
+python3 -m fed_perso_xai plan-explain-eval-jobs \
+  --run-id <run_id> \
+  --clients all \
+  --split test \
+  --explainers all \
+  --configs all \
+  --max-instances 50 \
+  --random-state 42 \
+  --output explain_eval_plan.jsonl
+```
+
+The planner stores absolute artifact roots in the manifest so Slurm workers can run from a different working directory. Planning uses partition metadata for client split sizes and does not load all client arrays. If metadata is unavailable, it falls back to loading only the selected client.
+
+Run one plan row directly:
+
+```bash
+python3 -m fed_perso_xai run-explain-eval-plan-item \
+  --plan explain_eval_plan.jsonl \
+  --index 0
+```
+
+In a Slurm array, `--index` can be omitted because the command reads `SLURM_ARRAY_TASK_ID`:
+
+```bash
+python3 -m fed_perso_xai run-explain-eval-plan-item \
+  --plan explain_eval_plan.jsonl
+```
+
+Example `.sbatch` body:
+
+```bash
+set -euo pipefail
+
+PLAN="$1"
+
+python3 -m fed_perso_xai run-explain-eval-plan-item \
+  --plan "$PLAN"
+```
+
+Submit with the array range printed by `plan-explain-eval-jobs`, for example:
+
+```bash
+sbatch --array=0-127%32 explain_eval_array.sbatch explain_eval_plan.jsonl
+```
+
+The explainer config planner currently expands matrix hyperparameters only. In `configs/explainer_hyperparameters.yml`, list-valued entries become stable `config_id` dimensions. Random/range-style entries such as SHAP `shap_nsamples.randint` and `shap_l1_reg_k.randint` are intentionally ignored for now and reported in the plan summary as skipped non-matrix hyperparameters.
+
 ## Artifact Contract
 
 Prediction artifacts include at least:
@@ -352,7 +454,7 @@ Feature metadata includes:
 - schema diagnostics
 - unknown-category handling policy
 
-Each training run emits a `run_manifest.json` tying together the major artifacts so later explanation-generation, evaluation, and recommender stages can consume them without redefining the contract.
+Each training run emits a `run_manifest.json` tying together the major artifacts so post-training explain/evaluate and later recommender stages can consume them without redefining the contract.
 
 ## Comparison Reports
 
@@ -399,4 +501,8 @@ Current tests cover:
 - partitioning reproducibility
 - centralized and federated artifact compatibility
 - comparison report generation
+- explainer behavior and config-grid resolution
+- post-training explain/evaluate planning and artifact contracts
 - real Flower simulation smoke execution when the `ray` extra is installed
+
+Explain/evaluate Parquet integration tests require `pyarrow`, which is part of the base project dependencies. If the local environment was not installed with project dependencies, those tests are skipped.
