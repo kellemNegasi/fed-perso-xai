@@ -118,6 +118,30 @@ def test_job_launcher_rejects_list_valued_training_sampling_fields(tmp_path) -> 
     assert "Use a single scalar value for now" in message
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected_field"),
+    [
+        ({"seeds": []}, "seeds"),
+        ({"training": {"rounds": []}}, "training.rounds"),
+        ({"training": {"strategy": []}}, "training.strategy"),
+        ({"training": {"simulation_backend": []}}, "training.simulation_backend"),
+        ({"models": []}, "models or model"),
+        ({"models": [{"name": "logistic_regression", "params": {"epochs": []}}]}, "params.epochs"),
+    ],
+)
+def test_job_launcher_rejects_empty_matrix_dimensions(
+    tmp_path, overrides, expected_field
+) -> None:
+    config_path = _write_launcher_config(tmp_path, overrides=overrides)
+
+    with pytest.raises(ValueError) as excinfo:
+        run_job_launcher(config_path=config_path, dry_run=True)
+
+    message = str(excinfo.value)
+    assert "Launcher config must define at least one value" in message
+    assert expected_field in message
+
+
 def test_job_launcher_rejects_yaml_list_client_selector(tmp_path) -> None:
     config_path = _write_launcher_config(
         tmp_path,
