@@ -18,3 +18,5 @@ centralized
 *.json
 results
 .env
+job_launcher
+logs

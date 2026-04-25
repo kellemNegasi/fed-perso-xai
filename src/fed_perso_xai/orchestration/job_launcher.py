@@ -45,6 +45,7 @@ def run_job_launcher(
     config_path: Path,
     dry_run: bool = False,
     submit_slurm: bool | None = None,
+    force_training: bool | None = None,
 ) -> dict[str, Any]:
     """Run a YAML-defined prepare/train/explain-evaluate matrix."""
 
@@ -54,6 +55,11 @@ def run_job_launcher(
     explain_cfg = raw_config.get("explain_eval") or {}
     slurm_cfg = explain_cfg.get("slurm") or {}
     should_submit = bool(slurm_cfg.get("submit", False)) if submit_slurm is None else submit_slurm
+    should_force_training = (
+        bool(_get_nested(raw_config, ["training", "force"], False))
+        if force_training is None
+        else bool(force_training)
+    )
 
     runs: list[dict[str, Any]] = []
     prepared_partitions: dict[tuple[str, int, int, float], Path] = {}
@@ -113,7 +119,7 @@ def run_job_launcher(
                 experiment.alpha,
                 experiment.seed,
             ),
-            force=bool(_get_nested(raw_config, ["training", "force"], False)),
+            force=should_force_training,
         )
         run_id = str(training_summary["run_id"])
         run_record.update(

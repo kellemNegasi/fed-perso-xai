@@ -101,7 +101,7 @@ def train_federated_from_partitions(
     if run_id is None and existing_metadata is not None and not force:
         mismatches = _describe_federated_training_reuse_mismatches(
             metadata=existing_metadata,
-            expected_run_id=str(existing_metadata.get("run_id", "")),
+            expected_run_id=None,
             expected_config_hash=config_hash,
             expected_partition_signature=partition_signature,
         )
@@ -136,7 +136,7 @@ def train_federated_from_partitions(
     if existing_metadata is not None:
         mismatches = _describe_federated_training_reuse_mismatches(
             metadata=existing_metadata,
-            expected_run_id=resolved_run_id,
+            expected_run_id=run_id,
             expected_config_hash=config_hash,
             expected_partition_signature=partition_signature,
         )
@@ -378,12 +378,12 @@ def _load_completed_federated_training_metadata(
 def _describe_federated_training_reuse_mismatches(
     *,
     metadata: dict[str, Any],
-    expected_run_id: str,
+    expected_run_id: str | None,
     expected_config_hash: str,
     expected_partition_signature: dict[str, str],
 ) -> list[str]:
     mismatches: list[str] = []
-    if metadata.get("run_id") != expected_run_id:
+    if expected_run_id is not None and metadata.get("run_id") != expected_run_id:
         mismatches.append("run_id")
     if metadata.get("training_config_sha256") != expected_config_hash:
         mismatches.append("training_config_sha256")

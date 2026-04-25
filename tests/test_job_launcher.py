@@ -191,6 +191,34 @@ def test_job_launcher_prepares_each_partition_once_for_multiple_models(tmp_path,
     assert len(prepare_calls) == 1
 
 
+def test_job_launcher_force_training_override_takes_precedence(tmp_path, monkeypatch) -> None:
+    config_path = _write_launcher_config(
+        tmp_path,
+        overrides={"explain_eval": {"enabled": False}},
+    )
+    calls: dict[str, object] = {}
+
+    def fake_prepare(config):
+        root = tmp_path / "datasets" / "toy" / "3_clients" / "alpha_1.0" / "seed_7"
+        root.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(federated_artifacts=SimpleNamespace(root_dir=root))
+
+    def fake_train(config, *, run_id=None, partition_data_root=None, force=False):
+        calls["force"] = force
+        return SimpleNamespace(run_dir=tmp_path / "federated_run"), {
+            "status": "completed",
+            "run_id": "run-xyz",
+        }
+
+    monkeypatch.setattr(job_launcher, "prepare_federated_dataset", fake_prepare)
+    monkeypatch.setattr(job_launcher, "train_federated_from_partitions", fake_train)
+
+    summary = run_job_launcher(config_path=config_path, force_training=True)
+
+    assert summary["status"] == "completed"
+    assert calls["force"] is True
+
+
 def test_launch_experiment_jobs_cli_uses_launcher(tmp_path, monkeypatch, capsys) -> None:
     config_path = _write_launcher_config(tmp_path)
     calls: dict[str, object] = {}
@@ -208,6 +236,7 @@ def test_launch_experiment_jobs_cli_uses_launcher(tmp_path, monkeypatch, capsys)
             "--config",
             str(config_path),
             "--dry-run",
+            "--force",
         ],
     )
 
@@ -217,3 +246,4 @@ def test_launch_experiment_jobs_cli_uses_launcher(tmp_path, monkeypatch, capsys)
     assert output["status"] == "dry_run"
     assert calls["config_path"] == config_path
     assert calls["dry_run"] is True
+    assert calls["force_training"] is True

@@ -40,7 +40,7 @@ models:
       l2_regularization: 0.0
 
 training:
-  rounds: 10
+  rounds: 30
   strategy: fedavg
   simulation_backend: debug-sequential
   fit_fraction: 1.0
@@ -53,9 +53,11 @@ explain_eval:
   enabled: true
   clients: all
   split: test
-  explainers: all
-  configs: all
-  max_instances: 50
+  # explainers: all
+  # configs: all
+  explainers: lime
+  configs: lime__kernel-1.5__samples-50
+  max_instances: 10
   random_state: 42
   skip_existing: true
   force: false

@@ -53,8 +53,8 @@ from fed_perso_xai.utils.paths import (
     federated_shard_metadata_path,
 )
 from fed_perso_xai.utils.provenance import current_utc_timestamp
-
-DEFAULT_SHARD_SIZE = 1024
+#TODO : consider taking these config into its own config file or CLI args
+DEFAULT_SHARD_SIZE = 5
 PLAN_SCHEMA_VERSION = "explain_eval_plan_jsonl_v1"
 
 
@@ -119,7 +119,9 @@ def plan_explain_eval_jobs(
         if selected_size <= 0:
             skipped_empty_clients.append(normalized_client_id)
             continue
-
+        #REF Shard_computation.
+        #TODO: consider supporting dynamic shard sizes based on selected_size, with a default max shard size to avoid very large shards
+        # Also this seems a bit brittle if Shard Size is 0.
         shard_count = int((selected_size + DEFAULT_SHARD_SIZE - 1) // DEFAULT_SHARD_SIZE)
         selection_id = federated_selection_id(
             split=split_name,
@@ -545,6 +547,7 @@ def _resolve_selected_shard(
     dataset_indices: np.ndarray,
     shard_id: str,
 ) -> dict[str, Any]:
+    #REF Sharding of rows
     shard_index = _parse_shard_id(shard_id)
     total = int(len(X))
     start = shard_index * DEFAULT_SHARD_SIZE

@@ -227,6 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Submit generated explain/evaluate Slurm array scripts with sbatch.",
     )
+    launcher_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=None,
+        help="Overwrite existing completed federated training runs for launcher experiments.",
+    )
     return parser
 
 
@@ -479,6 +485,7 @@ def main() -> None:
             config_path=args.config,
             dry_run=args.dry_run,
             submit_slurm=True if args.submit_slurm else None,
+            force_training=args.force,
         )
         print(json.dumps(payload, indent=2))
         return
