@@ -50,6 +50,7 @@ def run_job_launcher(
     """Run a YAML-defined prepare/train/explain-evaluate matrix."""
 
     raw_config = _load_launcher_yaml(config_path)
+    _validate_unsupported_list_fields(raw_config)
     paths = _build_paths(raw_config.get("paths") or {})
     experiments = _expand_experiments(raw_config)
     explain_cfg = raw_config.get("explain_eval") or {}
@@ -187,6 +188,55 @@ def _build_paths(raw_paths: dict[str, Any]) -> ArtifactPaths:
         comparison_root=Path(str(raw_paths.get("comparison_root", "comparisons"))),
         cache_dir=Path(str(raw_paths.get("cache_dir", "data/cache/openml"))),
     )
+
+
+def _validate_unsupported_list_fields(raw_config: dict[str, Any]) -> None:
+    training_cfg = raw_config.get("training") or {}
+    if isinstance(training_cfg, dict):
+        # TODO: Consider expanding these as launcher matrix fields in _expand_experiments.
+        _reject_list_fields(
+            section_name="training",
+            section=training_cfg,
+            field_names=("fit_fraction", "evaluate_fraction", "min_available_clients"),
+            guidance=(
+                "Use a single scalar value for now. List-valued training sweeps are "
+                "currently supported for rounds, strategy, and simulation_backend."
+            ),
+        )
+
+    explain_cfg = raw_config.get("explain_eval") or {}
+    if isinstance(explain_cfg, dict):
+        # TODO: Consider accepting YAML lists here by normalizing them to CSV selectors.
+        _reject_list_fields(
+            section_name="explain_eval",
+            section=explain_cfg,
+            field_names=("clients", "explainers", "configs"),
+            guidance=(
+                "Use 'all' or a comma-separated string such as 'lime,shap'. "
+                "YAML list selectors are not normalized by the launcher yet."
+            ),
+        )
+
+
+def _reject_list_fields(
+    *,
+    section_name: str,
+    section: dict[str, Any],
+    field_names: tuple[str, ...],
+    guidance: str,
+) -> None:
+    list_fields = [
+        f"{section_name}.{field_name}"
+        for field_name in field_names
+        if isinstance(section.get(field_name), list)
+    ]
+    if list_fields:
+        raise ValueError(
+            "Unsupported list-valued launcher field(s): "
+            + ", ".join(list_fields)
+            + ". "
+            + guidance
+        )
 
 
 def _expand_experiments(raw_config: dict[str, Any]) -> list[LauncherExperiment]:

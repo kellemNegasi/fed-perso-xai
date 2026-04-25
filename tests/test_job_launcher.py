@@ -93,6 +93,55 @@ def test_job_launcher_dry_run_expands_yaml_matrix(tmp_path) -> None:
     assert {run["dry_run"] for run in summary["runs"]} == {True}
 
 
+def test_job_launcher_rejects_list_valued_training_sampling_fields(tmp_path) -> None:
+    config_path = _write_launcher_config(
+        tmp_path,
+        overrides={
+            "training": {
+                "rounds": 1,
+                "simulation_backend": "debug-sequential",
+                "fit_fraction": [0.5, 1.0],
+                "evaluate_fraction": [0.5, 1.0],
+                "min_available_clients": [2, 3],
+            },
+        },
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        run_job_launcher(config_path=config_path, dry_run=True)
+
+    message = str(excinfo.value)
+    assert "Unsupported list-valued launcher field(s)" in message
+    assert "training.fit_fraction" in message
+    assert "training.evaluate_fraction" in message
+    assert "training.min_available_clients" in message
+    assert "Use a single scalar value for now" in message
+
+
+def test_job_launcher_rejects_yaml_list_explain_eval_selectors(tmp_path) -> None:
+    config_path = _write_launcher_config(
+        tmp_path,
+        overrides={
+            "explain_eval": {
+                "enabled": True,
+                "clients": [0, 1],
+                "explainers": ["lime", "shap"],
+                "configs": ["lime__kernel-1.5__samples-50"],
+            },
+        },
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        run_job_launcher(config_path=config_path, dry_run=True)
+
+    message = str(excinfo.value)
+    assert "Unsupported list-valued launcher field(s)" in message
+    assert "explain_eval.clients" in message
+    assert "explain_eval.explainers" in message
+    assert "explain_eval.configs" in message
+    assert "comma-separated string" in message
+
+
 def test_job_launcher_runs_prepare_train_and_writes_slurm_script(tmp_path, monkeypatch) -> None:
     config_path = _write_launcher_config(tmp_path)
     calls: dict[str, object] = {}
