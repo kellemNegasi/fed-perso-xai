@@ -1,0 +1,61 @@
+default_language_version:
+  python: python3
+
+exclude: |
+  (?x)^(
+    \.codex|
+    \.venv/|
+    build/|
+    dist/|
+    .*\.egg-info/|
+    prepared/|
+    datasets/|
+    federated/|
+    centralized/|
+    comparisons/|
+    results/|
+    job_launcher/plans/|
+    job_launcher/slurm/|
+    logs/
+  )
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        files: '^(README\.md|pyproject\.toml|configs/.*\.ya?ml|src/.*\.py|tests/.*\.py)$'
+      - id: end-of-file-fixer
+        files: '^(README\.md|pyproject\.toml|configs/.*\.ya?ml|src/.*\.py|tests/.*\.py)$'
+      - id: check-yaml
+        files: '^(configs/.*\.ya?ml|\.pre-commit-config\.yaml)$'
+      - id: check-toml
+        files: '^pyproject\.toml$'
+      - id: check-json
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: debug-statements
+        files: '^src/.*\.py$'
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
+    hooks:
+      - id: ruff-check
+        args: [--ignore=E402]
+
+  - repo: local
+    hooks:
+      - id: forbid-real-env-files
+        name: forbid real .env files
+        entry: >
+          bash -c 'for f in "$@"; do
+          echo "Do not commit real environment files: $f" >&2;
+          echo "Commit .env.example with placeholders instead." >&2;
+          exit 1;
+          done' --
+        language: system
+        files: '(^|/)\.env(\..*)?$'
+        exclude: '(^|/)\.env\.example$'

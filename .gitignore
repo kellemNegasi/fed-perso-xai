@@ -17,3 +17,6 @@ centralized
 *.zip
 *.json
 results
+.env
+job_launcher
+logs

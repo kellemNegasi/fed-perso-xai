@@ -546,6 +546,33 @@ def test_plan_explain_eval_jobs_writes_matrix_jsonl_and_ignores_random_grid(
     assert rows[0]["paths"]["federated_root"] == str(paths.federated_root)
 
 
+def test_plan_explain_eval_jobs_default_shard_size_avoids_job_explosion(
+    tmp_path,
+    synthetic_client_splits,
+) -> None:
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    plan_path = tmp_path / "plans" / "single_default_shard.jsonl"
+
+    summary = plan_explain_eval_jobs(
+        run_id=run_id,
+        output_path=plan_path,
+        clients="client_000",
+        explainers="lime",
+        config_ids="lime__kernel-1.5__samples-50",
+        random_state=9,
+        paths=paths,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in plan_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert summary["rows_per_shard"] == 1024
+    assert summary["job_count"] == 1
+    assert len(rows) == 1
+    assert rows[0]["shard_id"] == "shard_000"
+
+
 @pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
 def test_run_explain_eval_plan_item_executes_one_planned_job(
     tmp_path,

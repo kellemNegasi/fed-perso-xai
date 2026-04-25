@@ -426,6 +426,48 @@ sbatch --array=0-127%32 explain_eval_array.sbatch explain_eval_plan.jsonl
 
 The explainer config planner currently expands matrix hyperparameters only. In `configs/explainer_hyperparameters.yml`, list-valued entries become stable `config_id` dimensions. Random/range-style entries such as SHAP `shap_nsamples.randint` and `shap_l1_reg_k.randint` are intentionally ignored for now and reported in the plan summary as skipped non-matrix hyperparameters.
 
+### Full Matrix Launcher
+
+`launch-experiment-jobs` reads a YAML launcher config and runs the full sequence:
+
+1. prepare data and client partitions for each dataset, seed, client-count, and alpha combination
+2. train each configured federated model
+3. create explain/evaluate JSONL plans for the resulting `run_id`
+4. write Slurm array scripts for the planned explain/evaluate jobs
+
+Example config:
+
+```text
+configs/job_launcher.yml
+```
+
+Dry-run the matrix expansion:
+
+```bash
+python3 -m fed_perso_xai launch-experiment-jobs \
+  --config configs/job_launcher.yml \
+  --dry-run
+```
+
+Run preparation, training, and explain/evaluate planning:
+
+```bash
+python3 -m fed_perso_xai launch-experiment-jobs \
+  --config configs/job_launcher.yml
+```
+
+The launcher does not submit Slurm jobs unless either `explain_eval.slurm.submit: true` is set in the YAML or `--submit-slurm` is passed:
+
+```bash
+python3 -m fed_perso_xai launch-experiment-jobs \
+  --config configs/job_launcher.yml \
+  --submit-slurm
+```
+
+The example YAML expands list-valued dataset, seed, partition, model, and training fields. Multiple model configurations can create multiple federated runs for the same dataset/client/alpha/seed tuple; in that case, use unique model labels and consider setting `training.force: true` so the canonical training directory can be refreshed while the run-addressable copies under `federated/runs/<run_id>/` remain distinct.
+
+Generated Slurm scripts follow the same operational pattern as the sibling `perso-xai` project: `#SBATCH` metadata at the top, optional `module load`, optional `.venv` activation, `PROJECT_ROOT`/`cd` setup, a `SLURM_ARRAY_TASK_ID` guard, and timestamped start/finish log lines. Configure those details under `explain_eval.slurm` in `configs/job_launcher.yml`.
+
 ## Artifact Contract
 
 Prediction artifacts include at least:
