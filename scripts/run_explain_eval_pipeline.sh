@@ -12,12 +12,20 @@ Environment variables:
   WAIT_FOR_SLURM=1                      Wait for submitted Slurm array before aggregation.
   ALLOW_PARTIAL=0                       Pass --allow-partial during aggregation.
   FORCE_TRAINING=0                      Pass --force to launch-experiment-jobs.
+  LABEL_RECOMMENDER_CONTEXT=1           Run simulated user pairwise labeling after context prep.
+  RECOMMENDER_PERSONA=lay               Bundled persona name for label-recommender-context.
+  RECOMMENDER_CONTEXT_FILE=candidate_context.parquet
+                                        Context file to label; use all_candidate_context.parquet to include dominated candidates.
+  RECOMMENDER_SIMULATOR=dirichlet_persona
+  RECOMMENDER_SEED=42
+  RECOMMENDER_LABEL_SEED=1729
 
 Pipeline:
   1. launch-experiment-jobs: prepare/train/plan and write the .sbatch script
   2. metric computation: submit Slurm array, run locally, or skip
   3. aggregate-explain-eval for every explainer/config pair in the JSONL plan
   4. prepare-recommender-context with --explainers all --configs all
+  5. label-recommender-context with simulated pairwise user preferences
 USAGE
 }
 
@@ -31,6 +39,12 @@ EXECUTION_MODE="${EXECUTION_MODE:-slurm}"
 WAIT_FOR_SLURM="${WAIT_FOR_SLURM:-1}"
 ALLOW_PARTIAL="${ALLOW_PARTIAL:-0}"
 FORCE_TRAINING="${FORCE_TRAINING:-0}"
+LABEL_RECOMMENDER_CONTEXT="${LABEL_RECOMMENDER_CONTEXT:-1}"
+RECOMMENDER_PERSONA="${RECOMMENDER_PERSONA:-lay}"
+RECOMMENDER_CONTEXT_FILE="${RECOMMENDER_CONTEXT_FILE:-candidate_context.parquet}"
+RECOMMENDER_SIMULATOR="${RECOMMENDER_SIMULATOR:-dirichlet_persona}"
+RECOMMENDER_SEED="${RECOMMENDER_SEED:-42}"
+RECOMMENDER_LABEL_SEED="${RECOMMENDER_LABEL_SEED:-1729}"
 
 if [[ -z "${PYTHON:-}" ]]; then
   if command -v python >/dev/null 2>&1; then
@@ -178,6 +192,19 @@ echo "==> Preparing recommender context"
   --explainers all \
   --configs all \
   --clients all
+
+if [[ "$LABEL_RECOMMENDER_CONTEXT" == "1" ]]; then
+  echo "==> Labeling recommender context with simulated user preferences"
+  "$PYTHON" -m fed_perso_xai label-recommender-context \
+    --run-id "$RUN_ID" \
+    --selection "$SELECTION_ID" \
+    --persona "$RECOMMENDER_PERSONA" \
+    --simulator "$RECOMMENDER_SIMULATOR" \
+    --clients all \
+    --context-filename "$RECOMMENDER_CONTEXT_FILE" \
+    --seed "$RECOMMENDER_SEED" \
+    --label-seed "$RECOMMENDER_LABEL_SEED"
+fi
 
 echo "==> Pipeline complete"
 echo "Run ID: $RUN_ID"

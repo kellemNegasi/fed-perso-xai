@@ -1,0 +1,54 @@
+persona: regulator
+type: flat_dirichlet
+tau: 0.05
+description: >
+  Regulatory/audit user prioritizing defensible correctness, reliability, and
+  coverage, while accepting more complex explanations when they improve audit
+  strength.
+
+properties:
+  correctness:
+    preference: 5
+    metrics:
+      - correctness
+      - infidelity
+      - monotonicity
+      - non_sensitivity_violation_fraction
+      - non_sensitivity_safe_fraction
+      - non_sensitivity_zero_features
+      - non_sensitivity_delta_mean
+  completeness:
+    preference: 5
+    metrics:
+      - completeness_drop
+      - completeness_random_drop
+      - completeness_score
+  consistency:
+    preference: 4
+    metrics:
+      - consistency
+  continuity_stability:
+    preference: 4
+    metrics:
+      - relative_input_stability
+  covariate_complexity:
+    preference: 3
+    metrics:
+      - covariate_complexity
+      - covariate_regularity
+  compactness:
+    preference: 3
+    metrics:
+      - compactness_sparsity
+      - compactness_top5_coverage
+      - compactness_top10_coverage
+      - compactness_effective_features
+  contrastivity:
+    preference: 4
+    metrics:
+      - contrastivity
+      - contrastivity_pairs
+  confidence:
+    preference: 3
+    metrics:
+      - confidence
