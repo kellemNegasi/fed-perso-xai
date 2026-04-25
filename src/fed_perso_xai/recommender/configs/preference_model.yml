@@ -1,0 +1,8 @@
+preference_model:
+  type: flat_dirichlet
+  concentration:
+    fixed:
+      clinician: 50
+      regulator: 50
+      lay: 50
+      auto-xai-persona: 50

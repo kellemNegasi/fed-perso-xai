@@ -1,0 +1,19 @@
+persona: auto-xai-persona
+type: flat_dirichlet
+tau: 0.05
+description: >
+  Auto-XAI-inspired persona emphasizing robustness, infidelity, and compactness.
+
+properties:
+  continuity:
+    preference: 2
+    metrics:
+      - relative_input_stability
+  correctness:
+    preference: 4
+    metrics:
+      - infidelity
+  compactness:
+    preference: 1
+    metrics:
+      - compactness_effective_features

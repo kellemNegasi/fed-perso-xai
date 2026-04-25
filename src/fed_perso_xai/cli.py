@@ -36,6 +36,7 @@ from fed_perso_xai.orchestration.training import (
     compare_centralized_and_federated,
     train_centralized_from_prepared,
 )
+from fed_perso_xai.recommender import label_recommender_context
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
     CentralizedTrainingConfig,
@@ -258,6 +259,31 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
         help="Comma-separated client ids like client_000,client_001, or 'all'.",
     )
+
+    recommender_label_parser = subparsers.add_parser(
+        "label-recommender-context",
+        help="Simulate per-client users and label candidate contexts with pairwise preferences.",
+    )
+    _add_shared_path_args(recommender_label_parser)
+    recommender_label_parser.add_argument("--run-id", required=True)
+    recommender_label_parser.add_argument("--selection", dest="selection_id", required=True)
+    recommender_label_parser.add_argument("--persona", default="lay")
+    recommender_label_parser.add_argument("--persona-config", type=Path)
+    recommender_label_parser.add_argument("--simulator", default="dirichlet_persona")
+    recommender_label_parser.add_argument(
+        "--clients",
+        default="all",
+        help="Comma-separated client ids like client_000,client_001, or 'all'.",
+    )
+    recommender_label_parser.add_argument(
+        "--context-filename",
+        default="candidate_context.parquet",
+        help="Client-local context file to label, usually candidate_context.parquet or all_candidate_context.parquet.",
+    )
+    recommender_label_parser.add_argument("--seed", type=int, default=42)
+    recommender_label_parser.add_argument("--label-seed", type=int, default=1729)
+    recommender_label_parser.add_argument("--tau", type=float)
+    recommender_label_parser.add_argument("--concentration-c", type=float)
 
     launcher_parser = subparsers.add_parser(
         "launch-experiment-jobs",
@@ -548,6 +574,24 @@ def main() -> None:
             explainers=args.explainers,
             config_ids=args.config_ids,
             clients=args.clients,
+            paths=_build_artifact_paths(args),
+        )
+        print(json.dumps(payload, indent=2))
+        return
+
+    if args.command == "label-recommender-context":
+        payload = label_recommender_context(
+            run_id=args.run_id,
+            selection_id=args.selection_id,
+            persona=args.persona,
+            persona_config_path=args.persona_config,
+            simulator=args.simulator,
+            clients=args.clients,
+            context_filename=args.context_filename,
+            seed=args.seed,
+            label_seed=args.label_seed,
+            tau=args.tau,
+            concentration_c=args.concentration_c,
             paths=_build_artifact_paths(args),
         )
         print(json.dumps(payload, indent=2))
