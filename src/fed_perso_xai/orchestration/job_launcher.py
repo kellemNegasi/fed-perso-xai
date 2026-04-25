@@ -251,29 +251,56 @@ def _selector_csv(value: Any, *, default: str) -> str:
 
 
 def _expand_experiments(raw_config: dict[str, Any]) -> list[LauncherExperiment]:
-    datasets = _as_list(raw_config.get("datasets") or raw_config.get("dataset"))
-    if not datasets:
-        raise ValueError("Launcher config must define at least one dataset.")
-    seeds = [int(seed) for seed in _as_list(raw_config.get("seeds", [42]))]
+    datasets = _require_non_empty_list(
+        "datasets or dataset",
+        _as_list(raw_config.get("datasets") or raw_config.get("dataset")),
+    )
+    seeds = [
+        int(seed)
+        for seed in _require_non_empty_list("seeds", _as_list(raw_config.get("seeds", [42])))
+    ]
     partition_cfg = raw_config.get("partition") or {}
     num_clients_values = [
         int(value)
-        for value in _as_list(partition_cfg.get("num_clients") or partition_cfg.get("client_counts"))
+        for value in _require_non_empty_list(
+            "partition.num_clients or partition.client_counts",
+            _as_list(partition_cfg.get("num_clients") or partition_cfg.get("client_counts")),
+        )
     ]
     alpha_values = [
         float(value)
-        for value in _as_list(partition_cfg.get("alphas") or partition_cfg.get("alpha"))
+        for value in _require_non_empty_list(
+            "partition.alphas or partition.alpha",
+            _as_list(partition_cfg.get("alphas") or partition_cfg.get("alpha")),
+        )
     ]
-    if not num_clients_values:
-        raise ValueError("Launcher config must define partition.num_clients or partition.client_counts.")
-    if not alpha_values:
-        raise ValueError("Launcher config must define partition.alphas or partition.alpha.")
 
     training_cfg = raw_config.get("training") or {}
-    rounds_values = [int(value) for value in _as_list(training_cfg.get("rounds", [10]))]
-    strategy_values = [str(value) for value in _as_list(training_cfg.get("strategy", "fedavg"))]
-    backend_values = [str(value) for value in _as_list(training_cfg.get("simulation_backend", "auto"))]
-    model_entries = _expand_model_entries(raw_config.get("models") or raw_config.get("model"))
+    rounds_values = [
+        int(value)
+        for value in _require_non_empty_list(
+            "training.rounds",
+            _as_list(training_cfg.get("rounds", [10])),
+        )
+    ]
+    strategy_values = [
+        str(value)
+        for value in _require_non_empty_list(
+            "training.strategy",
+            _as_list(training_cfg.get("strategy", "fedavg")),
+        )
+    ]
+    backend_values = [
+        str(value)
+        for value in _require_non_empty_list(
+            "training.simulation_backend",
+            _as_list(training_cfg.get("simulation_backend", "auto")),
+        )
+    ]
+    model_entries = _require_non_empty_list(
+        "models or model",
+        _expand_model_entries(_get_model_config(raw_config)),
+    )
 
     experiments: list[LauncherExperiment] = []
     for dataset_name, seed, num_clients, alpha, model_entry, rounds, strategy_name, backend in itertools.product(
@@ -313,7 +340,7 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
         ]
 
     entries: list[dict[str, Any]] = []
-    for raw_model in _as_list(raw_models):
+    for raw_model in _require_non_empty_list("models or model", _as_list(raw_models)):
         if not isinstance(raw_model, dict):
             raw_model = {"name": str(raw_model)}
         model_name = str(raw_model.get("name", "logistic_regression"))
@@ -332,10 +359,19 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
             ],
         }
         for epochs, batch_size, learning_rate, l2_regularization in itertools.product(
-            param_grid["epochs"],
-            param_grid["batch_size"],
-            param_grid["learning_rate"],
-            param_grid["l2_regularization"],
+            _require_non_empty_list(f"model '{model_name}' params.epochs", param_grid["epochs"]),
+            _require_non_empty_list(
+                f"model '{model_name}' params.batch_size",
+                param_grid["batch_size"],
+            ),
+            _require_non_empty_list(
+                f"model '{model_name}' params.learning_rate",
+                param_grid["learning_rate"],
+            ),
+            _require_non_empty_list(
+                f"model '{model_name}' params.l2_regularization",
+                param_grid["l2_regularization"],
+            ),
         ):
             config = LogisticRegressionConfig(
                 epochs=epochs,
@@ -348,6 +384,14 @@ def _expand_model_entries(raw_models: Any) -> list[dict[str, Any]]:
             )
             entries.append({"label": label, "name": model_name, "config": config})
     return entries
+
+
+def _get_model_config(raw_config: dict[str, Any]) -> Any:
+    if "models" in raw_config:
+        return raw_config["models"]
+    if "model" in raw_config:
+        return raw_config["model"]
+    return None
 
 
 def _build_preprocessing_config(raw_config: dict[str, Any]) -> PreprocessingConfig:
@@ -585,6 +629,12 @@ def _as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
     return [value]
+
+
+def _require_non_empty_list(name: str, values: list[Any]) -> list[Any]:
+    if not values:
+        raise ValueError(f"Launcher config must define at least one value for {name}.")
+    return values
 
 
 def _dict_get(value: Any, key: str, default: Any) -> Any:
