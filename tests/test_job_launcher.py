@@ -118,15 +118,15 @@ def test_job_launcher_rejects_list_valued_training_sampling_fields(tmp_path) -> 
     assert "Use a single scalar value for now" in message
 
 
-def test_job_launcher_rejects_yaml_list_explain_eval_selectors(tmp_path) -> None:
+def test_job_launcher_rejects_yaml_list_client_selector(tmp_path) -> None:
     config_path = _write_launcher_config(
         tmp_path,
         overrides={
             "explain_eval": {
                 "enabled": True,
                 "clients": [0, 1],
-                "explainers": ["lime", "shap"],
-                "configs": ["lime__kernel-1.5__samples-50"],
+                "explainers": "lime",
+                "configs": "lime__kernel-1.5__samples-50",
             },
         },
     )
@@ -137,9 +137,68 @@ def test_job_launcher_rejects_yaml_list_explain_eval_selectors(tmp_path) -> None
     message = str(excinfo.value)
     assert "Unsupported list-valued launcher field(s)" in message
     assert "explain_eval.clients" in message
-    assert "explain_eval.explainers" in message
-    assert "explain_eval.configs" in message
     assert "comma-separated string" in message
+
+
+def test_job_launcher_accepts_yaml_list_explain_eval_explainers_and_configs(
+    tmp_path, monkeypatch
+) -> None:
+    config_path = _write_launcher_config(
+        tmp_path,
+        overrides={
+            "explain_eval": {
+                "enabled": True,
+                "clients": "all",
+                "split": "test",
+                "explainers": ["lime", "shap"],
+                "configs": [
+                    "lime__kernel-1.5__samples-50",
+                    "shap__background-10__nsamples-50",
+                ],
+                "max_instances": 5,
+                "random_state": 11,
+                "skip_existing": True,
+                "plan_dir": str(tmp_path / "plans"),
+                "slurm": {"enabled": False},
+            },
+        },
+    )
+    calls: dict[str, object] = {}
+
+    def fake_prepare(config):
+        root = tmp_path / "datasets" / "toy" / "3_clients" / "alpha_1.0" / "seed_7"
+        root.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(federated_artifacts=SimpleNamespace(root_dir=root))
+
+    def fake_train(config, *, run_id=None, partition_data_root=None, force=False):
+        return SimpleNamespace(run_dir=tmp_path / "federated_run"), {
+            "status": "completed",
+            "run_id": "run-xyz",
+        }
+
+    def fake_plan(**kwargs):
+        calls["plan"] = kwargs
+        Path(kwargs["output_path"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(kwargs["output_path"]).write_text("{}", encoding="utf-8")
+        return {
+            "status": "planned",
+            "job_count": 1,
+            "array_range": "0-0",
+            "plan_path": str(kwargs["output_path"]),
+        }
+
+    monkeypatch.setattr(job_launcher, "prepare_federated_dataset", fake_prepare)
+    monkeypatch.setattr(job_launcher, "train_federated_from_partitions", fake_train)
+    monkeypatch.setattr(job_launcher, "plan_explain_eval_jobs", fake_plan)
+
+    summary = run_job_launcher(config_path=config_path)
+
+    assert summary["status"] == "completed"
+    assert calls["plan"]["explainers"] == "lime,shap"
+    assert (
+        calls["plan"]["config_ids"]
+        == "lime__kernel-1.5__samples-50,shap__background-10__nsamples-50"
+    )
 
 
 def test_job_launcher_runs_prepare_train_and_writes_slurm_script(tmp_path, monkeypatch) -> None:

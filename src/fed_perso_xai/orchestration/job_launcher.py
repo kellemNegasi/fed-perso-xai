@@ -142,8 +142,8 @@ def run_job_launcher(
                 output_path=plan_path,
                 clients=str(explain_cfg.get("clients", "all")),
                 split=str(explain_cfg.get("split", "test")),
-                explainers=str(explain_cfg.get("explainers", "all")),
-                config_ids=str(explain_cfg.get("configs", "all")),
+                explainers=_selector_csv(explain_cfg.get("explainers"), default="all"),
+                config_ids=_selector_csv(explain_cfg.get("configs"), default="all"),
                 max_instances=int(explain_cfg.get("max_instances", 50)),
                 random_state=int(explain_cfg.get("random_state", 42)),
                 skip_existing=bool(explain_cfg.get("skip_existing", False)),
@@ -206,14 +206,14 @@ def _validate_unsupported_list_fields(raw_config: dict[str, Any]) -> None:
 
     explain_cfg = raw_config.get("explain_eval") or {}
     if isinstance(explain_cfg, dict):
-        # TODO: Consider accepting YAML lists here by normalizing them to CSV selectors.
+        # TODO: Consider accepting YAML lists for clients by normalizing them to CSV selectors.
         _reject_list_fields(
             section_name="explain_eval",
             section=explain_cfg,
-            field_names=("clients", "explainers", "configs"),
+            field_names=("clients",),
             guidance=(
-                "Use 'all' or a comma-separated string such as 'lime,shap'. "
-                "YAML list selectors are not normalized by the launcher yet."
+                "Use 'all' or a comma-separated string such as '0,1'. "
+                "YAML list client selectors are not normalized by the launcher yet."
             ),
         )
 
@@ -237,6 +237,17 @@ def _reject_list_fields(
             + ". "
             + guidance
         )
+
+
+def _selector_csv(value: Any, *, default: str) -> str:
+    if value is None:
+        return default
+    if isinstance(value, list):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        if not items:
+            raise ValueError("Launcher selector lists must contain at least one non-empty value.")
+        return ",".join(items)
+    return str(value)
 
 
 def _expand_experiments(raw_config: dict[str, Any]) -> list[LauncherExperiment]:
