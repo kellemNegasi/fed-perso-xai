@@ -16,6 +16,12 @@ from fed_perso_xai.orchestration.explain_eval import (
     run_explain_eval_job,
     run_explain_eval_plan_item,
 )
+from fed_perso_xai.orchestration.explain_eval_aggregation import (
+    aggregate_explain_eval_results,
+)
+from fed_perso_xai.orchestration.recommender_preprocessing import (
+    prepare_recommender_context,
+)
 from fed_perso_xai.utils.config import ArtifactPaths, LogisticRegressionConfig
 from fed_perso_xai.utils.paths import federated_run_artifact_dir, federated_run_metadata_path
 
@@ -510,6 +516,116 @@ def test_independent_jobs_do_not_collide_on_paths(tmp_path, synthetic_client_spl
     assert Path(job_b["artifacts"]["detailed_explanations_path"]).exists()
 
 
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_aggregate_explain_eval_results_collects_client_shards(
+    tmp_path,
+    synthetic_client_splits,
+) -> None:
+    import pandas as pd
+
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    for client_id in ("client_000", "client_001"):
+        run_explain_eval_job(
+            run_id=run_id,
+            client_id=client_id,
+            explainer_name="lime",
+            config_id="lime__kernel-1.5__samples-50",
+            max_instances=2,
+            random_state=9,
+            paths=paths,
+            metric_names=["compactness_size"],
+        )
+
+    summary = aggregate_explain_eval_results(
+        run_id=run_id,
+        selection_id="test__max-2__seed-9",
+        explainer_name="lime",
+        config_id="lime__kernel-1.5__samples-50",
+        paths=paths,
+    )
+
+    artifacts = {key: Path(value) for key, value in summary["artifacts"].items()}
+    assert summary["status"] == "aggregated"
+    assert summary["client_count"] == 2
+    assert summary["shard_job_count"] == 2
+    assert summary["instance_count"] == 4
+    assert summary["explanation_feature_row_count"] == 16
+
+    instance_metrics = pd.read_parquet(artifacts["instance_metrics"])
+    explanations_long = pd.read_parquet(artifacts["explanations_long"])
+    feature_importance = pd.read_parquet(artifacts["feature_importance_by_client"])
+    client_summary = pd.read_parquet(artifacts["client_metric_summary"])
+    divergence = pd.read_parquet(artifacts["divergence_summary"])
+
+    assert set(instance_metrics["client_id"]) == {"client_000", "client_001"}
+    assert "compactness_sparsity" in instance_metrics.columns
+    assert len(explanations_long) == 16
+    assert set(explanations_long["feature_name"]) == {f"feature_{idx}" for idx in range(4)}
+    assert len(feature_importance) == 8
+    assert len(client_summary) == 2
+    assert len(divergence) == 1
+    assert divergence.iloc[0]["feature_count"] == 4
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_prepare_recommender_context_writes_client_ready_files(
+    tmp_path,
+    synthetic_client_splits,
+) -> None:
+    import pandas as pd
+
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    for config_id in ("lime__kernel-1.5__samples-50", "lime__kernel-2.0__samples-50"):
+        run_explain_eval_job(
+            run_id=run_id,
+            client_id="client_000",
+            explainer_name="lime",
+            config_id=config_id,
+            max_instances=2,
+            random_state=9,
+            paths=paths,
+            metric_names=["compactness_size"],
+        )
+        aggregate_explain_eval_results(
+            run_id=run_id,
+            selection_id="test__max-2__seed-9",
+            explainer_name="lime",
+            config_id=config_id,
+            paths=paths,
+        )
+
+    summary = prepare_recommender_context(
+        run_id=run_id,
+        selection_id="test__max-2__seed-9",
+        explainers="lime",
+        config_ids="all",
+        clients="client_000",
+        paths=paths,
+    )
+
+    assert summary["status"] == "prepared"
+    assert summary["client_count"] == 1
+    assert summary["candidate_count"] == 4
+    assert 1 <= summary["pareto_candidate_count"] <= 4
+
+    client_artifacts = summary["clients"][0]["artifacts"]
+    all_context = pd.read_parquet(client_artifacts["all_candidate_context"])
+    pareto_context = pd.read_parquet(client_artifacts["candidate_context"])
+    pareto_payload = json.loads(Path(client_artifacts["pareto_front"]).read_text(encoding="utf-8"))
+
+    assert len(all_context) == 4
+    assert len(pareto_context) == summary["pareto_candidate_count"]
+    assert pareto_payload["client_id"] == "client_000"
+    assert set(all_context["method_variant"]) == {
+        "lime__kernel-1.5__samples-50",
+        "lime__kernel-2.0__samples-50",
+    }
+    assert "dataset_client_train_size_z" in all_context.columns
+    assert "hp_lime_kernel_width" in all_context.columns
+    assert "metric_compactness_sparsity_z" in all_context.columns
+    assert "is_pareto_optimal" in all_context.columns
+
+
 def test_plan_explain_eval_jobs_writes_matrix_jsonl_and_ignores_random_grid(
     tmp_path,
     synthetic_client_splits,
@@ -662,3 +778,64 @@ def test_explain_eval_plan_clis_are_wired_to_python_planner(
     assert calls["plan_item"]["plan_path"] == plan_path
     assert calls["plan_item"]["index"] == 7
     assert calls["plan_item"]["paths"] is None
+
+    def fake_aggregate(**kwargs):
+        calls["aggregate"] = kwargs
+        return {"status": "aggregated", "instance_count": 4}
+
+    monkeypatch.setattr(cli_module, "aggregate_explain_eval_results", fake_aggregate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fed-perso-xai",
+            "aggregate-explain-eval",
+            "--run-id",
+            "run-123",
+            "--selection",
+            "test__max-10__seed-42",
+            "--explainer",
+            "lime",
+            "--config",
+            "lime__kernel-1.5__samples-50",
+        ],
+    )
+    cli_module.main()
+    aggregate_output = json.loads(capsys.readouterr().out)
+    assert aggregate_output == {"status": "aggregated", "instance_count": 4}
+    assert calls["aggregate"]["run_id"] == "run-123"
+    assert calls["aggregate"]["selection_id"] == "test__max-10__seed-42"
+    assert calls["aggregate"]["explainer_name"] == "lime"
+    assert calls["aggregate"]["config_id"] == "lime__kernel-1.5__samples-50"
+
+    def fake_prepare_context(**kwargs):
+        calls["prepare_context"] = kwargs
+        return {"status": "prepared", "candidate_count": 4}
+
+    monkeypatch.setattr(cli_module, "prepare_recommender_context", fake_prepare_context)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fed-perso-xai",
+            "prepare-recommender-context",
+            "--run-id",
+            "run-123",
+            "--selection",
+            "test__max-10__seed-42",
+            "--explainers",
+            "lime",
+            "--configs",
+            "lime__kernel-1.5__samples-50",
+            "--clients",
+            "client_000",
+        ],
+    )
+    cli_module.main()
+    prepare_output = json.loads(capsys.readouterr().out)
+    assert prepare_output == {"status": "prepared", "candidate_count": 4}
+    assert calls["prepare_context"]["run_id"] == "run-123"
+    assert calls["prepare_context"]["selection_id"] == "test__max-10__seed-42"
+    assert calls["prepare_context"]["explainers"] == "lime"
+    assert calls["prepare_context"]["config_ids"] == "lime__kernel-1.5__samples-50"
+    assert calls["prepare_context"]["clients"] == "client_000"

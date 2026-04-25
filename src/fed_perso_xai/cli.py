@@ -16,6 +16,9 @@ from fed_perso_xai.orchestration.explain_eval import (
     run_explain_eval_job,
     run_explain_eval_plan_item,
 )
+from fed_perso_xai.orchestration.explain_eval_aggregation import (
+    aggregate_explain_eval_results,
+)
 from fed_perso_xai.orchestration.explanations import (
     generate_client_local_explanations,
     load_client_data_for_explanations,
@@ -26,6 +29,9 @@ from fed_perso_xai.orchestration.explanations import (
 )
 from fed_perso_xai.orchestration.federated_training import train_federated_from_partitions
 from fed_perso_xai.orchestration.job_launcher import run_job_launcher
+from fed_perso_xai.orchestration.recommender_preprocessing import (
+    prepare_recommender_context,
+)
 from fed_perso_xai.orchestration.training import (
     compare_centralized_and_federated,
     train_centralized_from_prepared,
@@ -167,6 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     explain_eval_parser.add_argument("--explainer", required=True)
     explain_eval_parser.add_argument("--config-id", required=True)
     explain_eval_parser.add_argument("--max-instances", type=int, default=50)
+    explain_eval_parser.add_argument("--rows-per-shard", type=int, default=1024)
     explain_eval_parser.add_argument("--random-state", type=int, default=42)
     explain_eval_parser.add_argument("--force", action="store_true")
 
@@ -194,6 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated concrete config ids, or 'all'. Only list-valued matrix grids are expanded.",
     )
     explain_eval_plan_parser.add_argument("--max-instances", type=int, default=50)
+    explain_eval_plan_parser.add_argument("--rows-per-shard", type=int, default=1024)
     explain_eval_plan_parser.add_argument("--random-state", type=int, default=42)
     explain_eval_plan_parser.add_argument("--output", type=Path, required=True)
     explain_eval_plan_parser.add_argument("--skip-existing", action="store_true")
@@ -211,6 +219,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="Plan row index. Defaults to SLURM_ARRAY_TASK_ID when omitted.",
     )
     explain_eval_plan_item_parser.add_argument("--force", action="store_true")
+
+    aggregate_explain_eval_parser = subparsers.add_parser(
+        "aggregate-explain-eval",
+        help="Aggregate completed explain/evaluate shard outputs for one run/config.",
+    )
+    _add_shared_path_args(aggregate_explain_eval_parser)
+    aggregate_explain_eval_parser.add_argument("--run-id", required=True)
+    aggregate_explain_eval_parser.add_argument("--selection", dest="selection_id", required=True)
+    aggregate_explain_eval_parser.add_argument("--explainer", dest="explainer_name", required=True)
+    aggregate_explain_eval_parser.add_argument("--config", dest="config_id", required=True)
+    aggregate_explain_eval_parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Aggregate completed shards even if some discovered shard artifacts are incomplete.",
+    )
+
+    recommender_context_parser = subparsers.add_parser(
+        "prepare-recommender-context",
+        help="Build client-local context features for recommender labeling/training.",
+    )
+    _add_shared_path_args(recommender_context_parser)
+    recommender_context_parser.add_argument("--run-id", required=True)
+    recommender_context_parser.add_argument("--selection", dest="selection_id", required=True)
+    recommender_context_parser.add_argument(
+        "--explainers",
+        default="all",
+        help="Comma-separated explainer names, or 'all'.",
+    )
+    recommender_context_parser.add_argument(
+        "--configs",
+        dest="config_ids",
+        default="all",
+        help="Comma-separated config ids, or 'all'.",
+    )
+    recommender_context_parser.add_argument(
+        "--clients",
+        default="all",
+        help="Comma-separated client ids like client_000,client_001, or 'all'.",
+    )
 
     launcher_parser = subparsers.add_parser(
         "launch-experiment-jobs",
@@ -438,6 +485,7 @@ def main() -> None:
             explainer_name=args.explainer,
             config_id=args.config_id,
             max_instances=args.max_instances,
+            rows_per_shard=args.rows_per_shard,
             random_state=args.random_state,
             force=args.force,
             paths=_build_artifact_paths(args),
@@ -454,6 +502,7 @@ def main() -> None:
             explainers=args.explainers,
             config_ids=args.config_ids,
             max_instances=args.max_instances,
+            rows_per_shard=args.rows_per_shard,
             random_state=args.random_state,
             skip_existing=args.skip_existing,
             force=args.force,
@@ -476,6 +525,30 @@ def main() -> None:
             index=index,
             force=args.force,
             paths=_build_artifact_paths_or_none(args),
+        )
+        print(json.dumps(payload, indent=2))
+        return
+
+    if args.command == "aggregate-explain-eval":
+        payload = aggregate_explain_eval_results(
+            run_id=args.run_id,
+            selection_id=args.selection_id,
+            explainer_name=args.explainer_name,
+            config_id=args.config_id,
+            allow_partial=args.allow_partial,
+            paths=_build_artifact_paths(args),
+        )
+        print(json.dumps(payload, indent=2))
+        return
+
+    if args.command == "prepare-recommender-context":
+        payload = prepare_recommender_context(
+            run_id=args.run_id,
+            selection_id=args.selection_id,
+            explainers=args.explainers,
+            config_ids=args.config_ids,
+            clients=args.clients,
+            paths=_build_artifact_paths(args),
         )
         print(json.dumps(payload, indent=2))
         return

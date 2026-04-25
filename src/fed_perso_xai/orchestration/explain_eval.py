@@ -81,6 +81,7 @@ def plan_explain_eval_jobs(
     explainers: str = "all",
     config_ids: str = "all",
     max_instances: int = 50,
+    rows_per_shard: int | None = None,
     random_state: int = 42,
     skip_existing: bool = False,
     force: bool = False,
@@ -88,8 +89,11 @@ def plan_explain_eval_jobs(
 ) -> dict[str, Any]:
     """Write a JSONL matrix plan for post-training explain+evaluate jobs."""
 
+    resolved_rows_per_shard = DEFAULT_SHARD_SIZE if rows_per_shard is None else int(rows_per_shard)
     if max_instances <= 0:
         raise ValueError("max_instances must be positive.")
+    if resolved_rows_per_shard <= 0:
+        raise ValueError("rows_per_shard must be positive.")
     if skip_existing and force:
         raise ValueError("skip_existing and force cannot both be enabled.")
 
@@ -122,7 +126,7 @@ def plan_explain_eval_jobs(
         #REF Shard_computation.
         #TODO: consider supporting dynamic shard sizes based on selected_size, with a default max shard size to avoid very large shards
         # Also this seems a bit brittle if Shard Size is 0.
-        shard_count = int((selected_size + DEFAULT_SHARD_SIZE - 1) // DEFAULT_SHARD_SIZE)
+        shard_count = int((selected_size + resolved_rows_per_shard - 1) // resolved_rows_per_shard)
         selection_id = federated_selection_id(
             split=split_name,
             max_instances=max_instances,
@@ -156,6 +160,7 @@ def plan_explain_eval_jobs(
                             "explainer": explainer_name,
                             "config_id": config_id,
                             "max_instances": int(max_instances),
+                            "rows_per_shard": int(resolved_rows_per_shard),
                             "random_state": int(random_state),
                             "force": bool(force),
                             "paths": _artifact_paths_to_manifest(artifact_paths),
@@ -178,8 +183,8 @@ def plan_explain_eval_jobs(
             for explainer_name, configs in configs_by_explainer.items()
         },
         "max_instances": int(max_instances),
+        "rows_per_shard": int(resolved_rows_per_shard),
         "random_state": int(random_state),
-        "rows_per_shard": DEFAULT_SHARD_SIZE,
         "skip_existing": bool(skip_existing),
         "skipped_existing": skipped_existing_count,
         "skipped_empty_clients": skipped_empty_clients,
@@ -216,6 +221,9 @@ def run_explain_eval_plan_item(
         explainer_name=str(row["explainer"]),
         config_id=str(row["config_id"]),
         max_instances=int(row["max_instances"]),
+        rows_per_shard=(
+            int(row["rows_per_shard"]) if "rows_per_shard" in row else None
+        ),
         random_state=int(row["random_state"]),
         force=bool(force or row.get("force", False)),
         paths=row_paths,
@@ -230,6 +238,7 @@ def run_explain_eval_job(
     explainer_name: str = "lime",
     config_id: str = "lime__kernel-1.5__samples-50",
     max_instances: int = 50,
+    rows_per_shard: int | None = None,
     random_state: int = 42,
     *,
     force: bool = False,
@@ -237,6 +246,10 @@ def run_explain_eval_job(
     metric_names: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run one atomic post-training explain+evaluate job for a client shard."""
+
+    resolved_rows_per_shard = DEFAULT_SHARD_SIZE if rows_per_shard is None else int(rows_per_shard)
+    if resolved_rows_per_shard <= 0:
+        raise ValueError("rows_per_shard must be positive.")
 
     artifact_paths = paths or ArtifactPaths()
     run_context = resolve_federated_run_context(paths=artifact_paths, run_id=run_id)
@@ -287,6 +300,7 @@ def run_explain_eval_job(
         row_ids=selected_view["row_ids"],
         dataset_indices=selected_view["dataset_indices"],
         shard_id=shard_id,
+        rows_per_shard=resolved_rows_per_shard,
     )
     X_job = np.asarray(shard_view["X"], dtype=np.float64)
     y_job = np.asarray(shard_view["y"], dtype=np.int64)
@@ -350,6 +364,7 @@ def run_explain_eval_job(
         shard_view=shard_view,
         selected_view=selected_view,
         run_context=run_context,
+        rows_per_shard=resolved_rows_per_shard,
     )
 
     selection_metadata = {
@@ -373,7 +388,7 @@ def run_explain_eval_job(
         "split": split_name,
         "selection_id": selection_id,
         "shard_id": shard_id,
-        "rows_per_shard": DEFAULT_SHARD_SIZE,
+        "rows_per_shard": int(resolved_rows_per_shard),
         "shard_index_within_selection": int(shard_view["shard_index"]),
         "shard_count_for_selection": int(shard_view["shard_count"]),
         "selected_position_start": int(shard_view["selection_position_start"]),
@@ -546,17 +561,19 @@ def _resolve_selected_shard(
     row_ids: np.ndarray,
     dataset_indices: np.ndarray,
     shard_id: str,
+    rows_per_shard: int | None = None,
 ) -> dict[str, Any]:
     #REF Sharding of rows
+    resolved_rows_per_shard = DEFAULT_SHARD_SIZE if rows_per_shard is None else int(rows_per_shard)
     shard_index = _parse_shard_id(shard_id)
     total = int(len(X))
-    start = shard_index * DEFAULT_SHARD_SIZE
-    end = min(total, start + DEFAULT_SHARD_SIZE)
+    start = shard_index * resolved_rows_per_shard
+    end = min(total, start + resolved_rows_per_shard)
     if start >= total:
         raise ValueError(
-            f"Shard '{shard_id}' is out of range for selected subset size {total} with shard size {DEFAULT_SHARD_SIZE}."
+            f"Shard '{shard_id}' is out of range for selected subset size {total} with shard size {resolved_rows_per_shard}."
         )
-    shard_count = int((total + DEFAULT_SHARD_SIZE - 1) // DEFAULT_SHARD_SIZE)
+    shard_count = int((total + resolved_rows_per_shard - 1) // resolved_rows_per_shard)
     return {
         "shard_index": shard_index,
         "shard_count": shard_count,
@@ -640,6 +657,7 @@ def _evaluate_job_metrics(
     shard_view: dict[str, Any],
     selected_view: dict[str, Any],
     run_context: FederatedRunContext,
+    rows_per_shard: int,
 ) -> dict[str, Any]:
     active_metric_names = metric_names or [
         name for name in DEFAULT_METRIC_REGISTRY.list_keys()
@@ -724,7 +742,7 @@ def _evaluate_job_metrics(
             "selection_seed": int(selected_view["selection_seed"]),
         },
         "shard_metadata": {
-            "rows_per_shard": DEFAULT_SHARD_SIZE,
+            "rows_per_shard": int(rows_per_shard),
             "selection_id": selected_view["selection_id"],
             "shard_index_within_selection": int(shard_view["shard_index"]),
             "shard_count_for_selection": int(shard_view["shard_count"]),
