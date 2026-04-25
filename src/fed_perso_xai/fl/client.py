@@ -100,9 +100,11 @@ if fl is not None:
             model_name: str,
             model_config: Any,
             seed: int,
+            prediction_threshold: float = 0.5,
         ) -> None:
             self.data = data
             self.seed = seed
+            self.prediction_threshold = float(prediction_threshold)
             self.model = create_model(
                 model_name,
                 n_features=data.X_train.shape[1],
@@ -157,7 +159,12 @@ if fl is not None:
             self.model.set_parameters(merged_parameters)
             loss = self.model.loss(self.data.X_test, self.data.y_test)
             probabilities = self.model.predict_proba(self.data.X_test)
-            metrics = compute_classification_metrics(self.data.y_test, probabilities, loss)
+            metrics = compute_classification_metrics(
+                self.data.y_test,
+                probabilities,
+                loss,
+                threshold=self.prediction_threshold,
+            )
             metrics["client_id"] = str(self.data.client_id)
             return float(loss), int(self.data.y_test.shape[0]), metrics
 

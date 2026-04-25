@@ -142,6 +142,7 @@ class FederatedTrainingConfig(ExperimentConfig):
     rounds: int = 10
     fit_fraction: float = 1.0
     evaluate_fraction: float = 1.0
+    prediction_threshold: float = 0.5
     min_available_clients: int = 2
     simulation_backend: str = "auto"
     debug_fallback_on_error: bool = False
@@ -164,6 +165,7 @@ class FederatedTrainingConfig(ExperimentConfig):
         _require_integer_at_least("rounds", self.rounds, minimum=1)
         _require_fraction_or_one("fit_fraction", self.fit_fraction)
         _require_fraction_or_one("evaluate_fraction", self.evaluate_fraction)
+        _require_fraction_or_one("prediction_threshold", self.prediction_threshold)
         _require_integer_at_least("min_available_clients", self.min_available_clients, minimum=1)
         _require_integer_at_least("secure_num_helpers", self.secure_num_helpers, minimum=1)
         _require_integer_at_least(

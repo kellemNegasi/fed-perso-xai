@@ -173,6 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     explain_eval_parser.add_argument("--explainer", required=True)
     explain_eval_parser.add_argument("--config-id", required=True)
     explain_eval_parser.add_argument("--max-instances", type=int, default=50)
+    explain_eval_parser.add_argument("--rows-per-shard", type=int, default=1024)
     explain_eval_parser.add_argument("--random-state", type=int, default=42)
     explain_eval_parser.add_argument("--force", action="store_true")
 
@@ -200,6 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated concrete config ids, or 'all'. Only list-valued matrix grids are expanded.",
     )
     explain_eval_plan_parser.add_argument("--max-instances", type=int, default=50)
+    explain_eval_plan_parser.add_argument("--rows-per-shard", type=int, default=1024)
     explain_eval_plan_parser.add_argument("--random-state", type=int, default=42)
     explain_eval_plan_parser.add_argument("--output", type=Path, required=True)
     explain_eval_plan_parser.add_argument("--skip-existing", action="store_true")
@@ -483,6 +485,7 @@ def main() -> None:
             explainer_name=args.explainer,
             config_id=args.config_id,
             max_instances=args.max_instances,
+            rows_per_shard=args.rows_per_shard,
             random_state=args.random_state,
             force=args.force,
             paths=_build_artifact_paths(args),
@@ -499,6 +502,7 @@ def main() -> None:
             explainers=args.explainers,
             config_ids=args.config_ids,
             max_instances=args.max_instances,
+            rows_per_shard=args.rows_per_shard,
             random_state=args.random_state,
             skip_existing=args.skip_existing,
             force=args.force,

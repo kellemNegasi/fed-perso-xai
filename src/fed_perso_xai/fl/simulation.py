@@ -236,6 +236,7 @@ def _run_flower_simulation(
             model_name=config.model_name,
             model_config=config.model,
             seed=config.seed,
+            prediction_threshold=config.prediction_threshold,
         )
         return client.to_client()
 
@@ -281,6 +282,7 @@ def _run_debug_sequential_runtime(
             model_name=config.model_name,
             model_config=config.model,
             seed=config.seed,
+            prediction_threshold=config.prediction_threshold,
         )
         for dataset in client_datasets
     ]
