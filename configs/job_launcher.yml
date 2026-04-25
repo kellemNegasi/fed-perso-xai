@@ -67,7 +67,7 @@ explain_eval:
     log_dir: logs
     job_name: explain-eval
     array_concurrency: 32
-    module_load: python/3.12.3
+    module_load: python/3.14.0
     venv_path: .venv/bin/activate
     sbatch_args:
       - --partition=main

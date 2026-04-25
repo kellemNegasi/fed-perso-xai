@@ -466,7 +466,7 @@ python3 -m fed_perso_xai launch-experiment-jobs \
 
 The example YAML expands list-valued dataset, seed, partition, model, and training fields. Multiple model configurations can create multiple federated runs for the same dataset/client/alpha/seed tuple; in that case, use unique model labels and consider setting `training.force: true` so the canonical training directory can be refreshed while the run-addressable copies under `federated/runs/<run_id>/` remain distinct.
 
-Generated Slurm scripts follow the same operational pattern as the sibling `perso-xai` project: `#SBATCH` metadata at the top, `module load python/3.12.3`, optional `.venv` activation, `PROJECT_ROOT`/`cd` setup, a `SLURM_ARRAY_TASK_ID` guard, and timestamped start/finish log lines. Configure those details under `explain_eval.slurm` in `configs/job_launcher.yml`.
+Generated Slurm scripts follow the same operational pattern as the sibling `perso-xai` project: `#SBATCH` metadata at the top, optional `module load`, optional `.venv` activation, `PROJECT_ROOT`/`cd` setup, a `SLURM_ARRAY_TASK_ID` guard, and timestamped start/finish log lines. Configure those details under `explain_eval.slurm` in `configs/job_launcher.yml`.
 
 ## Artifact Contract
 

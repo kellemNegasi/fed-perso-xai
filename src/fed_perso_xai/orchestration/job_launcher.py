@@ -359,7 +359,7 @@ def _write_slurm_array_script(
     log_dir.mkdir(parents=True, exist_ok=True)
     sbatch_args = _merged_sbatch_args(slurm_cfg)
     project_root = Path(str(slurm_cfg.get("project_root", Path.cwd()))).resolve()
-    module_load = str(slurm_cfg.get("module_load", "python/3.12.3")).strip()
+    module_load = str(slurm_cfg.get("module_load", "") or "").strip()
     venv_path = str(slurm_cfg.get("venv_path", ".venv/bin/activate")).strip()
     sbatch_lines = [
         "#!/bin/bash",

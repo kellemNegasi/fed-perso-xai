@@ -146,7 +146,7 @@ def test_job_launcher_runs_prepare_train_and_writes_slurm_script(tmp_path, monke
     assert "#SBATCH --output=logs/slurm-%x.%A_%a.out" in script_text
     assert "#SBATCH --nodes=1" in script_text
     assert "#SBATCH --ntasks=1" in script_text
-    assert "module load python/3.12.3" in script_text
+    assert "module load" not in script_text
     assert 'source ".venv/bin/activate"' in script_text
     assert "SLURM_ARRAY_TASK_ID is not set" in script_text
     assert "plan file does not exist" in script_text
