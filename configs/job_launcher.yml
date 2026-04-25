@@ -1,0 +1,76 @@
+# Example launcher config for prepare -> federated train -> explain/evaluate planning.
+#
+# The launcher expands list-valued fields in datasets, seeds, partition, models,
+# and training. It runs preparation and training serially per expanded experiment,
+# then creates one JSONL explain/evaluate plan plus one Slurm array script.
+
+paths:
+  prepared_root: prepared
+  partition_root: datasets
+  federated_root: federated
+  centralized_root: centralized
+  comparison_root: comparisons
+  cache_dir: data/cache/openml
+
+datasets:
+  - adult_income
+
+seeds:
+  - 42
+
+preprocessing:
+  global_eval_size: 0.2
+  client_test_size: 0.2
+
+partition:
+  num_clients:
+    - 10
+  alphas:
+    - 1.0
+  min_client_samples: 10
+  max_retries: 50
+
+models:
+  - label: logreg-default
+    name: logistic_regression
+    params:
+      epochs: 5
+      batch_size: 64
+      learning_rate: 0.05
+      l2_regularization: 0.0
+
+training:
+  rounds: 10
+  strategy: fedavg
+  simulation_backend: debug-sequential
+  fit_fraction: 1.0
+  evaluate_fraction: 1.0
+  min_available_clients: 2
+  debug_fallback_on_error: false
+  force: false
+
+explain_eval:
+  enabled: true
+  clients: all
+  split: test
+  explainers: all
+  configs: all
+  max_instances: 50
+  random_state: 42
+  skip_existing: true
+  force: false
+  plan_dir: job_launcher/plans
+  slurm:
+    enabled: true
+    submit: false
+    script_dir: job_launcher/slurm
+    log_dir: logs
+    job_name: explain-eval
+    array_concurrency: 32
+    module_load: python/3.12.3
+    venv_path: .venv/bin/activate
+    sbatch_args:
+      - --partition=main
+      - --cpus-per-task=4
+      - --mem=16G
+      - --time=02:00:00

@@ -17,3 +17,4 @@ centralized
 *.zip
 *.json
 results
+.env

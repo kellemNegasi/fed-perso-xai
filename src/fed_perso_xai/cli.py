@@ -25,6 +25,7 @@ from fed_perso_xai.orchestration.explanations import (
     save_client_explanations,
 )
 from fed_perso_xai.orchestration.federated_training import train_federated_from_partitions
+from fed_perso_xai.orchestration.job_launcher import run_job_launcher
 from fed_perso_xai.orchestration.training import (
     compare_centralized_and_federated,
     train_centralized_from_prepared,
@@ -210,6 +211,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Plan row index. Defaults to SLURM_ARRAY_TASK_ID when omitted.",
     )
     explain_eval_plan_item_parser.add_argument("--force", action="store_true")
+
+    launcher_parser = subparsers.add_parser(
+        "launch-experiment-jobs",
+        help="Run a YAML-defined prepare/train matrix and create explain/evaluate Slurm array plans.",
+    )
+    launcher_parser.add_argument("--config", type=Path, required=True)
+    launcher_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Expand and report launcher experiments without running preparation or training.",
+    )
+    launcher_parser.add_argument(
+        "--submit-slurm",
+        action="store_true",
+        help="Submit generated explain/evaluate Slurm array scripts with sbatch.",
+    )
     return parser
 
 
@@ -453,6 +470,15 @@ def main() -> None:
             index=index,
             force=args.force,
             paths=_build_artifact_paths_or_none(args),
+        )
+        print(json.dumps(payload, indent=2))
+        return
+
+    if args.command == "launch-experiment-jobs":
+        payload = run_job_launcher(
+            config_path=args.config,
+            dry_run=args.dry_run,
+            submit_slurm=True if args.submit_slurm else None,
         )
         print(json.dumps(payload, indent=2))
         return
