@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 from fed_perso_xai.cli import main
@@ -154,6 +155,51 @@ def test_job_launcher_runs_prepare_train_and_writes_slurm_script(tmp_path, monke
     assert "out of range for plan rows" in script_text
     assert "Starting explain/evaluate array task" in script_text
     assert "run-explain-eval-plan-item" in script_text
+
+
+def test_job_launcher_fails_when_sbatch_submission_fails(tmp_path, monkeypatch) -> None:
+    config_path = _write_launcher_config(tmp_path)
+
+    def fake_prepare(config):
+        root = tmp_path / "datasets" / "toy" / "3_clients" / "alpha_1.0" / "seed_7"
+        root.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(federated_artifacts=SimpleNamespace(root_dir=root))
+
+    def fake_train(config, *, run_id=None, partition_data_root=None, force=False):
+        return SimpleNamespace(run_dir=tmp_path / "federated_run"), {
+            "status": "completed",
+            "run_id": "run-xyz",
+        }
+
+    def fake_plan(**kwargs):
+        Path(kwargs["output_path"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(kwargs["output_path"]).write_text("{}", encoding="utf-8")
+        return {
+            "status": "planned",
+            "job_count": 3,
+            "array_range": "0-2",
+            "plan_path": str(kwargs["output_path"]),
+        }
+
+    def fake_sbatch(*args, **kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: invalid account",
+        )
+
+    monkeypatch.setattr(job_launcher, "prepare_federated_dataset", fake_prepare)
+    monkeypatch.setattr(job_launcher, "train_federated_from_partitions", fake_train)
+    monkeypatch.setattr(job_launcher, "plan_explain_eval_jobs", fake_plan)
+    monkeypatch.setattr(job_launcher.subprocess, "run", fake_sbatch)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        run_job_launcher(config_path=config_path, submit_slurm=True)
+
+    message = str(excinfo.value)
+    assert "sbatch submission failed" in message
+    assert "return code 1" in message
+    assert "invalid account" in message
 
 
 def test_job_launcher_prepares_each_partition_once_for_multiple_models(tmp_path, monkeypatch) -> None:

@@ -54,7 +54,7 @@ from fed_perso_xai.utils.paths import (
 )
 from fed_perso_xai.utils.provenance import current_utc_timestamp
 #TODO : consider taking these config into its own config file or CLI args
-DEFAULT_SHARD_SIZE = 5
+DEFAULT_SHARD_SIZE = 1024
 PLAN_SCHEMA_VERSION = "explain_eval_plan_jsonl_v1"
 
 

@@ -482,11 +482,24 @@ def _submit_slurm_job(script_path: Path, plan_path: Path) -> dict[str, Any]:
         capture_output=True,
         text=True,
     )
-    return {
+    submission = {
         "returncode": result.returncode,
         "stdout": result.stdout.strip(),
         "stderr": result.stderr.strip(),
     }
+    if result.returncode != 0:
+        details = []
+        if submission["stderr"]:
+            details.append(f"stderr: {submission['stderr']}")
+        if submission["stdout"]:
+            details.append(f"stdout: {submission['stdout']}")
+        detail_text = "\n".join(details) if details else "no stdout/stderr captured"
+        raise RuntimeError(
+            "sbatch submission failed "
+            f"for script {script_path} and plan {plan_path.resolve()} "
+            f"with return code {result.returncode}.\n{detail_text}"
+        )
+    return submission
 
 
 def _render_run_id(template: Any, experiment: LauncherExperiment) -> str | None:
