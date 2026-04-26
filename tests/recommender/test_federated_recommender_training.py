@@ -6,7 +6,10 @@ import json
 import pandas as pd
 import pytest
 
-from fed_perso_xai.orchestration.recommender_training import train_federated_recommender
+from fed_perso_xai.orchestration.recommender_training import (
+    evaluate_recommender_model,
+    train_federated_recommender,
+)
 from fed_perso_xai.recommender.evaluation import evaluate_ranked_scores
 from fed_perso_xai.utils.config import ArtifactPaths, RecommenderFederatedTrainingConfig
 
@@ -23,6 +26,28 @@ def _paths(tmp_path):
         comparison_root=tmp_path / "comparisons",
         cache_dir=tmp_path / "cache",
     )
+
+
+@pytest.mark.parametrize(
+    ("selection_id", "persona", "expected_label"),
+    [
+        ("../escape", "lay", "selection_id"),
+        ("selection-0", "../other", "persona"),
+    ],
+)
+def test_evaluate_recommender_model_rejects_unsafe_path_segments(
+    tmp_path,
+    selection_id: str,
+    persona: str,
+    expected_label: str,
+) -> None:
+    with pytest.raises(ValueError, match=rf"{expected_label} must be a single non-empty path segment\."):
+        evaluate_recommender_model(
+            run_id="unit-run",
+            selection_id=selection_id,
+            persona=persona,
+            paths=_paths(tmp_path),
+        )
 
 
 def test_evaluate_ranked_scores_uses_global_pairwise_order_and_pearson() -> None:

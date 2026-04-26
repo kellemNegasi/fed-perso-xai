@@ -225,6 +225,9 @@ def evaluate_recommender_model(
 ) -> dict[str, Any]:
     """Evaluate a global recommender against client-local labeled preferences."""
 
+    _require_safe_segment(run_id, label="run_id")
+    _require_safe_segment(selection_id, label="selection_id")
+    _require_safe_segment(persona, label="persona")
     artifact_paths = paths or ArtifactPaths()
     run_context = resolve_federated_run_context(paths=artifact_paths, run_id=run_id)
     resolved_model_path = model_path or (

@@ -285,6 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="candidate_context.parquet",
         help="Client-local context file to label, usually candidate_context.parquet or all_candidate_context.parquet.",
     )
+    recommender_label_parser.add_argument("--label-filename", default="pairwise_labels.parquet")
     recommender_label_parser.add_argument("--seed", type=int, default=42)
     recommender_label_parser.add_argument("--label-seed", type=int, default=1729)
     recommender_label_parser.add_argument("--tau", type=float)
@@ -639,6 +640,7 @@ def main() -> None:
             simulator=args.simulator,
             clients=args.clients,
             context_filename=args.context_filename,
+            label_filename=args.label_filename,
             seed=args.seed,
             label_seed=args.label_seed,
             tau=args.tau,

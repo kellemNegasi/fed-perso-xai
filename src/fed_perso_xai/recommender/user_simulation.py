@@ -305,6 +305,7 @@ def label_recommender_context(
     simulator: str = "dirichlet_persona",
     clients: str = "all",
     context_filename: str = "candidate_context.parquet",
+    label_filename: str = "pairwise_labels.parquet",
     seed: int = 42,
     label_seed: int = 1729,
     tau: float | None = None,
@@ -315,6 +316,7 @@ def label_recommender_context(
 
     _require_safe_segment(run_id, label="run_id")
     _require_safe_segment(selection_id, label="selection_id")
+    _require_safe_segment(label_filename, label="label_filename")
     artifact_paths = paths or ArtifactPaths()
     run_context = resolve_federated_run_context(paths=artifact_paths, run_id=run_id)
     requested_clients = _split_selector(clients)
@@ -341,7 +343,7 @@ def label_recommender_context(
 
     output_root = run_context.run_artifact_dir / "recommender_labels" / selection_id / persona_config.persona
     client_summaries: list[dict[str, Any]] = []
-    for client_offset, client_dir in enumerate(client_dirs):
+    for client_dir in client_dirs:
         client_id = client_dir.name
         context_path = client_dir / "recommender_context" / selection_id / context_filename
         if not context_path.exists():
@@ -351,18 +353,24 @@ def label_recommender_context(
         candidates = pd.read_parquet(context_path)
         if candidates.empty:
             continue
+        client_seed = _stable_client_seed(base_seed=seed, client_id=client_id, purpose="weights")
+        client_label_seed = _stable_client_seed(
+            base_seed=label_seed,
+            client_id=client_id,
+            purpose="labels",
+        )
         simulator_instance = DEFAULT_USER_SIMULATOR_REGISTRY.create(
             simulator,
             persona_config=persona_config,
-            seed=seed + client_offset,
-            label_seed=label_seed + client_offset,
+            seed=client_seed,
+            label_seed=client_label_seed,
             tau=tau,
             concentration_c=concentration_c,
         )
         labels, simulator_metadata = simulator_instance.label_client_candidates(candidates)
 
         client_label_dir = client_dir / "recommender_labels" / selection_id / persona_config.persona
-        labels_path = client_label_dir / "pairwise_labels.parquet"
+        labels_path = client_label_dir / label_filename
         metadata_path = client_label_dir / "simulation_metadata.json"
         _write_parquet_atomic(labels_path, labels)
         client_metadata = {
@@ -373,8 +381,8 @@ def label_recommender_context(
             "simulator": simulator,
             "context_path": str(context_path),
             "pairwise_labels": str(labels_path),
-            "seed": seed + client_offset,
-            "label_seed": label_seed + client_offset,
+            "seed": client_seed,
+            "label_seed": client_label_seed,
             "candidate_count": int(len(candidates)),
             "instance_count": int(candidates["dataset_index"].nunique()),
             "pair_count": int(len(labels)),
@@ -409,6 +417,7 @@ def label_recommender_context(
         "persona_config_sha256": _sha256_file(persona_path),
         "simulator": simulator,
         "context_filename": context_filename,
+        "label_filename": label_filename,
         "client_count": len(client_summaries),
         "candidate_count": int(sum(item["candidate_count"] for item in client_summaries)),
         "pair_count": int(sum(item["pair_count"] for item in client_summaries)),
@@ -505,6 +514,19 @@ def _split_selector(value: str) -> set[str] | None:
     if text.lower() == "all":
         return None
     return {item.strip() for item in text.split(",") if item.strip()}
+
+
+def _stable_client_seed(*, base_seed: int, client_id: str, purpose: str) -> int:
+    seed_payload = json.dumps(
+        {
+            "base_seed": int(base_seed),
+            "client_id": str(client_id),
+            "purpose": str(purpose),
+        },
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(seed_payload.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "little", signed=False)
 
 
 def _require_safe_segment(value: str, *, label: str) -> None:

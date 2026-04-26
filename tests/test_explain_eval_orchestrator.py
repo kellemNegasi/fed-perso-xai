@@ -919,6 +919,8 @@ def test_explain_eval_plan_clis_are_wired_to_python_planner(
             "lay",
             "--clients",
             "client_000",
+            "--label-filename",
+            "custom_pairwise_labels.parquet",
             "--seed",
             "11",
             "--label-seed",
@@ -934,6 +936,7 @@ def test_explain_eval_plan_clis_are_wired_to_python_planner(
     assert calls["label_context"]["selection_id"] == "test__max-10__seed-42"
     assert calls["label_context"]["persona"] == "lay"
     assert calls["label_context"]["clients"] == "client_000"
+    assert calls["label_context"]["label_filename"] == "custom_pairwise_labels.parquet"
     assert calls["label_context"]["seed"] == 11
     assert calls["label_context"]["label_seed"] == 12
     assert calls["label_context"]["concentration_c"] == 5.0
