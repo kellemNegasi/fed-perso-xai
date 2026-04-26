@@ -205,6 +205,146 @@ class FederatedTrainingConfig(ExperimentConfig):
 
 
 @dataclass(frozen=True)
+class RecommenderFederatedTrainingConfig:
+    """Configuration for federated pairwise explanation-recommender training."""
+
+    run_id: str
+    selection_id: str
+    persona: str
+    paths: ArtifactPaths = field(default_factory=ArtifactPaths)
+    rounds: int = 10
+    strategy_name: str = "fedavg"
+    fit_fraction: float = 1.0
+    evaluate_fraction: float = 1.0
+    min_available_clients: int = 2
+    simulation_backend: str = "auto"
+    debug_fallback_on_error: bool = False
+    epochs: int = 5
+    batch_size: int = 64
+    learning_rate: float = 0.05
+    l2_regularization: float = 0.0
+    seed: int = 42
+    top_k: tuple[int, ...] = (1, 3, 5)
+    context_filename: str = "candidate_context.parquet"
+    label_filename: str = "pairwise_labels.parquet"
+    clients: str = "all"
+    runtime_num_clients: int = 0
+    secure_aggregation: bool = False
+    secure_num_helpers: int = 5
+    secure_privacy_threshold: int = 2
+    secure_reconstruction_threshold: int | None = None
+    secure_field_modulus: int = 2_147_483_647
+    secure_quantization_scale: int = 1 << 16
+    secure_seed: int = 0
+    simulation_resources: dict[str, float] = field(
+        default_factory=lambda: {"num_cpus": 1.0}
+    )
+
+    def __post_init__(self) -> None:
+        _require_non_empty_string("run_id", self.run_id)
+        _require_non_empty_string("selection_id", self.selection_id)
+        _require_non_empty_string("persona", self.persona)
+        _require_integer_at_least("rounds", self.rounds, minimum=1)
+        _require_non_empty_string("strategy_name", self.strategy_name)
+        _require_fraction_or_one("fit_fraction", self.fit_fraction)
+        _require_fraction_or_one("evaluate_fraction", self.evaluate_fraction)
+        _require_integer_at_least("min_available_clients", self.min_available_clients, minimum=1)
+        _require_integer_at_least("epochs", self.epochs, minimum=1)
+        _require_integer_at_least("batch_size", self.batch_size, minimum=1)
+        _require_positive("learning_rate", self.learning_rate)
+        _require_non_negative("l2_regularization", self.l2_regularization)
+        _require_non_negative_integer("seed", self.seed)
+        _require_non_empty_string("context_filename", self.context_filename)
+        _require_non_empty_string("label_filename", self.label_filename)
+        _require_non_empty_string("clients", self.clients)
+        _require_non_negative_integer("runtime_num_clients", self.runtime_num_clients)
+        if not self.top_k:
+            raise ValueError("top_k must contain at least one value.")
+        for value in self.top_k:
+            _require_integer_at_least("top_k item", int(value), minimum=1)
+        _require_integer_at_least("secure_num_helpers", self.secure_num_helpers, minimum=1)
+        _require_integer_at_least(
+            "secure_privacy_threshold",
+            self.secure_privacy_threshold,
+            minimum=0,
+        )
+        if self.secure_reconstruction_threshold is not None:
+            _require_integer_at_least(
+                "secure_reconstruction_threshold",
+                self.secure_reconstruction_threshold,
+                minimum=self.secure_privacy_threshold + 1,
+            )
+            if self.secure_reconstruction_threshold > self.secure_num_helpers:
+                raise ValueError(
+                    "secure_reconstruction_threshold cannot exceed secure_num_helpers."
+                )
+        if self.secure_privacy_threshold + 1 > self.secure_num_helpers:
+            raise ValueError(
+                "secure_num_helpers must be at least secure_privacy_threshold + 1."
+            )
+        _require_integer_at_least("secure_field_modulus", self.secure_field_modulus, minimum=3)
+        _require_integer_at_least(
+            "secure_quantization_scale",
+            self.secure_quantization_scale,
+            minimum=1,
+        )
+        _require_non_negative_integer("secure_seed", self.secure_seed)
+        if not isinstance(self.simulation_resources, dict):
+            raise TypeError("simulation_resources must be a dictionary.")
+        for resource_name, value in self.simulation_resources.items():
+            _require_positive(f"simulation_resources[{resource_name!r}]", value)
+
+        from fed_perso_xai.fl.strategy import DEFAULT_STRATEGY_REGISTRY
+
+        DEFAULT_STRATEGY_REGISTRY.get(self.strategy_name)
+
+    @property
+    def num_clients(self) -> int:
+        """Client count used by the shared FedAvg strategy helpers."""
+
+        return int(self.runtime_num_clients or self.min_available_clients)
+
+    def with_num_clients(self, num_clients: int) -> "RecommenderFederatedTrainingConfig":
+        """Return a copy with the loaded client count attached."""
+
+        _require_integer_at_least("num_clients", num_clients, minimum=1)
+        return RecommenderFederatedTrainingConfig(
+            run_id=self.run_id,
+            selection_id=self.selection_id,
+            persona=self.persona,
+            paths=self.paths,
+            rounds=self.rounds,
+            strategy_name=self.strategy_name,
+            fit_fraction=self.fit_fraction,
+            evaluate_fraction=self.evaluate_fraction,
+            min_available_clients=self.min_available_clients,
+            simulation_backend=self.simulation_backend,
+            debug_fallback_on_error=self.debug_fallback_on_error,
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            learning_rate=self.learning_rate,
+            l2_regularization=self.l2_regularization,
+            seed=self.seed,
+            top_k=tuple(self.top_k),
+            context_filename=self.context_filename,
+            label_filename=self.label_filename,
+            clients=self.clients,
+            runtime_num_clients=int(num_clients),
+            secure_aggregation=self.secure_aggregation,
+            secure_num_helpers=self.secure_num_helpers,
+            secure_privacy_threshold=self.secure_privacy_threshold,
+            secure_reconstruction_threshold=self.secure_reconstruction_threshold,
+            secure_field_modulus=self.secure_field_modulus,
+            secure_quantization_scale=self.secure_quantization_scale,
+            secure_seed=self.secure_seed,
+            simulation_resources=dict(self.simulation_resources),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize_dataclass(self)
+
+
+@dataclass(frozen=True)
 class ComparisonConfig:
     """Configuration for centralized-versus-federated comparison reporting."""
 

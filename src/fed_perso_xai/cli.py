@@ -32,6 +32,10 @@ from fed_perso_xai.orchestration.job_launcher import run_job_launcher
 from fed_perso_xai.orchestration.recommender_preprocessing import (
     prepare_recommender_context,
 )
+from fed_perso_xai.orchestration.recommender_training import (
+    evaluate_recommender_model,
+    train_federated_recommender,
+)
 from fed_perso_xai.orchestration.training import (
     compare_centralized_and_federated,
     train_centralized_from_prepared,
@@ -45,6 +49,7 @@ from fed_perso_xai.utils.config import (
     FederatedTrainingConfig,
     LogisticRegressionConfig,
     PartitionConfig,
+    RecommenderFederatedTrainingConfig,
     PreprocessingConfig,
 )
 from fed_perso_xai.utils.logging import configure_logging
@@ -284,6 +289,52 @@ def build_parser() -> argparse.ArgumentParser:
     recommender_label_parser.add_argument("--label-seed", type=int, default=1729)
     recommender_label_parser.add_argument("--tau", type=float)
     recommender_label_parser.add_argument("--concentration-c", type=float)
+
+    recommender_train_parser = subparsers.add_parser(
+        "train-recommender-federated",
+        help="Train a federated pairwise explanation recommender from client-local labels.",
+    )
+    _add_shared_path_args(recommender_train_parser)
+    recommender_train_parser.add_argument("--run-id", required=True)
+    recommender_train_parser.add_argument("--selection", dest="selection_id", required=True)
+    recommender_train_parser.add_argument("--persona", required=True)
+    recommender_train_parser.add_argument("--clients", default="all")
+    recommender_train_parser.add_argument("--context-filename", default="candidate_context.parquet")
+    recommender_train_parser.add_argument("--label-filename", default="pairwise_labels.parquet")
+    recommender_train_parser.add_argument("--rounds", type=int, default=10)
+    recommender_train_parser.add_argument("--epochs", type=int, default=5)
+    recommender_train_parser.add_argument("--batch-size", type=int, default=64)
+    recommender_train_parser.add_argument("--learning-rate", type=float, default=0.05)
+    recommender_train_parser.add_argument("--l2-regularization", type=float, default=0.0)
+    recommender_train_parser.add_argument("--seed", type=int, default=42)
+    recommender_train_parser.add_argument("--strategy", choices=strategy_choices, default="fedavg")
+    recommender_train_parser.add_argument("--fit-fraction", type=float, default=1.0)
+    recommender_train_parser.add_argument("--evaluate-fraction", type=float, default=1.0)
+    recommender_train_parser.add_argument("--min-available-clients", type=int, default=2)
+    recommender_train_parser.add_argument(
+        "--simulation-backend",
+        choices=FEDERATED_BACKEND_CHOICES,
+        default="auto",
+    )
+    recommender_train_parser.add_argument("--debug-fallback-on-error", action="store_true")
+    recommender_train_parser.add_argument("--top-k", default="1,3,5")
+    recommender_train_parser.add_argument("--force", action="store_true")
+
+    recommender_eval_parser = subparsers.add_parser(
+        "evaluate-recommender",
+        help="Evaluate a trained global recommender against client-local labels.",
+    )
+    _add_shared_path_args(recommender_eval_parser)
+    recommender_eval_parser.add_argument("--run-id", required=True)
+    recommender_eval_parser.add_argument("--selection", dest="selection_id", required=True)
+    recommender_eval_parser.add_argument("--persona", required=True)
+    recommender_eval_parser.add_argument("--clients", default="all")
+    recommender_eval_parser.add_argument("--context-filename", default="candidate_context.parquet")
+    recommender_eval_parser.add_argument("--label-filename", default="pairwise_labels.parquet")
+    recommender_eval_parser.add_argument("--model-path", type=Path)
+    recommender_eval_parser.add_argument("--top-k", default="1,3,5")
+    recommender_eval_parser.add_argument("--output", type=Path)
+
 
     launcher_parser = subparsers.add_parser(
         "launch-experiment-jobs",
@@ -597,6 +648,63 @@ def main() -> None:
         print(json.dumps(payload, indent=2))
         return
 
+    if args.command == "train-recommender-federated":
+        artifacts, metadata = train_federated_recommender(
+            RecommenderFederatedTrainingConfig(
+                run_id=args.run_id,
+                selection_id=args.selection_id,
+                persona=args.persona,
+                paths=_build_artifact_paths(args),
+                rounds=args.rounds,
+                strategy_name=args.strategy,
+                fit_fraction=args.fit_fraction,
+                evaluate_fraction=args.evaluate_fraction,
+                min_available_clients=args.min_available_clients,
+                simulation_backend=args.simulation_backend,
+                debug_fallback_on_error=args.debug_fallback_on_error,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                learning_rate=args.learning_rate,
+                l2_regularization=args.l2_regularization,
+                seed=args.seed,
+                top_k=_parse_top_k(args.top_k),
+                context_filename=args.context_filename,
+                label_filename=args.label_filename,
+                clients=args.clients,
+            ),
+            force=args.force,
+        )
+        print(
+            json.dumps(
+                {
+                    "run_dir": str(artifacts.run_dir),
+                    "model_artifact_path": str(artifacts.model_artifact_path),
+                    "training_metadata_path": str(artifacts.training_metadata_path),
+                    "evaluation_summary_path": str(artifacts.evaluation_summary_path),
+                    "metadata": metadata,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    if args.command == "evaluate-recommender":
+        payload = evaluate_recommender_model(
+            run_id=args.run_id,
+            selection_id=args.selection_id,
+            persona=args.persona,
+            model_path=args.model_path,
+            clients=args.clients,
+            context_filename=args.context_filename,
+            label_filename=args.label_filename,
+            top_k=_parse_top_k(args.top_k),
+            paths=_build_artifact_paths(args),
+            output_path=args.output,
+        )
+        print(json.dumps(payload, indent=2))
+        return
+
+
     if args.command == "launch-experiment-jobs":
         payload = run_job_launcher(
             config_path=args.config,
@@ -608,6 +716,16 @@ def main() -> None:
         return
 
     raise ValueError(f"Unhandled command '{args.command}'.")
+
+
+def _parse_top_k(value: str) -> tuple[int, ...]:
+    items = [item.strip() for item in str(value).split(",") if item.strip()]
+    if not items:
+        raise ValueError("--top-k must contain at least one integer.")
+    parsed = tuple(sorted({int(item) for item in items}))
+    if any(item < 1 for item in parsed):
+        raise ValueError("--top-k values must be >= 1.")
+    return parsed
 
 
 def _add_common_dataset_args(parser: argparse.ArgumentParser, dataset_choices: list[str]) -> None:

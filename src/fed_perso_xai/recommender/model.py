@@ -215,3 +215,19 @@ def _as_binary_labels(y: np.ndarray) -> np.ndarray:
     if not np.isin(arr, [0.0, 1.0]).all():
         raise ValueError("Pairwise labels must be binary values in {0, 1}.")
     return arr
+
+def load_pairwise_logistic_recommender(path: Path) -> PairwiseLogisticRecommender:
+    """Load a persisted pairwise logistic recommender."""
+
+    bundle = np.load(path, allow_pickle=False)
+    n_features = int(np.asarray(bundle["n_features"]).reshape(-1)[0])
+    config = PairwiseLogisticConfig(
+        epochs=int(np.asarray(bundle["local_epochs"]).reshape(-1)[0]),
+        batch_size=int(np.asarray(bundle["batch_size"]).reshape(-1)[0]),
+        learning_rate=float(np.asarray(bundle["learning_rate"]).reshape(-1)[0]),
+        l2_regularization=float(np.asarray(bundle["l2_regularization"]).reshape(-1)[0]),
+    )
+    model = PairwiseLogisticRecommender.from_config(n_features=n_features, config=config)
+    model.set_parameters([bundle["weights"], bundle["bias"]])
+    return model
+
