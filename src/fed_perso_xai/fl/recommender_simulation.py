@@ -28,7 +28,7 @@ from fed_perso_xai.recommender import (
     initialize_recommender_parameters,
 )
 from fed_perso_xai.recommender.clustering import (
-    ClusterAggregationResult,
+    ClientSidePCAProjector,
     PCAReducer,
     RecommenderWeightVectorExtractor,
     SecureClusterModelAggregator,
@@ -339,6 +339,7 @@ def _run_clustered_recommender_training(
     )
     extractor = RecommenderWeightVectorExtractor()
     pca_reducer = PCAReducer()
+    projector = ClientSidePCAProjector(config)
     clusterer = SecureKMeansClusterer(config)
     secure_aggregator = SecureClusterModelAggregator(config)
     previous_assignments: dict[str, int] = {}
@@ -348,6 +349,7 @@ def _run_clustered_recommender_training(
     }
     round_history: list[dict[str, object]] = []
     clustered_rounds: list[ClusteredRoundResult] = []
+    pca_basis = None
 
     warnings = [
         "Clustered recommender training uses the in-process clustered sequential runtime.",
@@ -373,7 +375,10 @@ def _run_clustered_recommender_training(
 
         for dataset in client_datasets:
             client_name = dataset.client_name
-            starting_parameters = current_cluster_models.get(previous_assignments.get(client_name, 0), initial_parameters)
+            starting_parameters = current_cluster_models.get(
+                previous_assignments.get(client_name, 0),
+                initial_parameters,
+            )
             fitted_parameters, train_loss = _fit_local_recommender(
                 dataset=dataset,
                 model_config=model_config,
@@ -385,17 +390,29 @@ def _run_clustered_recommender_training(
             local_weights[client_name] = int(dataset.y_train.shape[0])
             train_losses[client_name] = float(train_loss)
 
-        client_ids, flattened_vectors = extractor.flatten_many(local_parameters)
-        pca_result = pca_reducer.reduce(flattened_vectors, clustering_config.pca_components)
+        if pca_basis is None:
+            _, flattened_vectors = extractor.flatten_many(local_parameters)
+            pca_basis = pca_reducer.fit(flattened_vectors, clustering_config.pca_components)
+
+        shared_reduced_vectors = [
+            projector.build_private_reduced_vector(
+                client_id=client_name,
+                parameters=local_parameters[client_name],
+                pca_basis=pca_basis,
+                round_id=server_round,
+            )
+            for client_name in sorted(local_parameters)
+        ]
         clustering_seed = int(config.seed + server_round - 1)
         assignments_result = clusterer.cluster(
-            pca_result.reduced_vectors,
+            shared_reduced_vectors,
+            pca_basis=pca_basis,
             seed=clustering_seed,
             clustering_config=clustering_config,
         )
         assignments = {
-            client_id: int(label)
-            for client_id, label in zip(client_ids, assignments_result.labels, strict=True)
+            shared_vector.client_id: int(label)
+            for shared_vector, label in zip(shared_reduced_vectors, assignments_result.labels, strict=True)
         }
         cluster_sizes = summarize_cluster_sizes(assignments, clustering_config.k)
         aggregated_clusters = secure_aggregator.aggregate(
@@ -436,8 +453,9 @@ def _run_clustered_recommender_training(
                 assignments=dict(assignments),
                 cluster_sizes=dict(cluster_sizes),
                 pca_metadata={
-                    **pca_result.to_metadata(),
-                    "input_shape": [int(value) for value in flattened_vectors.shape],
+                    **pca_basis.to_metadata(),
+                    "basis_estimation_mode": "bootstrap_central_broadcast_once",
+                    "server_observes_raw_weights_during_clustering": False,
                 },
                 secure_clustering_metadata={
                     **assignments_result.secure_metadata,
@@ -466,7 +484,9 @@ def _run_clustered_recommender_training(
         for cluster_id, parameters in current_cluster_models.items()
     }
     non_empty_cluster_ids = [
-        cluster_id for cluster_id in range(clustering_config.k) if int(clustered_rounds[-1].cluster_sizes[str(cluster_id)]) > 0
+        cluster_id
+        for cluster_id in range(clustering_config.k)
+        if int(clustered_rounds[-1].cluster_sizes[str(cluster_id)]) > 0
     ]
     if not non_empty_cluster_ids:
         raise RuntimeError("Clustered recommender training completed without any populated clusters.")
@@ -487,6 +507,7 @@ def _run_clustered_recommender_training(
         "rounds_completed": len(round_history),
         "clustered": True,
         "cluster_count": int(clustering_config.k),
+        "server_observes_raw_weights_during_clustering": False,
     }
     LOGGER.info(
         "Completed clustered recommender training rounds_completed=%s actual_backend=%s",

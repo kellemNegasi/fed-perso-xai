@@ -9,7 +9,13 @@ import pandas as pd
 import pytest
 
 from fed_perso_xai.orchestration.recommender_training import train_federated_recommender
-from fed_perso_xai.recommender.clustering import PCAReducer, SecureClusterAssignments
+from fed_perso_xai.recommender.clustering import (
+    ClientSidePCAProjector,
+    PCABasis,
+    PCAReducer,
+    SecretSharedReducedVector,
+    SecureClusterAssignments,
+)
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
     RecommenderClusteringConfig,
@@ -128,9 +134,42 @@ def test_recommender_clustering_disabled_keeps_existing_behavior(tmp_path: Path)
     assert metadata["cluster_model_artifact_paths"] == {}
 
 
+@pytest.mark.skipif(not LCC_AVAILABLE, reason="lcc-lib is required for clustered recommender tests.")
+def test_client_side_projector_secret_shares_reduced_representation_only() -> None:
+    config = RecommenderFederatedTrainingConfig(
+        run_id="unit-run",
+        selection_id="selection-0",
+        persona="lay",
+        clustering=RecommenderClusteringConfig(enabled=True),
+    )
+    projector = ClientSidePCAProjector(config)
+    pca_basis = PCABasis(
+        mean_vector=np.asarray([0.5, -0.5, 0.0], dtype=np.float64),
+        components=np.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64),
+        explained_variance=np.asarray([2.0, 1.0], dtype=np.float64),
+        explained_variance_ratio=np.asarray([2.0 / 3.0, 1.0 / 3.0], dtype=np.float64),
+        requested_components=2,
+        actual_components=2,
+    )
+    private_vector = projector.build_private_reduced_vector(
+        client_id="client_000",
+        parameters=[np.asarray([1.0, 2.0], dtype=np.float64), np.asarray([0.25], dtype=np.float64)],
+        pca_basis=pca_basis,
+        round_id=1,
+    )
+
+    assert isinstance(private_vector, SecretSharedReducedVector)
+    assert private_vector.dimension == 2
+    assert not hasattr(private_vector, "reduced_vector")
+    assert len(private_vector.helper_vector_shares) == config.secure_num_helpers
+    assert len(private_vector.helper_squared_norm_shares) == config.secure_num_helpers
+    assert all(np.asarray(share.payload).ndim == 1 for share in private_vector.helper_vector_shares)
+    assert all(np.asarray(share.payload).shape == (1,) for share in private_vector.helper_squared_norm_shares)
+
+
 @pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
 @pytest.mark.skipif(not LCC_AVAILABLE, reason="lcc-lib is required for clustered recommender tests.")
-def test_clustered_recommender_training_uses_flattened_weights_and_secure_cluster_aggregation(
+def test_clustered_recommender_training_uses_client_side_pca_and_secure_cluster_aggregation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -151,7 +190,8 @@ def test_clustered_recommender_training_uses_flattened_weights_and_secure_cluste
         ],
         axis=0,
     )
-    captured_pca_inputs: list[np.ndarray] = []
+    captured_pca_fit_inputs: list[np.ndarray] = []
+    captured_projector_calls: list[tuple[str, int]] = []
     secure_aggregate_calls: list[tuple[int, tuple[str, ...]]] = []
 
     import fed_perso_xai.fl.recommender_simulation as recommender_simulation
@@ -161,21 +201,35 @@ def test_clustered_recommender_training_uses_flattened_weights_and_secure_cluste
     def fake_fit_local_recommender(*, dataset, **kwargs):
         return fake_local_parameters[dataset.client_name], 0.01
 
-    original_reduce = PCAReducer.reduce
+    original_fit = PCAReducer.fit
+    original_build = ClientSidePCAProjector.build_private_reduced_vector
 
-    def spy_reduce(self, weight_vectors, requested_components):
-        captured_pca_inputs.append(np.asarray(weight_vectors, dtype=np.float64).copy())
-        return original_reduce(self, weight_vectors, requested_components)
+    def spy_fit(self, weight_vectors, requested_components):
+        captured_pca_fit_inputs.append(np.asarray(weight_vectors, dtype=np.float64).copy())
+        return original_fit(self, weight_vectors, requested_components)
 
-    def fake_cluster(self, reduced_vectors, *, seed, clustering_config):
+    def spy_build(self, *, client_id, parameters, pca_basis, round_id):
+        captured_projector_calls.append((str(client_id), int(round_id)))
+        return original_build(
+            self,
+            client_id=client_id,
+            parameters=parameters,
+            pca_basis=pca_basis,
+            round_id=round_id,
+        )
+
+    def fake_cluster(self, shared_reduced_vectors, *, pca_basis, seed, clustering_config):
         assert clustering_config.k == 3
         assert clustering_config.pca_components == 8
+        assert isinstance(pca_basis, PCABasis)
+        assert all(isinstance(item, SecretSharedReducedVector) for item in shared_reduced_vectors)
+        assert all(not hasattr(item, "reduced_vector") for item in shared_reduced_vectors)
         labels = np.asarray([0, 0, 1, 2], dtype=np.int64)
         return SecureClusterAssignments(
             labels=labels,
-            centroids=np.zeros((3, reduced_vectors.shape[1]), dtype=np.float64),
+            centroids=np.zeros((3, shared_reduced_vectors[0].dimension), dtype=np.float64),
             iterations=2,
-            initial_centroid_indices=(0, 1, 2),
+            initial_centroid_indices=tuple(),
             secure_metadata={
                 "method": clustering_config.method,
                 "seed": int(seed),
@@ -184,6 +238,9 @@ def test_clustered_recommender_training_uses_flattened_weights_and_secure_cluste
                 "helper_count": 5,
                 "helper_ids": [0, 1, 2, 3, 4],
                 "helper_evaluation_points": [11, 12, 13, 14, 15],
+                "server_observes_raw_weights": False,
+                "server_observes_reduced_vectors": False,
+                "server_observes_reconstructed_distances": True,
             },
         )
 
@@ -194,7 +251,8 @@ def test_clustered_recommender_training_uses_flattened_weights_and_secure_cluste
         return original_secure_aggregate(self, client_vectors, round_id, client_ids)
 
     monkeypatch.setattr(recommender_simulation, "_fit_local_recommender", fake_fit_local_recommender)
-    monkeypatch.setattr(clustering_module.PCAReducer, "reduce", spy_reduce)
+    monkeypatch.setattr(clustering_module.PCAReducer, "fit", spy_fit)
+    monkeypatch.setattr(clustering_module.ClientSidePCAProjector, "build_private_reduced_vector", spy_build)
     monkeypatch.setattr(clustering_module.SecureKMeansClusterer, "cluster", fake_cluster)
     monkeypatch.setattr(LCCSecureAggregator, "aggregate", spy_secure_aggregate)
 
@@ -216,7 +274,16 @@ def test_clustered_recommender_training_uses_flattened_weights_and_secure_cluste
     )
 
     assert metadata["clustered"] is True
-    assert np.allclose(captured_pca_inputs[0], expected_flattened)
+    assert len(captured_pca_fit_inputs) == 1
+    assert np.allclose(captured_pca_fit_inputs[0], expected_flattened)
+    assert len(captured_projector_calls) == 8
+    assert {call[0] for call in captured_projector_calls} == {
+        "client_000",
+        "client_001",
+        "client_002",
+        "client_003",
+    }
+    assert {call[1] for call in captured_projector_calls} == {1, 2}
     assert {call[1] for call in secure_aggregate_calls[:3]} == {
         ("client_000", "client_001"),
         ("client_002",),
@@ -236,6 +303,9 @@ def test_clustered_recommender_training_uses_flattened_weights_and_secure_cluste
         "client_003": 2,
     }
     assert round_one["cluster_sizes"] == {"0": 2, "1": 1, "2": 1}
+    assert round_one["pca"]["projection_applied"] == "client_side"
+    assert round_one["secure_clustering"]["server_observes_raw_weights"] is False
+    assert round_one["secure_clustering"]["server_observes_reduced_vectors"] is False
     assert len(round_one["cluster_model_checkpoint_paths"]) == 3
     for relative_path in round_one["cluster_model_checkpoint_paths"].values():
         assert (artifacts.run_dir / relative_path).exists()
@@ -257,13 +327,13 @@ def test_clustered_recommender_training_supports_both_backends(
 
     import fed_perso_xai.recommender.clustering as clustering_module
 
-    def fake_cluster(self, reduced_vectors, *, seed, clustering_config):
+    def fake_cluster(self, shared_reduced_vectors, *, pca_basis, seed, clustering_config):
         labels = np.asarray([0, 1, 2], dtype=np.int64)
         return SecureClusterAssignments(
             labels=labels,
-            centroids=np.zeros((3, reduced_vectors.shape[1]), dtype=np.float64),
+            centroids=np.zeros((3, shared_reduced_vectors[0].dimension), dtype=np.float64),
             iterations=1,
-            initial_centroid_indices=(0, 1, 2),
+            initial_centroid_indices=tuple(),
             secure_metadata={
                 "method": clustering_config.method,
                 "seed": int(seed),
@@ -272,6 +342,9 @@ def test_clustered_recommender_training_supports_both_backends(
                 "helper_count": 5,
                 "helper_ids": [0, 1, 2, 3, 4],
                 "helper_evaluation_points": [11, 12, 13, 14, 15],
+                "server_observes_raw_weights": False,
+                "server_observes_reduced_vectors": False,
+                "server_observes_reconstructed_distances": True,
             },
         )
 
