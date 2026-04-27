@@ -320,6 +320,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
     )
     recommender_train_parser.add_argument("--debug-fallback-on-error", action="store_true")
+    recommender_train_parser.add_argument(
+        "--secure-aggregation",
+        action="store_true",
+        help="Enable in-process simulated secure aggregation for recommender parameters.",
+    )
+    recommender_train_parser.add_argument("--secure-num-helpers", type=int, default=5)
+    recommender_train_parser.add_argument("--secure-privacy-threshold", type=int, default=2)
+    recommender_train_parser.add_argument("--secure-reconstruction-threshold", type=int)
+    recommender_train_parser.add_argument("--secure-field-modulus", type=int, default=2_147_483_647)
+    recommender_train_parser.add_argument("--secure-quantization-scale", type=int, default=1 << 16)
+    recommender_train_parser.add_argument("--secure-seed", type=int, default=0)
     recommender_train_parser.add_argument("--top-k", default="1,3,5")
     recommender_train_parser.add_argument("--force", action="store_true")
 
@@ -677,6 +688,13 @@ def main() -> None:
                 context_filename=args.context_filename,
                 label_filename=args.label_filename,
                 clients=args.clients,
+                secure_aggregation=args.secure_aggregation,
+                secure_num_helpers=args.secure_num_helpers,
+                secure_privacy_threshold=args.secure_privacy_threshold,
+                secure_reconstruction_threshold=args.secure_reconstruction_threshold,
+                secure_field_modulus=args.secure_field_modulus,
+                secure_quantization_scale=args.secure_quantization_scale,
+                secure_seed=args.secure_seed,
             ),
             force=args.force,
         )
