@@ -15,7 +15,10 @@ import numpy as np
 import pandas as pd
 
 from fed_perso_xai.fl.client import RecommenderClientData
-from fed_perso_xai.fl.recommender_simulation import run_federated_recommender_training
+from fed_perso_xai.fl.recommender_simulation import (
+    RecommenderSimulationArtifacts,
+    run_federated_recommender_training,
+)
 from fed_perso_xai.orchestration.run_artifacts import resolve_federated_run_context
 from fed_perso_xai.recommender import (
     DEFAULT_RECOMMENDER_TYPE,
@@ -43,6 +46,9 @@ class RecommenderTrainingArtifacts:
     training_history_path: Path
     runtime_report_path: Path
     evaluation_summary_path: Path
+    cluster_manifest_path: Path
+    cluster_rounds_dir: Path
+    cluster_models_dir: Path
     completion_marker_path: Path
 
 
@@ -143,6 +149,18 @@ def train_federated_recommender(
     )
     model.set_parameters(training_result.final_parameters)
     model.save(artifacts.model_artifact_path)
+    cluster_manifest = (
+        _persist_clustered_training_artifacts(
+            artifacts=artifacts,
+            run_dir=run_dir,
+            training_result=training_result,
+            config=config,
+            feature_columns=feature_columns,
+            model_config=model_config,
+        )
+        if training_result.clustered
+        else None
+    )
     _write_training_history_csv(artifacts.training_history_path, training_result.round_history)
     _write_json_atomic(artifacts.runtime_report_path, training_result.runtime_report)
 
@@ -159,20 +177,41 @@ def train_federated_recommender(
     _write_json_atomic(artifacts.feature_metadata_path, feature_metadata)
 
     if loaded_eval_clients:
-        evaluation = evaluate_recommender_model(
-            run_id=config.run_id,
-            selection_id=config.selection_id,
-            persona=config.persona,
-            model_path=artifacts.model_artifact_path,
-            feature_columns=feature_columns,
-            clients=config.clients,
-            context_filename=config.context_filename,
-            label_filename=config.label_filename,
-            top_k=config.top_k,
-            paths=config.paths,
-            output_path=artifacts.evaluation_summary_path,
-            recommender_type=config.recommender_type,
-        )
+        if training_result.clustered:
+            if cluster_manifest is None:
+                raise RuntimeError("Clustered recommender training completed without a cluster manifest.")
+            evaluation = _evaluate_clustered_recommender_models(
+                loaded_clients=loaded_eval_clients,
+                feature_columns=feature_columns,
+                cluster_assignments=training_result.final_cluster_assignments,
+                cluster_model_paths={
+                    cluster_id: run_dir / relative_path
+                    for cluster_id, relative_path in cluster_manifest[
+                        "final_cluster_model_checkpoint_paths"
+                    ].items()
+                },
+                run_id=config.run_id,
+                selection_id=config.selection_id,
+                persona=config.persona,
+                recommender_type=config.recommender_type,
+                top_k=config.top_k,
+                output_path=artifacts.evaluation_summary_path,
+            )
+        else:
+            evaluation = evaluate_recommender_model(
+                run_id=config.run_id,
+                selection_id=config.selection_id,
+                persona=config.persona,
+                model_path=artifacts.model_artifact_path,
+                feature_columns=feature_columns,
+                clients=config.clients,
+                context_filename=config.context_filename,
+                label_filename=config.label_filename,
+                top_k=config.top_k,
+                paths=config.paths,
+                output_path=artifacts.evaluation_summary_path,
+                recommender_type=config.recommender_type,
+            )
     else:
         evaluation = {
             "status": "skipped_no_test_pairs",
@@ -203,6 +242,12 @@ def train_federated_recommender(
         "evaluation_summary_path": str(artifacts.evaluation_summary_path.relative_to(run_dir)),
         "feature_count": int(len(feature_columns)),
         "parameter_count": int(len(training_result.final_parameters)),
+        "clustered": bool(training_result.clustered),
+        "cluster_manifest_path": (
+            str(artifacts.cluster_manifest_path.relative_to(run_dir))
+            if training_result.clustered
+            else None
+        ),
         "model_config": {
             "epochs": config.epochs,
             "batch_size": config.batch_size,
@@ -219,6 +264,7 @@ def train_federated_recommender(
         "selection_id": config.selection_id,
         "persona": config.persona,
         "recommender_type": config.recommender_type,
+        "clustered": bool(training_result.clustered),
         "started_at": started_at,
         "completed_at": completed_at,
         "rounds_requested": int(config.rounds),
@@ -245,6 +291,19 @@ def train_federated_recommender(
         "training_history_path": str(artifacts.training_history_path.relative_to(run_dir)),
         "runtime_report_path": str(artifacts.runtime_report_path.relative_to(run_dir)),
         "evaluation_summary_path": str(artifacts.evaluation_summary_path.relative_to(run_dir)),
+        "cluster_manifest_path": (
+            str(artifacts.cluster_manifest_path.relative_to(run_dir))
+            if training_result.clustered
+            else None
+        ),
+        "final_cluster_assignments": (
+            dict(training_result.final_cluster_assignments) if training_result.clustered else {}
+        ),
+        "cluster_model_artifact_paths": (
+            dict(cluster_manifest["final_cluster_model_checkpoint_paths"])
+            if cluster_manifest is not None
+            else {}
+        ),
         "clients": [
             {
                 "client_id": str(item["client_id"]),
@@ -460,8 +519,165 @@ def _build_artifacts(run_dir: Path) -> RecommenderTrainingArtifacts:
         training_history_path=run_dir / "training_history.csv",
         runtime_report_path=run_dir / "runtime_report.json",
         evaluation_summary_path=run_dir / "evaluation_summary.json",
+        cluster_manifest_path=run_dir / "clustering" / "manifest.json",
+        cluster_rounds_dir=run_dir / "clustering" / "rounds",
+        cluster_models_dir=run_dir / "model" / "clusters",
         completion_marker_path=run_dir / "COMPLETED.json",
     )
+
+
+def _persist_clustered_training_artifacts(
+    *,
+    artifacts: RecommenderTrainingArtifacts,
+    run_dir: Path,
+    training_result: RecommenderSimulationArtifacts,
+    config: RecommenderFederatedTrainingConfig,
+    feature_columns: Sequence[str],
+    model_config: PairwiseLogisticConfig,
+) -> dict[str, Any]:
+    if not training_result.clustered:
+        return {}
+
+    final_round_id = training_result.clustered_rounds[-1].round_id
+    round_artifact_paths: list[str] = []
+    final_cluster_model_checkpoint_paths: dict[str, str] = {}
+
+    for round_result in training_result.clustered_rounds:
+        round_model_dir = artifacts.cluster_models_dir / f"round_{round_result.round_id:04d}"
+        cluster_model_checkpoint_paths: dict[str, str] = {}
+        for cluster_id, parameters in sorted(round_result.cluster_parameters.items()):
+            cluster_model_path = round_model_dir / f"cluster_{cluster_id:03d}.npz"
+            cluster_model = create_recommender(
+                recommender_type=config.recommender_type,
+                n_features=len(feature_columns),
+                config=model_config,
+            )
+            cluster_model.set_parameters(parameters)
+            cluster_model.save(cluster_model_path)
+            relative_cluster_model_path = str(cluster_model_path.relative_to(run_dir))
+            cluster_model_checkpoint_paths[str(cluster_id)] = relative_cluster_model_path
+            if round_result.round_id == final_round_id:
+                final_cluster_model_checkpoint_paths[str(cluster_id)] = relative_cluster_model_path
+
+        round_payload = {
+            "artifact_type": "recommender_cluster_round",
+            "run_id": config.run_id,
+            "selection_id": config.selection_id,
+            "persona": config.persona,
+            "recommender_type": config.recommender_type,
+            "round_id": int(round_result.round_id),
+            "assignments": dict(round_result.assignments),
+            "cluster_sizes": dict(round_result.cluster_sizes),
+            "pca": dict(round_result.pca_metadata),
+            "secure_clustering": dict(round_result.secure_clustering_metadata),
+            "secure_aggregation_per_cluster": dict(round_result.secure_aggregation_metadata),
+            "cluster_model_checkpoint_paths": cluster_model_checkpoint_paths,
+        }
+        round_artifact_path = artifacts.cluster_rounds_dir / f"round_{round_result.round_id:04d}.json"
+        _write_json_atomic(round_artifact_path, round_payload)
+        round_artifact_paths.append(str(round_artifact_path.relative_to(run_dir)))
+
+    manifest = {
+        "artifact_type": "recommender_cluster_manifest",
+        "run_id": config.run_id,
+        "selection_id": config.selection_id,
+        "persona": config.persona,
+        "recommender_type": config.recommender_type,
+        "enabled": True,
+        "method": config.clustering.method,
+        "k": int(config.clustering.k),
+        "pca_components": int(config.clustering.pca_components),
+        "round_count": int(len(training_result.clustered_rounds)),
+        "final_cluster_assignments": dict(training_result.final_cluster_assignments),
+        "final_cluster_model_checkpoint_paths": final_cluster_model_checkpoint_paths,
+        "round_artifact_paths": round_artifact_paths,
+    }
+    _write_json_atomic(artifacts.cluster_manifest_path, manifest)
+    return manifest
+
+
+def _evaluate_clustered_recommender_models(
+    *,
+    loaded_clients: Sequence[Mapping[str, Any]],
+    feature_columns: Sequence[str],
+    cluster_assignments: Mapping[str, int],
+    cluster_model_paths: Mapping[str, Path],
+    run_id: str,
+    selection_id: str,
+    persona: str,
+    recommender_type: str,
+    top_k: Iterable[int] = (1, 3, 5),
+    output_path: Path | None = None,
+) -> dict[str, Any]:
+    model_cache: dict[str, Any] = {}
+    client_metrics: list[dict[str, object]] = []
+    cluster_metrics: dict[str, list[dict[str, object]]] = {}
+
+    for item in loaded_clients:
+        client_id = str(item["client_id"])
+        if client_id not in cluster_assignments:
+            raise ValueError(f"Missing final cluster assignment for recommender client {client_id!r}.")
+        cluster_id = str(cluster_assignments[client_id])
+        model_path = cluster_model_paths.get(cluster_id)
+        if model_path is None:
+            raise ValueError(f"Missing cluster model path for cluster {cluster_id}.")
+        model = model_cache.get(cluster_id)
+        if model is None:
+            model = load_recommender(model_path)
+            model_cache[cluster_id] = model
+        candidates = item["candidates"]
+        pair_labels = item["pair_labels"]
+        score_frame = candidates.loc[:, ["dataset_index", "method_variant"]].copy()
+        score_frame["score"] = model.score_candidates(candidates, feature_columns).to_numpy()
+        metrics = evaluate_grouped_ranked_scores(
+            candidate_scores=score_frame,
+            pair_labels=pair_labels,
+            top_k=top_k,
+        )
+        row: dict[str, object] = {
+            "client_id": client_id,
+            "cluster_id": int(cluster_id),
+            "cluster_model_path": str(model_path),
+            "candidate_count": int(len(candidates)),
+            "pair_count": int(len(pair_labels)),
+            "instance_count": int(metrics.get("instance_count", 0)),
+        }
+        aggregate_metrics = metrics.get("aggregate", {})
+        if isinstance(aggregate_metrics, Mapping):
+            for key, value in aggregate_metrics.items():
+                if isinstance(value, (int, float)):
+                    row[key] = float(value)
+        row["instances"] = metrics.get("instances", [])
+        client_metrics.append(row)
+        cluster_metrics.setdefault(cluster_id, []).append(row)
+
+    payload = {
+        "status": "evaluated_clustered",
+        "run_id": run_id,
+        "selection_id": selection_id,
+        "persona": persona,
+        "recommender_type": recommender_type,
+        "clustered": True,
+        "feature_count": int(len(feature_columns)),
+        "client_count": int(len(client_metrics)),
+        "generated_at": current_utc_timestamp(),
+        "aggregate": _aggregate_client_metrics(client_metrics),
+        "clients": client_metrics,
+        "clusters": [
+            {
+                "cluster_id": int(cluster_id),
+                "model_path": str(cluster_model_paths[cluster_id]),
+                "client_count": int(len(rows)),
+                "aggregate": _aggregate_client_metrics(rows),
+            }
+            for cluster_id, rows in sorted(cluster_metrics.items(), key=lambda item: int(item[0]))
+        ],
+        "cluster_assignments": {client_id: int(cluster_id) for client_id, cluster_id in cluster_assignments.items()},
+        "cluster_model_paths": {cluster_id: str(path) for cluster_id, path in cluster_model_paths.items()},
+    }
+    if output_path is not None:
+        _write_json_atomic(output_path, payload)
+    return payload
 
 
 def _recommender_training_dir(

@@ -9,6 +9,7 @@ from typing import Any
 
 DEFAULT_RECOMMENDER_TYPE = "svm_rank"
 _SUPPORTED_RECOMMENDER_TYPES = ("svm_rank", "pairwise_logistic")
+_SUPPORTED_RECOMMENDER_CLUSTERING_METHODS = ("secure_kmeans",)
 
 
 def _normalize_recommender_type(recommender_type: str) -> str:
@@ -17,6 +18,16 @@ def _normalize_recommender_type(recommender_type: str) -> str:
         supported = ", ".join(_SUPPORTED_RECOMMENDER_TYPES)
         raise ValueError(
             f"Unsupported recommender_type {recommender_type!r}. Supported values: {supported}."
+        )
+    return normalized
+
+
+def _normalize_recommender_clustering_method(method: str) -> str:
+    normalized = str(method).strip().lower()
+    if normalized not in _SUPPORTED_RECOMMENDER_CLUSTERING_METHODS:
+        supported = ", ".join(_SUPPORTED_RECOMMENDER_CLUSTERING_METHODS)
+        raise ValueError(
+            f"Unsupported clustering.method {method!r}. Supported values: {supported}."
         )
     return normalized
 
@@ -251,6 +262,9 @@ class RecommenderFederatedTrainingConfig:
     secure_field_modulus: int = 2_147_483_647
     secure_quantization_scale: int = 1 << 16
     secure_seed: int = 0
+    clustering: "RecommenderClusteringConfig" = field(
+        default_factory=lambda: RecommenderClusteringConfig()
+    )
     simulation_resources: dict[str, float] = field(
         default_factory=lambda: {"num_cpus": 1.0}
     )
@@ -305,6 +319,13 @@ class RecommenderFederatedTrainingConfig:
             minimum=1,
         )
         _require_non_negative_integer("secure_seed", self.secure_seed)
+        if not isinstance(self.clustering, RecommenderClusteringConfig):
+            raise TypeError("clustering must be a RecommenderClusteringConfig instance.")
+        if self.runtime_num_clients > 0 and self.clustering.enabled:
+            if self.clustering.k > self.runtime_num_clients:
+                raise ValueError(
+                    "clustering.k cannot exceed the loaded recommender client count."
+                )
         if not isinstance(self.simulation_resources, dict):
             raise TypeError("simulation_resources must be a dictionary.")
         for resource_name, value in self.simulation_resources.items():
@@ -354,11 +375,33 @@ class RecommenderFederatedTrainingConfig:
             secure_field_modulus=self.secure_field_modulus,
             secure_quantization_scale=self.secure_quantization_scale,
             secure_seed=self.secure_seed,
+            clustering=self.clustering,
             simulation_resources=dict(self.simulation_resources),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize_dataclass(self)
+
+
+@dataclass(frozen=True)
+class RecommenderClusteringConfig:
+    """Optional clustered aggregation for recommender federated training."""
+
+    enabled: bool = False
+    method: str = "secure_kmeans"
+    k: int = 3
+    pca_components: int = 8
+    max_iterations: int = 20
+    tolerance: float = 1e-6
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("enabled must be a boolean.")
+        _normalize_recommender_clustering_method(self.method)
+        _require_integer_at_least("k", self.k, minimum=1)
+        _require_integer_at_least("pca_components", self.pca_components, minimum=1)
+        _require_integer_at_least("max_iterations", self.max_iterations, minimum=1)
+        _require_positive("tolerance", self.tolerance)
 
 
 @dataclass(frozen=True)
