@@ -54,6 +54,8 @@ def train_federated_recommender(
     _require_safe_segment(config.run_id, label="run_id")
     _require_safe_segment(config.selection_id, label="selection_id")
     _require_safe_segment(config.persona, label="persona")
+    _require_safe_segment(config.context_filename, label="context_filename")
+    _require_safe_segment(config.label_filename, label="label_filename")
     run_context = resolve_federated_run_context(paths=config.paths, run_id=config.run_id)
     run_dir = _recommender_training_dir(run_context.run_artifact_dir, config.selection_id, config.persona)
     artifacts = _build_artifacts(run_dir)
@@ -75,27 +77,25 @@ def train_federated_recommender(
         split_name="train",
     )
     feature_columns = loaded_clients[0]["feature_columns"]
-    loaded_eval_clients = _load_client_recommender_inputs(
-        run_artifact_dir=run_context.run_artifact_dir,
-        selection_id=config.selection_id,
-        persona=config.persona,
-        clients=config.clients,
-        context_filename=config.context_filename,
-        label_filename=config.label_filename,
-        feature_columns=feature_columns,
-        split_name="test",
-    )
+    try:
+        loaded_eval_clients = _load_client_recommender_inputs(
+            run_artifact_dir=run_context.run_artifact_dir,
+            selection_id=config.selection_id,
+            persona=config.persona,
+            clients=config.clients,
+            context_filename=config.context_filename,
+            label_filename=config.label_filename,
+            feature_columns=feature_columns,
+            split_name="test",
+        )
+    except FileNotFoundError:
+        loaded_eval_clients = []
     eval_lookup = {str(item["client_id"]): item for item in loaded_eval_clients}
     missing_eval_clients = sorted(
         str(item["client_id"])
         for item in loaded_clients
         if str(item["client_id"]) not in eval_lookup
     )
-    if missing_eval_clients:
-        raise FileNotFoundError(
-            "Missing held-out recommender evaluation split for clients: "
-            f"{missing_eval_clients}"
-        )
     model_config = PairwiseLogisticConfig(
         epochs=config.epochs,
         batch_size=config.batch_size,
@@ -108,8 +108,16 @@ def train_federated_recommender(
             client_name=str(item["client_id"]),
             X_train=item["data"].X,
             y_train=item["data"].y,
-            X_eval=eval_lookup[str(item["client_id"])]["data"].X,
-            y_eval=eval_lookup[str(item["client_id"])]["data"].y,
+            X_eval=(
+                eval_lookup[str(item["client_id"])]["data"].X
+                if str(item["client_id"]) in eval_lookup
+                else np.empty((0, len(feature_columns)), dtype=np.float64)
+            ),
+            y_eval=(
+                eval_lookup[str(item["client_id"])]["data"].y
+                if str(item["client_id"]) in eval_lookup
+                else np.empty((0,), dtype=np.int64)
+            ),
         )
         for index, item in enumerate(loaded_clients)
     ]
@@ -142,19 +150,35 @@ def train_federated_recommender(
     }
     _write_json_atomic(artifacts.feature_metadata_path, feature_metadata)
 
-    evaluation = evaluate_recommender_model(
-        run_id=config.run_id,
-        selection_id=config.selection_id,
-        persona=config.persona,
-        model_path=artifacts.model_artifact_path,
-        feature_columns=feature_columns,
-        clients=config.clients,
-        context_filename=config.context_filename,
-        label_filename=config.label_filename,
-        top_k=config.top_k,
-        paths=config.paths,
-        output_path=artifacts.evaluation_summary_path,
-    )
+    if loaded_eval_clients:
+        evaluation = evaluate_recommender_model(
+            run_id=config.run_id,
+            selection_id=config.selection_id,
+            persona=config.persona,
+            model_path=artifacts.model_artifact_path,
+            feature_columns=feature_columns,
+            clients=config.clients,
+            context_filename=config.context_filename,
+            label_filename=config.label_filename,
+            top_k=config.top_k,
+            paths=config.paths,
+            output_path=artifacts.evaluation_summary_path,
+        )
+    else:
+        evaluation = {
+            "status": "skipped_no_test_pairs",
+            "run_id": config.run_id,
+            "selection_id": config.selection_id,
+            "persona": config.persona,
+            "model_path": str(artifacts.model_artifact_path),
+            "feature_count": int(len(feature_columns)),
+            "client_count": 0,
+            "generated_at": current_utc_timestamp(),
+            "aggregate": {},
+            "clients": [],
+            "reason": "No held-out recommender evaluation pairs were available for any client.",
+        }
+        _write_json_atomic(artifacts.evaluation_summary_path, evaluation)
 
     model_metadata = {
         "artifact_type": "federated_pairwise_recommender_model",
@@ -200,6 +224,7 @@ def train_federated_recommender(
         "eval_raw_pair_count": int(sum(item["data"].pair_count for item in loaded_eval_clients)),
         "eval_candidate_count": int(sum(item["data"].candidate_count for item in loaded_eval_clients)),
         "eval_instance_count": int(sum(item["data"].instance_count for item in loaded_eval_clients)),
+        "clients_without_eval": missing_eval_clients,
         "feature_count": int(len(feature_columns)),
         "feature_columns": list(feature_columns),
         "config": config.to_dict(),
@@ -256,6 +281,8 @@ def evaluate_recommender_model(
     _require_safe_segment(run_id, label="run_id")
     _require_safe_segment(selection_id, label="selection_id")
     _require_safe_segment(persona, label="persona")
+    _require_safe_segment(context_filename, label="context_filename")
+    _require_safe_segment(label_filename, label="label_filename")
     artifact_paths = paths or ArtifactPaths()
     run_context = resolve_federated_run_context(paths=artifact_paths, run_id=run_id)
     resolved_model_path = model_path or (
@@ -336,6 +363,8 @@ def _load_client_recommender_inputs(
     feature_columns: tuple[str, ...] | None = None,
     split_name: str | None = None,
 ) -> list[dict[str, Any]]:
+    _require_safe_segment(context_filename, label="context_filename")
+    _require_safe_segment(label_filename, label="label_filename")
     requested_clients = _split_selector(clients)
     context_root = run_artifact_dir / "clients"
     client_dirs = [path for path in sorted(context_root.glob("client_*")) if path.is_dir()]

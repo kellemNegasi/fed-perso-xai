@@ -251,11 +251,18 @@ if fl is not None:
             parameters: list[np.ndarray],
             config: dict[str, Any],
         ) -> tuple[float, int, dict[str, Any]]:
+            eval_pairs = int(self.data.y_eval.shape[0])
             LOGGER.info(
                 "Recommender eval start client=%s eval_pairs=%s",
                 self.data.client_name,
-                int(self.data.y_eval.shape[0]),
+                eval_pairs,
             )
+            if eval_pairs == 0:
+                LOGGER.info(
+                    "Recommender eval skipped client=%s eval_pairs=0",
+                    self.data.client_name,
+                )
+                return 0.0, 0, {"client_id": self.data.client_name}
             merged_parameters = apply_shared_parameter_payload(
                 self.model.get_parameters(),
                 parameters,
@@ -263,7 +270,7 @@ if fl is not None:
             self.model.set_parameters(merged_parameters)
             loss = self.model.loss(self.data.X_eval, self.data.y_eval)
             predictions = self.model.predict_pairwise(self.data.X_eval)
-            accuracy = float(np.mean(predictions == self.data.y_eval)) if self.data.y_eval.size else 0.0
+            accuracy = float(np.mean(predictions == self.data.y_eval))
             metrics: dict[str, Any] = {
                 "client_id": self.data.client_name,
                 "pairwise_accuracy": accuracy,
@@ -271,11 +278,11 @@ if fl is not None:
             LOGGER.info(
                 "Recommender eval complete client=%s eval_pairs=%s eval_loss=%.6f pairwise_accuracy=%.6f",
                 self.data.client_name,
-                int(self.data.y_eval.shape[0]),
+                eval_pairs,
                 float(loss),
                 accuracy,
             )
-            return float(loss), int(self.data.y_eval.shape[0]), metrics
+            return float(loss), eval_pairs, metrics
 
 
 else:

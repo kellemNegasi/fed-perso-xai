@@ -319,6 +319,7 @@ def label_recommender_context(
 
     _require_safe_segment(run_id, label="run_id")
     _require_safe_segment(selection_id, label="selection_id")
+    _require_safe_segment(context_filename, label="context_filename")
     _require_safe_segment(label_filename, label="label_filename")
     artifact_paths = paths or ArtifactPaths()
     run_context = resolve_federated_run_context(paths=artifact_paths, run_id=run_id)
@@ -326,9 +327,11 @@ def label_recommender_context(
 
     persona_path = persona_config_path or default_persona_config_path(persona)
     persona_config = load_persona_config(persona_path)
-    if persona != persona_config.persona and persona_config_path is None:
+    _require_safe_segment(persona_config.persona, label="persona")
+    if persona != persona_config.persona:
+        source_label = "Bundled" if persona_config_path is None else "Custom"
         raise ValueError(
-            f"Bundled persona config mismatch: requested {persona!r}, "
+            f"{source_label} persona config mismatch: requested {persona!r}, "
             f"got {persona_config.persona!r}."
         )
 

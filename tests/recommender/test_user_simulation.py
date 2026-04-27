@@ -94,6 +94,109 @@ def test_dirichlet_persona_dedupes_duplicate_variants() -> None:
     assert set(np.ravel(labels[["pair_1", "pair_2"]].to_numpy())) == {"a", "b"}
 
 
+def test_label_recommender_context_rejects_unsafe_context_filename(tmp_path) -> None:
+    paths = ArtifactPaths(
+        prepared_root=tmp_path / "prepared",
+        partition_root=tmp_path / "datasets",
+        centralized_root=tmp_path / "centralized",
+        federated_root=tmp_path / "federated",
+        comparison_root=tmp_path / "comparisons",
+        cache_dir=tmp_path / "cache",
+    )
+
+    with pytest.raises(ValueError, match=r"context_filename must be a single non-empty path segment\."):
+        label_recommender_context(
+            run_id="unit-run",
+            selection_id="selection-0",
+            persona="lay",
+            context_filename="../candidate_context.parquet",
+            paths=paths,
+        )
+
+
+def test_label_recommender_context_rejects_unsafe_persona_from_custom_config(tmp_path) -> None:
+    paths = ArtifactPaths(
+        prepared_root=tmp_path / "prepared",
+        partition_root=tmp_path / "datasets",
+        centralized_root=tmp_path / "centralized",
+        federated_root=tmp_path / "federated",
+        comparison_root=tmp_path / "comparisons",
+        cache_dir=tmp_path / "cache",
+    )
+    run_id = "unit-run"
+    selection_id = "selection-0"
+    persona = ".."
+    persona_path = tmp_path / "persona.yaml"
+    persona_path.write_text(
+        "\n".join(
+            [
+                "persona: ..",
+                "type: flat_dirichlet",
+                "tau: 1.0",
+                "properties:",
+                "  quality:",
+                "    preference: 1.0",
+                "    metrics: [quality]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    run_dir = paths.federated_root / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_metadata.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"persona must be a single non-empty path segment\."):
+        label_recommender_context(
+            run_id=run_id,
+            selection_id=selection_id,
+            persona=persona,
+            persona_config_path=persona_path,
+            paths=paths,
+        )
+
+
+def test_label_recommender_context_rejects_custom_persona_config_mismatch(tmp_path) -> None:
+    paths = ArtifactPaths(
+        prepared_root=tmp_path / "prepared",
+        partition_root=tmp_path / "datasets",
+        centralized_root=tmp_path / "centralized",
+        federated_root=tmp_path / "federated",
+        comparison_root=tmp_path / "comparisons",
+        cache_dir=tmp_path / "cache",
+    )
+    run_id = "unit-run"
+    selection_id = "selection-0"
+    persona_path = tmp_path / "persona.yaml"
+    persona_path.write_text(
+        "\n".join(
+            [
+                "persona: expert",
+                "type: flat_dirichlet",
+                "tau: 1.0",
+                "properties:",
+                "  quality:",
+                "    preference: 1.0",
+                "    metrics: [quality]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    run_dir = paths.federated_root / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_metadata.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"Custom persona config mismatch: requested 'lay', got 'expert'\."):
+        label_recommender_context(
+            run_id=run_id,
+            selection_id=selection_id,
+            persona="lay",
+            persona_config_path=persona_path,
+            paths=paths,
+        )
+
+
 @pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
 def test_label_recommender_context_uses_client_stable_seeds_for_subset_reruns(tmp_path) -> None:
     paths = ArtifactPaths(

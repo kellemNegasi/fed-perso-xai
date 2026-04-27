@@ -247,6 +247,17 @@ if fl is not None:
             return fl.common.ndarrays_to_parameters(aggregated_parameters), metrics
 
         def aggregate_evaluate(self, server_round, results, failures):  # type: ignore[override]
+            if results and all(getattr(evaluate_res, "num_examples", 0) <= 0 for _, evaluate_res in results):
+                round_record = self._ensure_round_record(server_round)
+                round_record["evaluate_loss"] = None
+                round_record["evaluate_metrics"] = {}
+                round_record["evaluate_skipped"] = True
+                LOGGER.info(
+                    "Round %s/%s eval summary skipped=no_eval_examples",
+                    server_round,
+                    self.training_config.rounds,
+                )
+                return None, {}
             loss, metrics = super().aggregate_evaluate(server_round, results, failures)
             round_record = self._ensure_round_record(server_round)
             round_record["evaluate_loss"] = loss
