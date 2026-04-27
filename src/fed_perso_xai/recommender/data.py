@@ -8,6 +8,7 @@ from typing import Sequence
 
 import numpy as np
 import pandas as pd
+from sklearn.model_selection import train_test_split
 
 LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +52,14 @@ class PairwiseRecommenderData:
     instance_count: int
 
 
+@dataclass(frozen=True)
+class RecommenderInstanceSplit:
+    """Deterministic train/test split over recommender instance identifiers."""
+
+    train_instance_ids: tuple[int, ...]
+    test_instance_ids: tuple[int, ...]
+
+
 def infer_recommender_feature_columns(
     candidates: pd.DataFrame,
     *,
@@ -69,6 +78,38 @@ def infer_recommender_feature_columns(
     if not feature_columns:
         raise ValueError("No numeric recommender feature columns were found.")
     return feature_columns
+
+
+def split_recommender_instance_ids(
+    candidates: pd.DataFrame,
+    *,
+    test_size: float = 0.2,
+    random_state: int = 42,
+) -> RecommenderInstanceSplit:
+    """Split unique dataset_index values into train/test instance ids."""
+
+    if "dataset_index" not in candidates.columns:
+        raise ValueError("Candidates are missing required column: 'dataset_index'.")
+    instance_ids = sorted(
+        int(value)
+        for value in candidates["dataset_index"].dropna().unique().tolist()
+    )
+    if len(instance_ids) < 2:
+        raise ValueError("At least two recommender instances are required to perform a split.")
+    train_ids, test_ids = train_test_split(
+        instance_ids,
+        test_size=test_size,
+        random_state=random_state,
+        shuffle=True,
+    )
+    resolved_train_ids = tuple(sorted(int(value) for value in train_ids))
+    resolved_test_ids = tuple(sorted(int(value) for value in test_ids))
+    if not resolved_train_ids or not resolved_test_ids:
+        raise ValueError("Recommender instance split must produce non-empty train and test partitions.")
+    return RecommenderInstanceSplit(
+        train_instance_ids=resolved_train_ids,
+        test_instance_ids=resolved_test_ids,
+    )
 
 
 def build_pairwise_recommender_data(

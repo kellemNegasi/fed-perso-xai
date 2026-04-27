@@ -288,6 +288,8 @@ def build_parser() -> argparse.ArgumentParser:
     recommender_label_parser.add_argument("--label-filename", default="pairwise_labels.parquet")
     recommender_label_parser.add_argument("--seed", type=int, default=42)
     recommender_label_parser.add_argument("--label-seed", type=int, default=1729)
+    recommender_label_parser.add_argument("--instance-test-size", type=float, default=0.2)
+    recommender_label_parser.add_argument("--instance-split-seed", type=int)
     recommender_label_parser.add_argument("--tau", type=float)
     recommender_label_parser.add_argument("--concentration-c", type=float)
 
@@ -643,6 +645,8 @@ def main() -> None:
             label_filename=args.label_filename,
             seed=args.seed,
             label_seed=args.label_seed,
+            instance_test_size=args.instance_test_size,
+            instance_split_seed=args.instance_split_seed,
             tau=args.tau,
             concentration_c=args.concentration_c,
             paths=_build_artifact_paths(args),

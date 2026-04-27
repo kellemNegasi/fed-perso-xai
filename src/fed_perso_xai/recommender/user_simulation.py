@@ -17,6 +17,7 @@ import pandas as pd
 import yaml
 
 from fed_perso_xai.orchestration.run_artifacts import resolve_federated_run_context
+from fed_perso_xai.recommender.data import split_recommender_instance_ids
 from fed_perso_xai.utils.config import ArtifactPaths
 from fed_perso_xai.utils.provenance import current_utc_timestamp
 
@@ -308,6 +309,8 @@ def label_recommender_context(
     label_filename: str = "pairwise_labels.parquet",
     seed: int = 42,
     label_seed: int = 1729,
+    instance_test_size: float = 0.2,
+    instance_split_seed: int | None = None,
     tau: float | None = None,
     concentration_c: float | None = None,
     paths: ArtifactPaths | None = None,
@@ -353,6 +356,23 @@ def label_recommender_context(
         candidates = pd.read_parquet(context_path)
         if candidates.empty:
             continue
+        base_split_seed = seed if instance_split_seed is None else instance_split_seed
+        client_split_seed = _stable_client_seed(
+            base_seed=base_split_seed,
+            client_id=client_id,
+            purpose="instance_split",
+        )
+        instance_split = split_recommender_instance_ids(
+            candidates,
+            test_size=instance_test_size,
+            random_state=client_split_seed,
+        )
+        train_candidates = candidates.loc[
+            candidates["dataset_index"].isin(instance_split.train_instance_ids)
+        ].copy()
+        test_candidates = candidates.loc[
+            candidates["dataset_index"].isin(instance_split.test_instance_ids)
+        ].copy()
         client_seed = _stable_client_seed(base_seed=seed, client_id=client_id, purpose="weights")
         client_label_seed = _stable_client_seed(
             base_seed=label_seed,
@@ -367,7 +387,13 @@ def label_recommender_context(
             tau=tau,
             concentration_c=concentration_c,
         )
-        labels, simulator_metadata = simulator_instance.label_client_candidates(candidates)
+        train_labels, simulator_metadata = simulator_instance.label_client_candidates(train_candidates)
+        test_labels, _ = simulator_instance.label_client_candidates(test_candidates)
+        if not train_labels.empty:
+            train_labels = train_labels.assign(split="train")
+        if not test_labels.empty:
+            test_labels = test_labels.assign(split="test")
+        labels = pd.concat([train_labels, test_labels], ignore_index=True)
 
         client_label_dir = client_dir / "recommender_labels" / selection_id / persona_config.persona
         labels_path = client_label_dir / label_filename
@@ -383,10 +409,22 @@ def label_recommender_context(
             "pairwise_labels": str(labels_path),
             "seed": client_seed,
             "label_seed": client_label_seed,
+            "instance_split_seed": client_split_seed,
             "candidate_count": int(len(candidates)),
             "instance_count": int(candidates["dataset_index"].nunique()),
             "pair_count": int(len(labels)),
+            "train_pair_count": int(len(train_labels)),
+            "test_pair_count": int(len(test_labels)),
             "generated_at": current_utc_timestamp(),
+            "instance_split": {
+                "strategy": "dataset_index_train_test_split",
+                "test_size": float(instance_test_size),
+                "random_state": int(client_split_seed),
+                "train_dataset_indices": [int(value) for value in instance_split.train_instance_ids],
+                "test_dataset_indices": [int(value) for value in instance_split.test_instance_ids],
+                "train_instance_count": int(len(instance_split.train_instance_ids)),
+                "test_instance_count": int(len(instance_split.test_instance_ids)),
+            },
             "simulation": simulator_metadata,
         }
         _write_json_atomic(metadata_path, client_metadata)
@@ -396,6 +434,8 @@ def label_recommender_context(
                 "candidate_count": client_metadata["candidate_count"],
                 "instance_count": client_metadata["instance_count"],
                 "pair_count": client_metadata["pair_count"],
+                "train_pair_count": client_metadata["train_pair_count"],
+                "test_pair_count": client_metadata["test_pair_count"],
                 "artifacts": {
                     "pairwise_labels": str(labels_path),
                     "simulation_metadata": str(metadata_path),
@@ -421,6 +461,8 @@ def label_recommender_context(
         "client_count": len(client_summaries),
         "candidate_count": int(sum(item["candidate_count"] for item in client_summaries)),
         "pair_count": int(sum(item["pair_count"] for item in client_summaries)),
+        "train_pair_count": int(sum(item["train_pair_count"] for item in client_summaries)),
+        "test_pair_count": int(sum(item["test_pair_count"] for item in client_summaries)),
         "generated_at": current_utc_timestamp(),
         "clients": client_summaries,
     }

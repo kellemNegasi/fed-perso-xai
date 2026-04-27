@@ -2,8 +2,10 @@
 
 from fed_perso_xai.recommender.data import (
     PairwiseRecommenderData,
+    RecommenderInstanceSplit,
     build_pairwise_recommender_data,
     infer_recommender_feature_columns,
+    split_recommender_instance_ids,
 )
 from fed_perso_xai.recommender.model import (
     PairwiseLogisticConfig,
@@ -13,6 +15,7 @@ from fed_perso_xai.recommender.model import (
 )
 from fed_perso_xai.recommender.evaluation import (
     build_ground_truth_order,
+    evaluate_grouped_ranked_scores,
     evaluate_ranked_scores,
 )
 from fed_perso_xai.recommender.user_simulation import (
@@ -33,10 +36,13 @@ __all__ = [
     "PairwiseLabelConfig",
     "PairwiseRecommenderData",
     "PersonaConfig",
+    "RecommenderInstanceSplit",
     "UserSimulator",
     "build_pairwise_recommender_data",
     "infer_recommender_feature_columns",
+    "split_recommender_instance_ids",
     "build_ground_truth_order",
+    "evaluate_grouped_ranked_scores",
     "evaluate_ranked_scores",
     "load_pairwise_logistic_recommender",
     "initialize_recommender_parameters",

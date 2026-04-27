@@ -9,7 +9,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -21,7 +21,7 @@ from fed_perso_xai.recommender import (
     PairwiseLogisticConfig,
     PairwiseLogisticRecommender,
     build_pairwise_recommender_data,
-    evaluate_ranked_scores,
+    evaluate_grouped_ranked_scores,
     infer_recommender_feature_columns,
     load_pairwise_logistic_recommender,
 )
@@ -72,8 +72,30 @@ def train_federated_recommender(
         clients=config.clients,
         context_filename=config.context_filename,
         label_filename=config.label_filename,
+        split_name="train",
     )
     feature_columns = loaded_clients[0]["feature_columns"]
+    loaded_eval_clients = _load_client_recommender_inputs(
+        run_artifact_dir=run_context.run_artifact_dir,
+        selection_id=config.selection_id,
+        persona=config.persona,
+        clients=config.clients,
+        context_filename=config.context_filename,
+        label_filename=config.label_filename,
+        feature_columns=feature_columns,
+        split_name="test",
+    )
+    eval_lookup = {str(item["client_id"]): item for item in loaded_eval_clients}
+    missing_eval_clients = sorted(
+        str(item["client_id"])
+        for item in loaded_clients
+        if str(item["client_id"]) not in eval_lookup
+    )
+    if missing_eval_clients:
+        raise FileNotFoundError(
+            "Missing held-out recommender evaluation split for clients: "
+            f"{missing_eval_clients}"
+        )
     model_config = PairwiseLogisticConfig(
         epochs=config.epochs,
         batch_size=config.batch_size,
@@ -86,8 +108,8 @@ def train_federated_recommender(
             client_name=str(item["client_id"]),
             X_train=item["data"].X,
             y_train=item["data"].y,
-            X_eval=item["data"].X,
-            y_eval=item["data"].y,
+            X_eval=eval_lookup[str(item["client_id"])]["data"].X,
+            y_eval=eval_lookup[str(item["client_id"])]["data"].y,
         )
         for index, item in enumerate(loaded_clients)
     ]
@@ -174,6 +196,10 @@ def train_federated_recommender(
         "raw_pair_count": int(sum(item["data"].pair_count for item in loaded_clients)),
         "candidate_count": int(sum(item["data"].candidate_count for item in loaded_clients)),
         "instance_count": int(sum(item["data"].instance_count for item in loaded_clients)),
+        "eval_pair_count": int(sum(item["data"].augmented_pair_count for item in loaded_eval_clients)),
+        "eval_raw_pair_count": int(sum(item["data"].pair_count for item in loaded_eval_clients)),
+        "eval_candidate_count": int(sum(item["data"].candidate_count for item in loaded_eval_clients)),
+        "eval_instance_count": int(sum(item["data"].instance_count for item in loaded_eval_clients)),
         "feature_count": int(len(feature_columns)),
         "feature_columns": list(feature_columns),
         "config": config.to_dict(),
@@ -190,6 +216,8 @@ def train_federated_recommender(
                 "instance_count": int(item["data"].instance_count),
                 "raw_pair_count": int(item["data"].pair_count),
                 "augmented_pair_count": int(item["data"].augmented_pair_count),
+                "split_name": str(item["split_name"]),
+                "dataset_indices": [int(value) for value in item["dataset_indices"]],
                 "context_path": str(item["context_path"]),
                 "labels_path": str(item["labels_path"]),
             }
@@ -250,6 +278,7 @@ def evaluate_recommender_model(
         context_filename=context_filename,
         label_filename=label_filename,
         feature_columns=tuple(feature_columns) if feature_columns is not None else None,
+        split_name="test",
     )
     if feature_columns is None:
         feature_columns = tuple(loaded_clients[0]["feature_columns"])
@@ -257,13 +286,10 @@ def evaluate_recommender_model(
     for item in loaded_clients:
         candidates = item["candidates"]
         pair_labels = item["pair_labels"]
-        scores = model.score_candidates(candidates, feature_columns)
-        score_frame = scores.reset_index().rename(columns={"index": "method_variant"})
-        variant_scores = (
-            score_frame.groupby("method_variant", sort=True)["score"].mean().to_dict()
-        )
-        metrics = evaluate_ranked_scores(
-            predicted_scores={str(key): float(value) for key, value in variant_scores.items()},
+        score_frame = candidates.loc[:, ["dataset_index", "method_variant"]].copy()
+        score_frame["score"] = model.score_candidates(candidates, feature_columns).to_numpy()
+        metrics = evaluate_grouped_ranked_scores(
+            candidate_scores=score_frame,
             pair_labels=pair_labels,
             top_k=top_k,
         )
@@ -271,12 +297,14 @@ def evaluate_recommender_model(
             "client_id": str(item["client_id"]),
             "candidate_count": int(len(candidates)),
             "pair_count": int(len(pair_labels)),
-            "variant_count": int(metrics.get("variant_count", 0)),
-            "pearson": float(metrics.get("pearson", 0.0)),
+            "instance_count": int(metrics.get("instance_count", 0)),
         }
-        for key, value in metrics.items():
-            if key.startswith("precision_at_"):
-                row[key] = float(value)
+        aggregate_metrics = metrics.get("aggregate", {})
+        if isinstance(aggregate_metrics, Mapping):
+            for key, value in aggregate_metrics.items():
+                if isinstance(value, (int, float)):
+                    row[key] = float(value)
+        row["instances"] = metrics.get("instances", [])
         client_metrics.append(row)
 
     aggregate = _aggregate_client_metrics(client_metrics)
@@ -306,6 +334,7 @@ def _load_client_recommender_inputs(
     context_filename: str,
     label_filename: str,
     feature_columns: tuple[str, ...] | None = None,
+    split_name: str | None = None,
 ) -> list[dict[str, Any]]:
     requested_clients = _split_selector(clients)
     context_root = run_artifact_dir / "clients"
@@ -324,6 +353,7 @@ def _load_client_recommender_inputs(
         client_id = client_dir.name
         context_path = client_dir / "recommender_context" / selection_id / context_filename
         labels_path = client_dir / "recommender_labels" / selection_id / persona / label_filename
+        metadata_path = client_dir / "recommender_labels" / selection_id / persona / "simulation_metadata.json"
         if not context_path.exists() or not labels_path.exists():
             if requested_clients is not None:
                 missing = context_path if not context_path.exists() else labels_path
@@ -331,6 +361,16 @@ def _load_client_recommender_inputs(
             continue
         candidates = pd.read_parquet(context_path)
         pair_labels = pd.read_parquet(labels_path)
+        split_metadata = _load_recommender_split_metadata(metadata_path)
+        selected_dataset_indices = _select_recommender_dataset_indices(
+            split_metadata=split_metadata,
+            split_name=split_name,
+        )
+        if selected_dataset_indices is not None:
+            candidates = _filter_frame_by_dataset_indices(candidates, selected_dataset_indices)
+            pair_labels = _filter_frame_by_dataset_indices(pair_labels, selected_dataset_indices)
+        if "split" in pair_labels.columns and split_name in {"train", "test"}:
+            pair_labels = pair_labels.loc[pair_labels["split"].astype(str) == split_name].copy()
         if candidates.empty or pair_labels.empty:
             continue
         if resolved_features is None:
@@ -350,6 +390,9 @@ def _load_client_recommender_inputs(
                 "pair_labels": pair_labels,
                 "data": data,
                 "feature_columns": resolved_features,
+                "split_name": split_name or "all",
+                "dataset_indices": tuple(sorted(int(value) for value in candidates["dataset_index"].unique())),
+                "split_metadata": split_metadata,
             }
         )
     if not loaded:
@@ -407,6 +450,38 @@ def _aggregate_client_metrics(clients: Sequence[Mapping[str, object]]) -> dict[s
             sums[key] = sums.get(key, 0.0) + float(value) * weight
             weights[key] = weights.get(key, 0.0) + weight
     return {key: sums[key] / weights[key] for key in sorted(sums) if weights.get(key, 0.0) > 0.0}
+
+
+def _load_recommender_split_metadata(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    instance_split = payload.get("instance_split")
+    return instance_split if isinstance(instance_split, dict) else None
+
+
+def _select_recommender_dataset_indices(
+    *,
+    split_metadata: Mapping[str, Any] | None,
+    split_name: str | None,
+) -> tuple[int, ...] | None:
+    if split_name not in {"train", "test"} or split_metadata is None:
+        return None
+    key = "train_dataset_indices" if split_name == "train" else "test_dataset_indices"
+    values = split_metadata.get(key)
+    if not isinstance(values, list) or not values:
+        return None
+    return tuple(sorted(int(value) for value in values))
+
+
+def _filter_frame_by_dataset_indices(
+    frame: pd.DataFrame,
+    dataset_indices: Sequence[int],
+) -> pd.DataFrame:
+    if "dataset_index" not in frame.columns:
+        return frame
+    allowed = {int(value) for value in dataset_indices}
+    return frame.loc[frame["dataset_index"].isin(allowed)].copy()
 
 
 def _split_selector(value: str) -> set[str] | None:

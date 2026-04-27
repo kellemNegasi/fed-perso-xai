@@ -132,11 +132,11 @@ def test_label_recommender_context_uses_client_stable_seeds_for_subset_reruns(tm
         context_dir.mkdir(parents=True)
         pd.DataFrame(
             {
-                "client_id": [client_id] * 3,
-                "dataset_index": [0, 0, 0],
-                "instance_id": ["row-0"] * 3,
-                "method_variant": ["a", "b", "c"],
-                "metric_quality_z": [0.2, 0.0, -0.2],
+                "client_id": [client_id] * 6,
+                "dataset_index": [0, 0, 0, 1, 1, 1],
+                "instance_id": ["row-0"] * 3 + ["row-1"] * 3,
+                "method_variant": ["a", "b", "c", "a", "b", "c"],
+                "metric_quality_z": [0.2, 0.0, -0.2, 0.5, 0.1, -0.4],
             }
         ).to_parquet(context_dir / "candidate_context.parquet", index=False)
 
@@ -175,6 +175,8 @@ def test_label_recommender_context_uses_client_stable_seeds_for_subset_reruns(tm
     second_labels = pd.read_parquet(first_labels_path)
     second_metadata = json.loads((client_dir / "simulation_metadata.json").read_text(encoding="utf-8"))
 
+    assert set(first_labels["split"]) == {"train", "test"}
     pd.testing.assert_frame_equal(first_labels, second_labels)
     assert first_metadata["seed"] == second_metadata["seed"]
     assert first_metadata["label_seed"] == second_metadata["label_seed"]
+    assert first_metadata["instance_split"] == second_metadata["instance_split"]

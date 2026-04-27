@@ -137,6 +137,59 @@ def evaluate_ranked_scores(
     return metrics
 
 
+def evaluate_grouped_ranked_scores(
+    *,
+    candidate_scores: pd.DataFrame,
+    pair_labels: pd.DataFrame,
+    top_k: Iterable[int] = (1, 3, 5),
+) -> dict[str, object]:
+    """Evaluate ranked candidate scores independently within each dataset_index."""
+
+    required_candidate_columns = {"dataset_index", "method_variant", "score"}
+    missing_candidate_columns = required_candidate_columns - set(candidate_scores.columns)
+    if missing_candidate_columns:
+        raise ValueError(
+            f"Candidate scores are missing required columns: {sorted(missing_candidate_columns)}"
+        )
+    if "dataset_index" not in pair_labels.columns:
+        raise ValueError("Pair labels are missing required column: ['dataset_index']")
+
+    instance_metrics: list[dict[str, object]] = []
+    for dataset_index, pair_group in pair_labels.groupby("dataset_index", sort=True, dropna=False):
+        candidate_group = candidate_scores.loc[candidate_scores["dataset_index"] == dataset_index]
+        if candidate_group.empty:
+            LOGGER.warning("Skipping evaluation for missing dataset_index=%s.", dataset_index)
+            continue
+        predicted_scores = (
+            candidate_group.groupby("method_variant", sort=True)["score"].mean().to_dict()
+        )
+        metrics = evaluate_ranked_scores(
+            predicted_scores={str(key): float(value) for key, value in predicted_scores.items()},
+            pair_labels=pair_group,
+            top_k=top_k,
+        )
+        instance_row: dict[str, object] = {
+            "dataset_index": int(dataset_index),
+            "candidate_count": int(candidate_group["method_variant"].astype(str).nunique()),
+            "pair_count": int(len(pair_group)),
+            "variant_count": int(metrics.get("variant_count", 0)),
+            "pearson": float(metrics.get("pearson", 0.0)),
+            "ground_truth_order": list(metrics.get("ground_truth_order", [])),
+            "predicted_order": list(metrics.get("predicted_order", [])),
+        }
+        for key, value in metrics.items():
+            if key.startswith("precision_at_"):
+                instance_row[key] = float(value)
+        instance_metrics.append(instance_row)
+
+    return {
+        "instance_count": int(len(instance_metrics)),
+        "pair_count": int(sum(int(item["pair_count"]) for item in instance_metrics)),
+        "aggregate": aggregate_client_metrics(instance_metrics),
+        "instances": instance_metrics,
+    }
+
+
 def aggregate_client_metrics(clients: Sequence[Mapping[str, object]]) -> dict[str, float]:
     """Average numeric client metrics, weighted by each client's labeled pair count."""
 

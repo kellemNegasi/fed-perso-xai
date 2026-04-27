@@ -107,6 +107,7 @@ echo "==> Labeling recommender context"
   --simulator "$SIMULATOR" \
   --clients "$CLIENTS" \
   --context-filename "$CONTEXT_FILENAME" \
+  --label-filename "$LABEL_FILENAME" \
   --seed "$PERSONA_SEED" \
   --label-seed "$LABEL_SEED"
 

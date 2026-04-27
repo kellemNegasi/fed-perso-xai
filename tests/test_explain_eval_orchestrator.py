@@ -683,6 +683,13 @@ def test_label_recommender_context_writes_client_pairwise_labels(
     assert set(labels["label"]).issubset({0, 1})
     assert set(labels["pair_1"]) == {"lime__kernel-1.5__samples-50"}
     assert set(labels["pair_2"]) == {"lime__kernel-2.0__samples-50"}
+    assert set(labels["split"]) == {"train", "test"}
+    split_dataset_indices = (
+        metadata["instance_split"]["train_dataset_indices"]
+        + metadata["instance_split"]["test_dataset_indices"]
+    )
+    assert len(split_dataset_indices) == 2
+    assert sorted(labels["dataset_index"].unique().tolist()) == sorted(split_dataset_indices)
     assert "compactness_sparsity" in metadata["simulation"]["active_metrics"]
 
 
@@ -925,6 +932,10 @@ def test_explain_eval_plan_clis_are_wired_to_python_planner(
             "11",
             "--label-seed",
             "12",
+            "--instance-test-size",
+            "0.25",
+            "--instance-split-seed",
+            "13",
             "--concentration-c",
             "5",
         ],
@@ -939,4 +950,6 @@ def test_explain_eval_plan_clis_are_wired_to_python_planner(
     assert calls["label_context"]["label_filename"] == "custom_pairwise_labels.parquet"
     assert calls["label_context"]["seed"] == 11
     assert calls["label_context"]["label_seed"] == 12
+    assert calls["label_context"]["instance_test_size"] == 0.25
+    assert calls["label_context"]["instance_split_seed"] == 13
     assert calls["label_context"]["concentration_c"] == 5.0
