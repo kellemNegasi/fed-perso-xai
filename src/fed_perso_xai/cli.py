@@ -40,7 +40,11 @@ from fed_perso_xai.orchestration.training import (
     compare_centralized_and_federated,
     train_centralized_from_prepared,
 )
-from fed_perso_xai.recommender import label_recommender_context
+from fed_perso_xai.recommender import (
+    DEFAULT_RECOMMENDER_TYPE,
+    SUPPORTED_RECOMMENDER_TYPES,
+    label_recommender_context,
+)
 from fed_perso_xai.utils.config import (
     ArtifactPaths,
     CentralizedTrainingConfig,
@@ -304,6 +308,12 @@ def build_parser() -> argparse.ArgumentParser:
     recommender_train_parser.add_argument("--clients", default="all")
     recommender_train_parser.add_argument("--context-filename", default="candidate_context.parquet")
     recommender_train_parser.add_argument("--label-filename", default="pairwise_labels.parquet")
+    recommender_train_parser.add_argument(
+        "--recommender",
+        dest="recommender_type",
+        choices=SUPPORTED_RECOMMENDER_TYPES,
+        default=DEFAULT_RECOMMENDER_TYPE,
+    )
     recommender_train_parser.add_argument("--rounds", type=int, default=10)
     recommender_train_parser.add_argument("--epochs", type=int, default=5)
     recommender_train_parser.add_argument("--batch-size", type=int, default=64)
@@ -345,6 +355,12 @@ def build_parser() -> argparse.ArgumentParser:
     recommender_eval_parser.add_argument("--clients", default="all")
     recommender_eval_parser.add_argument("--context-filename", default="candidate_context.parquet")
     recommender_eval_parser.add_argument("--label-filename", default="pairwise_labels.parquet")
+    recommender_eval_parser.add_argument(
+        "--recommender",
+        dest="recommender_type",
+        choices=SUPPORTED_RECOMMENDER_TYPES,
+        default=DEFAULT_RECOMMENDER_TYPE,
+    )
     recommender_eval_parser.add_argument("--model-path", type=Path)
     recommender_eval_parser.add_argument("--top-k", default="1,3,5")
     recommender_eval_parser.add_argument("--output", type=Path)
@@ -671,6 +687,7 @@ def main() -> None:
                 run_id=args.run_id,
                 selection_id=args.selection_id,
                 persona=args.persona,
+                recommender_type=args.recommender_type,
                 paths=_build_artifact_paths(args),
                 rounds=args.rounds,
                 strategy_name=args.strategy,
@@ -717,6 +734,7 @@ def main() -> None:
             run_id=args.run_id,
             selection_id=args.selection_id,
             persona=args.persona,
+            recommender_type=args.recommender_type,
             model_path=args.model_path,
             clients=args.clients,
             context_filename=args.context_filename,

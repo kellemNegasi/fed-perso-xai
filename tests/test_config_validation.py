@@ -9,6 +9,7 @@ from fed_perso_xai.utils.config import (
     LogisticRegressionConfig,
     PartitionConfig,
     PreprocessingConfig,
+    RecommenderFederatedTrainingConfig,
 )
 
 
@@ -56,6 +57,16 @@ def test_federated_training_config_rejects_invalid_secure_aggregation_values() -
             dataset_name="adult_income",
             secure_reconstruction_threshold=2,
             secure_privacy_threshold=2,
+        )
+
+
+def test_recommender_training_config_rejects_unknown_recommender_type() -> None:
+    with pytest.raises(ValueError, match="Unsupported recommender_type"):
+        RecommenderFederatedTrainingConfig(
+            run_id="unit-run",
+            selection_id="selection-0",
+            persona="lay",
+            recommender_type="missing",
         )
 
 

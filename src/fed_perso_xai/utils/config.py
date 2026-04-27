@@ -7,6 +7,20 @@ from pathlib import Path
 from typing import Any
 
 
+DEFAULT_RECOMMENDER_TYPE = "svm_rank"
+_SUPPORTED_RECOMMENDER_TYPES = ("svm_rank", "pairwise_logistic")
+
+
+def _normalize_recommender_type(recommender_type: str) -> str:
+    normalized = str(recommender_type).strip().lower()
+    if normalized not in _SUPPORTED_RECOMMENDER_TYPES:
+        supported = ", ".join(_SUPPORTED_RECOMMENDER_TYPES)
+        raise ValueError(
+            f"Unsupported recommender_type {recommender_type!r}. Supported values: {supported}."
+        )
+    return normalized
+
+
 @dataclass(frozen=True)
 class ArtifactPaths:
     """Filesystem roots for prepared data and experiment outputs."""
@@ -211,6 +225,7 @@ class RecommenderFederatedTrainingConfig:
     run_id: str
     selection_id: str
     persona: str
+    recommender_type: str = DEFAULT_RECOMMENDER_TYPE
     paths: ArtifactPaths = field(default_factory=ArtifactPaths)
     rounds: int = 10
     strategy_name: str = "fedavg"
@@ -244,6 +259,7 @@ class RecommenderFederatedTrainingConfig:
         _require_non_empty_string("run_id", self.run_id)
         _require_non_empty_string("selection_id", self.selection_id)
         _require_non_empty_string("persona", self.persona)
+        _normalize_recommender_type(self.recommender_type)
         _require_integer_at_least("rounds", self.rounds, minimum=1)
         _require_non_empty_string("strategy_name", self.strategy_name)
         _require_fraction_or_one("fit_fraction", self.fit_fraction)
@@ -312,6 +328,7 @@ class RecommenderFederatedTrainingConfig:
             run_id=self.run_id,
             selection_id=self.selection_id,
             persona=self.persona,
+            recommender_type=self.recommender_type,
             paths=self.paths,
             rounds=self.rounds,
             strategy_name=self.strategy_name,

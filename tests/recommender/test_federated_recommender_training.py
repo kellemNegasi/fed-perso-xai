@@ -394,9 +394,95 @@ def test_train_federated_recommender_writes_model_metadata_and_evaluation(tmp_pa
     assert artifacts.feature_metadata_path.exists()
     assert artifacts.evaluation_summary_path.exists()
     assert metadata["status"] == "completed"
+    assert metadata["recommender_type"] == "svm_rank"
     assert metadata["feature_columns"] == ["metric_quality_z"]
     assert metadata["raw_pair_count"] == 2
     assert metadata["eval_raw_pair_count"] == 2
+
+    model_metadata = json.loads(artifacts.model_metadata_path.read_text(encoding="utf-8"))
+    assert model_metadata["recommender_type"] == "svm_rank"
+    assert model_metadata["model_type"] == "svm_rank_recommender"
+
+    evaluation = json.loads(artifacts.evaluation_summary_path.read_text(encoding="utf-8"))
+    assert evaluation["aggregate"]["precision_at_1"] == pytest.approx(1.0)
+    assert evaluation["aggregate"]["pearson"] == pytest.approx(1.0)
+
+
+@pytest.mark.skipif(not FLOWER_AVAILABLE, reason="Flower is required for recommender FL tests.")
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_train_federated_recommender_supports_explicit_pairwise_logistic_selection(tmp_path) -> None:
+    paths = _paths(tmp_path)
+    run_id = "unit-run"
+    selection = "test__max-2__seed-9"
+    persona = "lay"
+    run_dir = paths.federated_root / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_metadata.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+
+    for client_idx in range(2):
+        client_dir = run_dir / "clients" / f"client_{client_idx:03d}"
+        context_dir = client_dir / "recommender_context" / selection
+        label_dir = client_dir / "recommender_labels" / selection / persona
+        context_dir.mkdir(parents=True)
+        label_dir.mkdir(parents=True)
+        candidates = pd.DataFrame(
+            {
+                "client_id": [f"client_{client_idx:03d}"] * 4,
+                "dataset_index": [0, 0, 1, 1],
+                "instance_id": ["i0", "i0", "i1", "i1"],
+                "method_variant": ["a", "b", "a", "b"],
+                "metric_quality_z": [2.0, -2.0, 1.5, -1.5],
+                "candidate_index_within_instance": [0, 1, 0, 1],
+            }
+        )
+        labels = pd.DataFrame(
+            {
+                "client_id": [f"client_{client_idx:03d}"] * 2,
+                "dataset_index": [0, 1],
+                "pair_1": ["a", "a"],
+                "pair_2": ["b", "b"],
+                "label": [0, 0],
+                "split": ["train", "test"],
+            }
+        )
+        candidates.to_parquet(context_dir / "candidate_context.parquet", index=False)
+        labels.to_parquet(label_dir / "pairwise_labels.parquet", index=False)
+        (label_dir / "simulation_metadata.json").write_text(
+            json.dumps(
+                {
+                    "instance_split": {
+                        "train_dataset_indices": [0],
+                        "test_dataset_indices": [1],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    artifacts, metadata = train_federated_recommender(
+        RecommenderFederatedTrainingConfig(
+            run_id=run_id,
+            selection_id=selection,
+            persona=persona,
+            recommender_type="pairwise_logistic",
+            paths=paths,
+            rounds=2,
+            epochs=5,
+            batch_size=2,
+            learning_rate=0.2,
+            simulation_backend="debug-sequential",
+            min_available_clients=2,
+            top_k=(1, 2),
+        )
+    )
+
+    assert artifacts.model_artifact_path.exists()
+    assert metadata["status"] == "completed"
+    assert metadata["recommender_type"] == "pairwise_logistic"
+
+    model_metadata = json.loads(artifacts.model_metadata_path.read_text(encoding="utf-8"))
+    assert model_metadata["recommender_type"] == "pairwise_logistic"
+    assert model_metadata["model_type"] == "pairwise_logistic_recommender"
 
     evaluation = json.loads(artifacts.evaluation_summary_path.read_text(encoding="utf-8"))
     assert evaluation["aggregate"]["precision_at_1"] == pytest.approx(1.0)

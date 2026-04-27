@@ -18,12 +18,14 @@ from fed_perso_xai.fl.client import RecommenderClientData
 from fed_perso_xai.fl.recommender_simulation import run_federated_recommender_training
 from fed_perso_xai.orchestration.run_artifacts import resolve_federated_run_context
 from fed_perso_xai.recommender import (
+    DEFAULT_RECOMMENDER_TYPE,
     PairwiseLogisticConfig,
-    PairwiseLogisticRecommender,
     build_pairwise_recommender_data,
+    create_recommender,
     evaluate_grouped_ranked_scores,
     infer_recommender_feature_columns,
-    load_pairwise_logistic_recommender,
+    load_recommender,
+    recommender_artifact_model_type,
 )
 from fed_perso_xai.utils.config import ArtifactPaths, RecommenderFederatedTrainingConfig
 from fed_perso_xai.utils.provenance import current_utc_timestamp
@@ -57,7 +59,12 @@ def train_federated_recommender(
     _require_safe_segment(config.context_filename, label="context_filename")
     _require_safe_segment(config.label_filename, label="label_filename")
     run_context = resolve_federated_run_context(paths=config.paths, run_id=config.run_id)
-    run_dir = _recommender_training_dir(run_context.run_artifact_dir, config.selection_id, config.persona)
+    run_dir = _recommender_training_dir(
+        run_context.run_artifact_dir,
+        config.selection_id,
+        config.persona,
+        recommender_type=config.recommender_type,
+    )
     artifacts = _build_artifacts(run_dir)
     if artifacts.completion_marker_path.exists() and not force:
         metadata = json.loads(artifacts.training_metadata_path.read_text(encoding="utf-8"))
@@ -129,7 +136,8 @@ def train_federated_recommender(
     )
     completed_at = current_utc_timestamp()
 
-    model = PairwiseLogisticRecommender.from_config(
+    model = create_recommender(
+        recommender_type=config.recommender_type,
         n_features=len(feature_columns),
         config=model_config,
     )
@@ -163,6 +171,7 @@ def train_federated_recommender(
             top_k=config.top_k,
             paths=config.paths,
             output_path=artifacts.evaluation_summary_path,
+            recommender_type=config.recommender_type,
         )
     else:
         evaluation = {
@@ -182,11 +191,12 @@ def train_federated_recommender(
 
     model_metadata = {
         "artifact_type": "federated_pairwise_recommender_model",
-        "artifact_version": "pairwise_logistic_recommender_v1",
+        "artifact_version": "federated_pairwise_recommender_v2",
         "source_predictive_run_id": config.run_id,
         "selection_id": config.selection_id,
         "persona": config.persona,
-        "model_type": "pairwise_logistic_recommender",
+        "recommender_type": config.recommender_type,
+        "model_type": recommender_artifact_model_type(config.recommender_type),
         "model_artifact_path": str(artifacts.model_artifact_path.relative_to(run_dir)),
         "feature_metadata_path": str(artifacts.feature_metadata_path.relative_to(run_dir)),
         "training_metadata_path": str(artifacts.training_metadata_path.relative_to(run_dir)),
@@ -208,6 +218,7 @@ def train_federated_recommender(
         "source_predictive_run_id": config.run_id,
         "selection_id": config.selection_id,
         "persona": config.persona,
+        "recommender_type": config.recommender_type,
         "started_at": started_at,
         "completed_at": completed_at,
         "rounds_requested": int(config.rounds),
@@ -267,6 +278,7 @@ def evaluate_recommender_model(
     run_id: str,
     selection_id: str,
     persona: str,
+    recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
     model_path: Path | None = None,
     feature_columns: Sequence[str] | None = None,
     clients: str = "all",
@@ -286,11 +298,16 @@ def evaluate_recommender_model(
     artifact_paths = paths or ArtifactPaths()
     run_context = resolve_federated_run_context(paths=artifact_paths, run_id=run_id)
     resolved_model_path = model_path or (
-        _recommender_training_dir(run_context.run_artifact_dir, selection_id, persona)
+        _recommender_training_dir(
+            run_context.run_artifact_dir,
+            selection_id,
+            persona,
+            recommender_type=recommender_type,
+        )
         / "model"
         / "global_recommender.npz"
     )
-    model = load_pairwise_logistic_recommender(resolved_model_path)
+    model = load_recommender(resolved_model_path)
     if feature_columns is None:
         feature_metadata_path = resolved_model_path.parent.parent / "feature_metadata.json"
         if feature_metadata_path.exists():
@@ -340,6 +357,7 @@ def evaluate_recommender_model(
         "run_id": run_id,
         "selection_id": selection_id,
         "persona": persona,
+        "recommender_type": recommender_type,
         "model_path": str(resolved_model_path),
         "feature_count": int(len(feature_columns)),
         "client_count": int(len(client_metrics)),
@@ -446,8 +464,20 @@ def _build_artifacts(run_dir: Path) -> RecommenderTrainingArtifacts:
     )
 
 
-def _recommender_training_dir(run_artifact_dir: Path, selection_id: str, persona: str) -> Path:
-    return run_artifact_dir / "recommender_training" / selection_id / persona / "pairwise_logistic_fedavg"
+def _recommender_training_dir(
+    run_artifact_dir: Path,
+    selection_id: str,
+    persona: str,
+    *,
+    recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
+) -> Path:
+    return (
+        run_artifact_dir
+        / "recommender_training"
+        / selection_id
+        / persona
+        / f"{recommender_type}_fedavg"
+    )
 
 
 def _write_training_history_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:

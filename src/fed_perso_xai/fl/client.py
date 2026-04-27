@@ -21,7 +21,11 @@ except ImportError:  # pragma: no cover - exercised via optional dependency path
 
 from fed_perso_xai.evaluation.metrics import compute_classification_metrics
 from fed_perso_xai.models import create_model
-from fed_perso_xai.recommender import PairwiseLogisticConfig, PairwiseLogisticRecommender
+from fed_perso_xai.recommender import (
+    DEFAULT_RECOMMENDER_TYPE,
+    PairwiseLogisticConfig,
+    create_recommender,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -193,10 +197,12 @@ if fl is not None:
             data: RecommenderClientData,
             model_config: PairwiseLogisticConfig,
             seed: int,
+            recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
         ) -> None:
             self.data = data
             self.seed = int(seed)
-            self.model = PairwiseLogisticRecommender.from_config(
+            self.model = create_recommender(
+                recommender_type=recommender_type,
                 n_features=data.X_train.shape[1],
                 config=model_config,
             )
@@ -307,6 +313,7 @@ else:
             data: RecommenderClientData,
             model_config: PairwiseLogisticConfig,
             seed: int,
+            recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
         ) -> None:
             raise ImportError(FLOWER_IMPORT_ERROR_MESSAGE)
 

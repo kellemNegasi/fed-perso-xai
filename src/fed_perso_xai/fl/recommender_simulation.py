@@ -50,7 +50,10 @@ def run_federated_recommender_training(
         int(sum(dataset.y_train.shape[0] for dataset in client_datasets)),
         int(sum(dataset.y_eval.shape[0] for dataset in client_datasets)),
     )
-    initial_parameters = initialize_recommender_parameters(client_datasets[0].X_train.shape[1])
+    initial_parameters = initialize_recommender_parameters(
+        client_datasets[0].X_train.shape[1],
+        recommender_type=config.recommender_type,
+    )
     recorder = FederatedRunRecorder(backend=runtime_plan.resolved_backend)
     factory = strategy_factory or create_strategy_factory(
         runtime_config.strategy_name,
@@ -164,6 +167,7 @@ def _run_flower_recommender_simulation(
             data=data_by_id[partition_id],
             model_config=model_config,
             seed=config.seed,
+            recommender_type=config.recommender_type,
         )
         return client.to_client()
 
@@ -209,6 +213,7 @@ def _run_debug_sequential_recommender_runtime(
             data=dataset,
             model_config=model_config,
             seed=config.seed,
+            recommender_type=config.recommender_type,
         )
         for dataset in client_datasets
     ]
