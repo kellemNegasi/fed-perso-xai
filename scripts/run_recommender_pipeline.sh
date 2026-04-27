@@ -27,6 +27,14 @@ Environment variables:
   MIN_AVAILABLE_CLIENTS=2               Minimum clients for fit/eval.
   SIMULATION_BACKEND=auto               auto, ray, debug-sequential, sequential_fallback.
   DEBUG_FALLBACK_ON_ERROR=0             Pass --debug-fallback-on-error to training.
+  SKIP_LABELING=0                       Skip label-recommender-context when set to 1.
+  SECURE_AGGREGATION=0                  Pass --secure-aggregation to training when set to 1.
+  SECURE_NUM_HELPERS=5                  Secure aggregation helper count.
+  SECURE_PRIVACY_THRESHOLD=2            Secure aggregation privacy threshold.
+  SECURE_RECONSTRUCTION_THRESHOLD=      Optional secure aggregation reconstruction threshold.
+  SECURE_FIELD_MODULUS=2147483647       Secure aggregation field modulus.
+  SECURE_QUANTIZATION_SCALE=65536       Secure aggregation quantization scale.
+  SECURE_SEED=0                         Secure aggregation RNG seed.
   TOP_K=1,3,5                           Comma-separated precision@k cutoffs.
   FORCE_TRAINING=0                      Pass --force to train-recommender-federated.
   EVAL_OUTPUT=                          Optional path for evaluate-recommender JSON output.
@@ -69,6 +77,14 @@ EVALUATE_FRACTION="${EVALUATE_FRACTION:-1.0}"
 MIN_AVAILABLE_CLIENTS="${MIN_AVAILABLE_CLIENTS:-2}"
 SIMULATION_BACKEND="${SIMULATION_BACKEND:-auto}"
 DEBUG_FALLBACK_ON_ERROR="${DEBUG_FALLBACK_ON_ERROR:-0}"
+SKIP_LABELING="${SKIP_LABELING:-1}"
+SECURE_AGGREGATION="${SECURE_AGGREGATION:-0}"
+SECURE_NUM_HELPERS="${SECURE_NUM_HELPERS:-5}"
+SECURE_PRIVACY_THRESHOLD="${SECURE_PRIVACY_THRESHOLD:-2}"
+SECURE_RECONSTRUCTION_THRESHOLD="${SECURE_RECONSTRUCTION_THRESHOLD:-}"
+SECURE_FIELD_MODULUS="${SECURE_FIELD_MODULUS:-2147483647}"
+SECURE_QUANTIZATION_SCALE="${SECURE_QUANTIZATION_SCALE:-65536}"
+SECURE_SEED="${SECURE_SEED:-0}"
 TOP_K="${TOP_K:-1,3,5}"
 FORCE_TRAINING="${FORCE_TRAINING:-0}"
 EVAL_OUTPUT="${EVAL_OUTPUT:-}"
@@ -93,23 +109,38 @@ fi
 if [[ "$FORCE_TRAINING" == "1" ]]; then
   TRAIN_EXTRA+=(--force)
 fi
+if [[ "$SECURE_AGGREGATION" == "1" ]]; then
+  TRAIN_EXTRA+=(--secure-aggregation)
+fi
+TRAIN_EXTRA+=(--secure-num-helpers "$SECURE_NUM_HELPERS")
+TRAIN_EXTRA+=(--secure-privacy-threshold "$SECURE_PRIVACY_THRESHOLD")
+if [[ -n "$SECURE_RECONSTRUCTION_THRESHOLD" ]]; then
+  TRAIN_EXTRA+=(--secure-reconstruction-threshold "$SECURE_RECONSTRUCTION_THRESHOLD")
+fi
+TRAIN_EXTRA+=(--secure-field-modulus "$SECURE_FIELD_MODULUS")
+TRAIN_EXTRA+=(--secure-quantization-scale "$SECURE_QUANTIZATION_SCALE")
+TRAIN_EXTRA+=(--secure-seed "$SECURE_SEED")
 
 EVAL_EXTRA=()
 if [[ -n "$EVAL_OUTPUT" ]]; then
   EVAL_EXTRA+=(--output "$EVAL_OUTPUT")
 fi
 
-echo "==> Labeling recommender context"
-"$PYTHON" -m fed_perso_xai label-recommender-context \
-  --run-id "$RUN_ID" \
-  --selection "$SELECTION_ID" \
-  --persona "$PERSONA" \
-  --simulator "$SIMULATOR" \
-  --clients "$CLIENTS" \
-  --context-filename "$CONTEXT_FILENAME" \
-  --label-filename "$LABEL_FILENAME" \
-  --seed "$PERSONA_SEED" \
-  --label-seed "$LABEL_SEED"
+if [[ "$SKIP_LABELING" == "1" ]]; then
+  echo "==> Skipping recommender labeling"
+else
+  echo "==> Labeling recommender context"
+  "$PYTHON" -m fed_perso_xai label-recommender-context \
+    --run-id "$RUN_ID" \
+    --selection "$SELECTION_ID" \
+    --persona "$PERSONA" \
+    --simulator "$SIMULATOR" \
+    --clients "$CLIENTS" \
+    --context-filename "$CONTEXT_FILENAME" \
+    --label-filename "$LABEL_FILENAME" \
+    --seed "$PERSONA_SEED" \
+    --label-seed "$LABEL_SEED"
+fi
 
 echo "==> Training federated recommender"
 "$PYTHON" -m fed_perso_xai train-recommender-federated \
