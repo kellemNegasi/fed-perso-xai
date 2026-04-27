@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import logging
 import numpy as np
 
 FLOWER_IMPORT_ERROR_MESSAGE = (
@@ -21,6 +22,8 @@ except ImportError:  # pragma: no cover - exercised via optional dependency path
 from fed_perso_xai.evaluation.metrics import compute_classification_metrics
 from fed_perso_xai.models import create_model
 from fed_perso_xai.recommender import PairwiseLogisticConfig, PairwiseLogisticRecommender
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -206,6 +209,11 @@ if fl is not None:
             parameters: list[np.ndarray],
             config: dict[str, Any],
         ) -> tuple[list[np.ndarray], int, dict[str, Any]]:
+            LOGGER.info(
+                "Recommender fit start client=%s train_pairs=%s",
+                self.data.client_name,
+                int(self.data.y_train.shape[0]),
+            )
             merged_parameters = apply_shared_parameter_payload(
                 self.model.get_parameters(),
                 parameters,
@@ -226,6 +234,12 @@ if fl is not None:
                     str(index) for index in shared_payload.shared_parameter_indices
                 ),
             }
+            LOGGER.info(
+                "Recommender fit complete client=%s train_pairs=%s train_loss=%.6f",
+                self.data.client_name,
+                int(self.data.y_train.shape[0]),
+                float(train_loss),
+            )
             return (
                 shared_payload.shared_parameters,
                 int(self.data.y_train.shape[0]),
@@ -237,6 +251,11 @@ if fl is not None:
             parameters: list[np.ndarray],
             config: dict[str, Any],
         ) -> tuple[float, int, dict[str, Any]]:
+            LOGGER.info(
+                "Recommender eval start client=%s eval_pairs=%s",
+                self.data.client_name,
+                int(self.data.y_eval.shape[0]),
+            )
             merged_parameters = apply_shared_parameter_payload(
                 self.model.get_parameters(),
                 parameters,
@@ -249,6 +268,13 @@ if fl is not None:
                 "client_id": self.data.client_name,
                 "pairwise_accuracy": accuracy,
             }
+            LOGGER.info(
+                "Recommender eval complete client=%s eval_pairs=%s eval_loss=%.6f pairwise_accuracy=%.6f",
+                self.data.client_name,
+                int(self.data.y_eval.shape[0]),
+                float(loss),
+                accuracy,
+            )
             return float(loss), int(self.data.y_eval.shape[0]), metrics
 
 

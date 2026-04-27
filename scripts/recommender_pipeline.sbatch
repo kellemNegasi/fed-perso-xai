@@ -14,8 +14,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --partition=main
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=64G
 #SBATCH --time=16:00:00
 
 # Environment setup ------------------------------------------------------------
@@ -41,13 +41,16 @@ echo "  host=${HOSTNAME}"
 echo "  pwd=$(pwd)"
 
 # Change only this block when reusing the script for another target.
+# With the current recommender runtime, each Ray client reserves 1 CPU.
+# Setting cpus-per-task to the number of clients allows all clients to run concurrently.
 TARGET_CMD=(
   env
   FORCE_TRAINING=1
   CONTEXT_FILENAME=candidate_context.parquet
+  TRAIN_BATCH_SIZE=1024
   SIMULATION_BACKEND=auto
   scripts/run_recommender_pipeline.sh
-  federated-training-adult_income-20260425t192946577949+0000-logistic_regression-10clients-alpha1.0-seed42-dba03a50b07b
+  federated-training-adult_income-20260427t063710289874+0000-logistic_regression-15clients-alpha0.3-seed42-536f2cd41ed2
   test__max-20__seed-42
   lay
 )

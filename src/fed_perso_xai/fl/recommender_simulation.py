@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import logging
 import numpy as np
 
 from fed_perso_xai.fl.client import FederatedPairwiseRecommenderClient, RecommenderClientData
@@ -22,6 +23,8 @@ from fed_perso_xai.fl.strategy import FederatedRunRecorder, StrategyFactory, cre
 from fed_perso_xai.recommender import PairwiseLogisticConfig, initialize_recommender_parameters
 from fed_perso_xai.utils.config import RecommenderFederatedTrainingConfig
 
+LOGGER = logging.getLogger(__name__)
+
 
 def run_federated_recommender_training(
     *,
@@ -38,6 +41,15 @@ def run_federated_recommender_training(
 
     runtime_config = config.with_num_clients(len(client_datasets))
     runtime_plan = plan_flower_runtime(runtime_config)  # type: ignore[arg-type]
+    LOGGER.info(
+        "Starting federated recommender training clients=%s rounds=%s backend_requested=%s backend_planned=%s total_train_pairs=%s total_eval_pairs=%s",
+        len(client_datasets),
+        runtime_config.rounds,
+        runtime_plan.requested_backend,
+        runtime_plan.resolved_backend,
+        int(sum(dataset.y_train.shape[0] for dataset in client_datasets)),
+        int(sum(dataset.y_eval.shape[0] for dataset in client_datasets)),
+    )
     initial_parameters = initialize_recommender_parameters(client_datasets[0].X_train.shape[1])
     recorder = FederatedRunRecorder(backend=runtime_plan.resolved_backend)
     factory = strategy_factory or create_strategy_factory(
@@ -62,6 +74,11 @@ def run_federated_recommender_training(
         "warnings": runtime_plan.warnings + runtime_warnings,
         "rounds_completed": len(recorder.round_history),
     }
+    LOGGER.info(
+        "Completed federated recommender training rounds_completed=%s actual_backend=%s",
+        len(recorder.round_history),
+        actual_backend,
+    )
     return SimulationArtifacts(
         final_parameters=[np.asarray(parameter, dtype=np.float64).copy() for parameter in final_parameters],
         round_history=[dict(item) for item in recorder.round_history],
