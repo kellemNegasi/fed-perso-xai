@@ -22,6 +22,7 @@ Environment variables:
   TRAIN_LEARNING_RATE=0.05              Local recommender learning rate.
   TRAIN_L2_REGULARIZATION=0.0           Local recommender L2 regularization.
   TRAIN_SEED=42                         Federated recommender training seed.
+  RECOMMENDER_TYPE=svm_rank             Recommender backend: svm_rank or pairwise_logistic.
   FIT_FRACTION=1.0                      Fraction of clients sampled for fit.
   EVALUATE_FRACTION=1.0                 Fraction of clients sampled for eval.
   MIN_AVAILABLE_CLIENTS=2               Minimum clients for fit/eval.
@@ -35,6 +36,10 @@ Environment variables:
   SECURE_FIELD_MODULUS=2147483647       Secure aggregation field modulus.
   SECURE_QUANTIZATION_SCALE=65536       Secure aggregation quantization scale.
   SECURE_SEED=0                         Secure aggregation RNG seed.
+  CLUSTERED=0                           Pass --clustered to training when set to 1.
+  CLUSTERING_METHOD=secure_kmeans       Clustered training method.
+  CLUSTERING_K=3                        Number of recommender clusters when clustering is enabled.
+  CLUSTERING_PCA_COMPONENTS=8           Random projection components for clustered training.
   TOP_K=1,3,5                           Comma-separated precision@k cutoffs.
   FORCE_TRAINING=0                      Pass --force to train-recommender-federated.
   EVAL_OUTPUT=                          Optional path for evaluate-recommender JSON output.
@@ -72,21 +77,26 @@ TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-64}"
 TRAIN_LEARNING_RATE="${TRAIN_LEARNING_RATE:-0.05}"
 TRAIN_L2_REGULARIZATION="${TRAIN_L2_REGULARIZATION:-0.0}"
 TRAIN_SEED="${TRAIN_SEED:-42}"
+RECOMMENDER_TYPE="${RECOMMENDER_TYPE:-svm_rank}"
 FIT_FRACTION="${FIT_FRACTION:-1.0}"
 EVALUATE_FRACTION="${EVALUATE_FRACTION:-1.0}"
 MIN_AVAILABLE_CLIENTS="${MIN_AVAILABLE_CLIENTS:-2}"
 SIMULATION_BACKEND="${SIMULATION_BACKEND:-auto}"
 DEBUG_FALLBACK_ON_ERROR="${DEBUG_FALLBACK_ON_ERROR:-0}"
-SKIP_LABELING="${SKIP_LABELING:-0}"
-SECURE_AGGREGATION="${SECURE_AGGREGATION:-0}"
+SKIP_LABELING="${SKIP_LABELING:-1}"
+SECURE_AGGREGATION="${SECURE_AGGREGATION:-1}"
 SECURE_NUM_HELPERS="${SECURE_NUM_HELPERS:-5}"
 SECURE_PRIVACY_THRESHOLD="${SECURE_PRIVACY_THRESHOLD:-2}"
 SECURE_RECONSTRUCTION_THRESHOLD="${SECURE_RECONSTRUCTION_THRESHOLD:-}"
 SECURE_FIELD_MODULUS="${SECURE_FIELD_MODULUS:-2147483647}"
 SECURE_QUANTIZATION_SCALE="${SECURE_QUANTIZATION_SCALE:-65536}"
 SECURE_SEED="${SECURE_SEED:-0}"
+CLUSTERED="${CLUSTERED:-0}"
+CLUSTERING_METHOD="${CLUSTERING_METHOD:-secure_kmeans}"
+CLUSTERING_K="${CLUSTERING_K:-3}"
+CLUSTERING_PCA_COMPONENTS="${CLUSTERING_PCA_COMPONENTS:-8}"
 TOP_K="${TOP_K:-1,3,5}"
-FORCE_TRAINING="${FORCE_TRAINING:-0}"
+FORCE_TRAINING="${FORCE_TRAINING:-1}"
 EVAL_OUTPUT="${EVAL_OUTPUT:-}"
 
 if [[ -z "${PYTHON:-}" ]]; then
@@ -112,6 +122,9 @@ fi
 if [[ "$SECURE_AGGREGATION" == "1" ]]; then
   TRAIN_EXTRA+=(--secure-aggregation)
 fi
+if [[ "$CLUSTERED" == "1" ]]; then
+  TRAIN_EXTRA+=(--clustered)
+fi
 TRAIN_EXTRA+=(--secure-num-helpers "$SECURE_NUM_HELPERS")
 TRAIN_EXTRA+=(--secure-privacy-threshold "$SECURE_PRIVACY_THRESHOLD")
 if [[ -n "$SECURE_RECONSTRUCTION_THRESHOLD" ]]; then
@@ -120,6 +133,9 @@ fi
 TRAIN_EXTRA+=(--secure-field-modulus "$SECURE_FIELD_MODULUS")
 TRAIN_EXTRA+=(--secure-quantization-scale "$SECURE_QUANTIZATION_SCALE")
 TRAIN_EXTRA+=(--secure-seed "$SECURE_SEED")
+TRAIN_EXTRA+=(--clustering-method "$CLUSTERING_METHOD")
+TRAIN_EXTRA+=(--clustering-k "$CLUSTERING_K")
+TRAIN_EXTRA+=(--clustering-pca-components "$CLUSTERING_PCA_COMPONENTS")
 
 EVAL_EXTRA=()
 if [[ -n "$EVAL_OUTPUT" ]]; then
@@ -150,6 +166,7 @@ echo "==> Training federated recommender"
   --clients "$CLIENTS" \
   --context-filename "$CONTEXT_FILENAME" \
   --label-filename "$LABEL_FILENAME" \
+  --recommender "$RECOMMENDER_TYPE" \
   --rounds "$TRAIN_ROUNDS" \
   --epochs "$TRAIN_EPOCHS" \
   --batch-size "$TRAIN_BATCH_SIZE" \
@@ -171,6 +188,7 @@ echo "==> Evaluating federated recommender"
   --clients "$CLIENTS" \
   --context-filename "$CONTEXT_FILENAME" \
   --label-filename "$LABEL_FILENAME" \
+  --recommender "$RECOMMENDER_TYPE" \
   --top-k "$TOP_K" \
   "${EVAL_EXTRA[@]}"
 

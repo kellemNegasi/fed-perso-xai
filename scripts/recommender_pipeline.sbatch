@@ -44,15 +44,18 @@ echo "  pwd=$(pwd)"
 # With the current recommender runtime, each Ray client reserves 1 CPU.
 # Setting cpus-per-task to the number of clients allows all clients to run concurrently.
 # Set SKIP_LABELING=1 here when pairwise labels already exist and should be reused.
-# Secure aggregation is toggled here via environment variables passed to the wrapper.
+# Secure aggregation and clustered training are toggled here via environment variables
+# passed to the wrapper.
 TARGET_CMD=(
   env
   FORCE_TRAINING=1
-  SKIP_LABELING=0
+  SKIP_LABELING=1
   CONTEXT_FILENAME=candidate_context.parquet
+  RECOMMENDER_TYPE=svm_rank
   TRAIN_BATCH_SIZE=2048
   SIMULATION_BACKEND=auto
-  SECURE_AGGREGATION=1
+  SECURE_AGGREGATION=0
+  CLUSTERED=0
   SECURE_NUM_HELPERS=10
   SECURE_PRIVACY_THRESHOLD=2
   SECURE_RECONSTRUCTION_THRESHOLD=3
@@ -60,7 +63,7 @@ TARGET_CMD=(
   SECURE_QUANTIZATION_SCALE=65536
   SECURE_SEED=7
   scripts/run_recommender_pipeline.sh
-  federated-training-adult_income-20260426t223642651433+0000-logistic_regression-10clients-alpha0.3-seed42-e8df09baaba3
+  federated-training-adult_income-20260427t063710289874+0000-logistic_regression-15clients-alpha0.3-seed42-536f2cd41ed2
   test__max-20__seed-42
   lay
 )
