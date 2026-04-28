@@ -283,3 +283,144 @@ def test_label_recommender_context_uses_client_stable_seeds_for_subset_reruns(tm
     assert first_metadata["seed"] == second_metadata["seed"]
     assert first_metadata["label_seed"] == second_metadata["label_seed"]
     assert first_metadata["instance_split"] == second_metadata["instance_split"]
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_label_recommender_context_rejects_runs_without_generated_pairs(tmp_path) -> None:
+    paths = ArtifactPaths(
+        prepared_root=tmp_path / "prepared",
+        partition_root=tmp_path / "datasets",
+        centralized_root=tmp_path / "centralized",
+        federated_root=tmp_path / "federated",
+        comparison_root=tmp_path / "comparisons",
+        cache_dir=tmp_path / "cache",
+    )
+    run_id = "unit-run"
+    selection_id = "selection-0"
+    persona_path = tmp_path / "persona.yaml"
+    persona_path.write_text(
+        "\n".join(
+            [
+                "persona: unit",
+                "type: flat_dirichlet",
+                "tau: 1.0",
+                "properties:",
+                "  quality:",
+                "    preference: 1.0",
+                "    metrics: [quality]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    run_dir = paths.federated_root / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_metadata.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+
+    context_dir = run_dir / "clients" / "client_000" / "recommender_context" / selection_id
+    context_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "client_id": ["client_000", "client_000"],
+            "dataset_index": [0, 1],
+            "instance_id": ["row-0", "row-1"],
+            "method_variant": ["a", "a"],
+            "metric_quality_z": [0.2, 0.5],
+        }
+    ).to_parquet(context_dir / "candidate_context.parquet", index=False)
+
+    with pytest.raises(FileNotFoundError, match="No recommender preference pairs were generated"):
+        label_recommender_context(
+            run_id=run_id,
+            selection_id=selection_id,
+            persona="unit",
+            persona_config_path=persona_path,
+            concentration_c=1.0,
+            paths=paths,
+        )
+
+    manifest_path = run_dir / "recommender_labels" / selection_id / "unit" / "labeling_manifest.json"
+    assert not manifest_path.exists()
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_label_recommender_context_skips_clients_without_generated_pairs(tmp_path) -> None:
+    paths = ArtifactPaths(
+        prepared_root=tmp_path / "prepared",
+        partition_root=tmp_path / "datasets",
+        centralized_root=tmp_path / "centralized",
+        federated_root=tmp_path / "federated",
+        comparison_root=tmp_path / "comparisons",
+        cache_dir=tmp_path / "cache",
+    )
+    run_id = "unit-run"
+    selection_id = "selection-0"
+    persona_path = tmp_path / "persona.yaml"
+    persona_path.write_text(
+        "\n".join(
+            [
+                "persona: unit",
+                "type: flat_dirichlet",
+                "tau: 1.0",
+                "properties:",
+                "  quality:",
+                "    preference: 1.0",
+                "    metrics: [quality]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    run_dir = paths.federated_root / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_metadata.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+
+    usable_context_dir = run_dir / "clients" / "client_000" / "recommender_context" / selection_id
+    usable_context_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "client_id": ["client_000"] * 6,
+            "dataset_index": [0, 0, 0, 1, 1, 1],
+            "instance_id": ["row-0"] * 3 + ["row-1"] * 3,
+            "method_variant": ["a", "b", "c", "a", "b", "c"],
+            "metric_quality_z": [0.2, 0.0, -0.2, 0.5, 0.1, -0.4],
+        }
+    ).to_parquet(usable_context_dir / "candidate_context.parquet", index=False)
+
+    empty_context_dir = run_dir / "clients" / "client_001" / "recommender_context" / selection_id
+    empty_context_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "client_id": ["client_001", "client_001"],
+            "dataset_index": [0, 1],
+            "instance_id": ["row-0", "row-1"],
+            "method_variant": ["a", "a"],
+            "metric_quality_z": [0.2, 0.5],
+        }
+    ).to_parquet(empty_context_dir / "candidate_context.parquet", index=False)
+
+    summary = label_recommender_context(
+        run_id=run_id,
+        selection_id=selection_id,
+        persona="unit",
+        persona_config_path=persona_path,
+        seed=42,
+        label_seed=1729,
+        concentration_c=1.0,
+        paths=paths,
+    )
+
+    assert summary["status"] == "labeled"
+    assert summary["client_count"] == 1
+    assert summary["pair_count"] == 6
+    assert [client["client_id"] for client in summary["clients"]] == ["client_000"]
+    skipped_labels_path = (
+        run_dir
+        / "clients"
+        / "client_001"
+        / "recommender_labels"
+        / selection_id
+        / "unit"
+        / "pairwise_labels.parquet"
+    )
+    assert not skipped_labels_path.exists()

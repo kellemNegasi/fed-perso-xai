@@ -15,8 +15,8 @@
 #SBATCH --ntasks=1
 #SBATCH --partition=main
 #SBATCH --cpus-per-task=15
-#SBATCH --mem=80G
-#SBATCH --time=16:00:00
+#SBATCH --mem=60G
+#SBATCH --time=4:00:00
 
 # Environment setup ------------------------------------------------------------
 set -euo pipefail
@@ -63,7 +63,7 @@ TARGET_CMD=(
   SECURE_QUANTIZATION_SCALE=65536
   SECURE_SEED=7
   scripts/run_recommender_pipeline.sh
-  federated-training-adult_income-20260427t063710289874+0000-logistic_regression-15clients-alpha0.3-seed42-536f2cd41ed2
+  federated-training-adult_income-20260425t192946577949+0000-logistic_regression-10clients-alpha1.0-seed42-dba03a50b07b
   test__max-20__seed-42
   lay
 )

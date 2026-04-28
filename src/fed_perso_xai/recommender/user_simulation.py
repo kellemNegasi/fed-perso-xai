@@ -348,7 +348,9 @@ def label_recommender_context(
         raise FileNotFoundError(f"No client directories found under {context_root}.")
 
     output_root = run_context.run_artifact_dir / "recommender_labels" / selection_id / persona_config.persona
+    manifest_path = output_root / "labeling_manifest.json"
     client_summaries: list[dict[str, Any]] = []
+    found_candidate_context = False
     for client_dir in client_dirs:
         client_id = client_dir.name
         context_path = client_dir / "recommender_context" / selection_id / context_filename
@@ -359,6 +361,7 @@ def label_recommender_context(
         candidates = pd.read_parquet(context_path)
         if candidates.empty:
             continue
+        found_candidate_context = True
         base_split_seed = seed if instance_split_seed is None else instance_split_seed
         client_split_seed = _stable_client_seed(
             base_seed=base_split_seed,
@@ -397,6 +400,8 @@ def label_recommender_context(
         if not test_labels.empty:
             test_labels = test_labels.assign(split="test")
         labels = pd.concat([train_labels, test_labels], ignore_index=True)
+        if labels.empty:
+            continue
 
         client_label_dir = client_dir / "recommender_labels" / selection_id / persona_config.persona
         labels_path = client_label_dir / label_filename
@@ -446,9 +451,16 @@ def label_recommender_context(
             }
         )
 
-    if not client_summaries:
+    if not found_candidate_context:
         raise FileNotFoundError(
             "No client recommender context files were found. Run prepare-recommender-context first."
+        )
+    if not client_summaries:
+        if manifest_path.exists():
+            manifest_path.unlink()
+        raise FileNotFoundError(
+            "No recommender preference pairs were generated. Ensure at least one client has "
+            "two or more candidates per instance after filtering."
         )
 
     manifest = {
@@ -469,7 +481,6 @@ def label_recommender_context(
         "generated_at": current_utc_timestamp(),
         "clients": client_summaries,
     }
-    manifest_path = output_root / "labeling_manifest.json"
     _write_json_atomic(manifest_path, manifest)
     manifest["manifest_path"] = str(manifest_path)
     return manifest
