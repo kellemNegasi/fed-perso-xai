@@ -30,6 +30,7 @@ from fed_perso_xai.recommender import (
     load_recommender,
     recommender_artifact_model_type,
 )
+from fed_perso_xai.recommender.evaluation import is_recommender_metric_key
 from fed_perso_xai.utils.config import ArtifactPaths, RecommenderFederatedTrainingConfig
 from fed_perso_xai.utils.provenance import current_utc_timestamp
 
@@ -721,7 +722,7 @@ def _aggregate_client_metrics(clients: Sequence[Mapping[str, object]]) -> dict[s
         if weight <= 0:
             weight = 1.0
         for key, value in row.items():
-            if key in {"client_id", "cluster_id"} or key.endswith("count") or not isinstance(value, (int, float)):
+            if not is_recommender_metric_key(key) or not isinstance(value, (int, float)):
                 continue
             sums[key] = sums.get(key, 0.0) + float(value) * weight
             weights[key] = weights.get(key, 0.0) + weight

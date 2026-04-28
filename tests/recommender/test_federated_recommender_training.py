@@ -157,6 +157,7 @@ def test_evaluate_grouped_ranked_scores_keeps_instances_separate() -> None:
     assert metrics["instance_count"] == 2
     assert metrics["aggregate"]["precision_at_1"] == pytest.approx(1.0)
     assert metrics["aggregate"]["pearson"] == pytest.approx(1.0)
+    assert "dataset_index" not in metrics["aggregate"]
 
 
 @pytest.mark.skipif(not FLOWER_AVAILABLE, reason="Flower is required for recommender FL tests.")
@@ -406,6 +407,8 @@ def test_train_federated_recommender_writes_model_metadata_and_evaluation(tmp_pa
     evaluation = json.loads(artifacts.evaluation_summary_path.read_text(encoding="utf-8"))
     assert evaluation["aggregate"]["precision_at_1"] == pytest.approx(1.0)
     assert evaluation["aggregate"]["pearson"] == pytest.approx(1.0)
+    assert "dataset_index" not in evaluation["aggregate"]
+    assert "dataset_index" not in metadata["evaluation"]
 
 
 @pytest.mark.skipif(not FLOWER_AVAILABLE, reason="Flower is required for recommender FL tests.")
@@ -487,3 +490,5 @@ def test_train_federated_recommender_supports_explicit_pairwise_logistic_selecti
     evaluation = json.loads(artifacts.evaluation_summary_path.read_text(encoding="utf-8"))
     assert evaluation["aggregate"]["precision_at_1"] == pytest.approx(1.0)
     assert evaluation["aggregate"]["pearson"] == pytest.approx(1.0)
+    assert "dataset_index" not in evaluation["aggregate"]
+    assert "dataset_index" not in metadata["evaluation"]

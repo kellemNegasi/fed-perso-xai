@@ -334,7 +334,9 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     assert evaluation["status"] == "evaluated_clustered"
     assert len(evaluation["clusters"]) == 3
     assert "cluster_id" not in evaluation["aggregate"]
+    assert "dataset_index" not in evaluation["aggregate"]
     assert all("cluster_id" not in cluster["aggregate"] for cluster in evaluation["clusters"])
+    assert all("dataset_index" not in cluster["aggregate"] for cluster in evaluation["clusters"])
 
 
 @pytest.mark.parametrize("recommender_type", ["svm_rank", "pairwise_logistic"])

@@ -13,6 +13,14 @@ import pandas as pd
 LOGGER = logging.getLogger(__name__)
 
 
+def is_recommender_metric_key(key: object) -> bool:
+    """Return whether a key is an aggregate recommender quality metric."""
+
+    if not isinstance(key, str):
+        return False
+    return key == "pearson" or key.startswith("precision_at_")
+
+
 @dataclass(frozen=True)
 class RecommenderEvaluationResult:
     """Aggregate and per-client recommender evaluation metrics."""
@@ -200,9 +208,7 @@ def aggregate_client_metrics(clients: Sequence[Mapping[str, object]]) -> dict[st
         if weight <= 0:
             weight = 1.0
         for key, value in row.items():
-            if key in {"client_id", "artifacts"} or not isinstance(value, (int, float)):
-                continue
-            if key.endswith("count"):
+            if not is_recommender_metric_key(key) or not isinstance(value, (int, float)):
                 continue
             weighted_sums[key] = weighted_sums.get(key, 0.0) + float(value) * weight
             weights[key] = weights.get(key, 0.0) + weight
