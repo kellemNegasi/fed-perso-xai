@@ -371,24 +371,31 @@ class SecureClusterModelAggregator:
     ) -> dict[int, ClusterAggregationResult]:
         aggregator = _build_secure_round_aggregator(self.training_config)
         results: dict[int, ClusterAggregationResult] = {}
+        min_contributors = 2
         for cluster_id in range(cluster_count):
             member_ids = [
                 client_id
                 for client_id, assigned_cluster in assignments.items()
                 if int(assigned_cluster) == cluster_id
             ]
-            if not member_ids:
+            if len(member_ids) < min_contributors:
                 fallback = fallback_parameters.get(cluster_id)
                 if fallback is None:
-                    raise ValueError(f"Missing fallback parameters for empty cluster {cluster_id}.")
+                    raise ValueError(f"Missing fallback parameters for underpopulated cluster {cluster_id}.")
+                mode = (
+                    "carry_forward_empty_cluster"
+                    if not member_ids
+                    else "carry_forward_underpopulated_cluster"
+                )
                 results[cluster_id] = ClusterAggregationResult(
                     parameters=[np.asarray(parameter, dtype=np.float64).copy() for parameter in fallback],
                     metadata={
                         "cluster_id": int(cluster_id),
                         "round_id": int(round_id),
-                        "mode": "carry_forward_empty_cluster",
-                        "num_contributors": 0,
-                        "client_ids": [],
+                        "mode": mode,
+                        "num_contributors": int(len(member_ids)),
+                        "client_ids": list(member_ids),
+                        "min_required_contributors": int(min_contributors),
                     },
                 )
                 continue

@@ -294,10 +294,9 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
         "client_003",
     }
     assert {call[1] for call in captured_projector_calls} == {1, 2}
-    assert {call[1] for call in secure_aggregate_calls[:3]} == {
+    assert len(secure_aggregate_calls) == 2
+    assert {call[1] for call in secure_aggregate_calls} == {
         ("client_000", "client_001"),
-        ("client_002",),
-        ("client_003",),
     }
 
     manifest = json.loads(artifacts.cluster_manifest_path.read_text(encoding="utf-8"))
@@ -319,6 +318,14 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     assert round_one["projection"]["data_dependent_fit"] is False
     assert round_one["secure_clustering"]["server_observes_raw_weights"] is False
     assert round_one["secure_clustering"]["server_observes_reduced_vectors"] is False
+    assert round_one["secure_aggregation_per_cluster"]["0"]["mode"] == "secure"
+    assert round_one["secure_aggregation_per_cluster"]["0"]["num_contributors"] == 2
+    assert round_one["secure_aggregation_per_cluster"]["1"]["mode"] == "carry_forward_underpopulated_cluster"
+    assert round_one["secure_aggregation_per_cluster"]["1"]["num_contributors"] == 1
+    assert round_one["secure_aggregation_per_cluster"]["1"]["client_ids"] == ["client_002"]
+    assert round_one["secure_aggregation_per_cluster"]["2"]["mode"] == "carry_forward_underpopulated_cluster"
+    assert round_one["secure_aggregation_per_cluster"]["2"]["num_contributors"] == 1
+    assert round_one["secure_aggregation_per_cluster"]["2"]["client_ids"] == ["client_003"]
     assert len(round_one["cluster_model_checkpoint_paths"]) == 3
     for relative_path in round_one["cluster_model_checkpoint_paths"].values():
         assert (artifacts.run_dir / relative_path).exists()
@@ -326,6 +333,8 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     evaluation = json.loads(artifacts.evaluation_summary_path.read_text(encoding="utf-8"))
     assert evaluation["status"] == "evaluated_clustered"
     assert len(evaluation["clusters"]) == 3
+    assert "cluster_id" not in evaluation["aggregate"]
+    assert all("cluster_id" not in cluster["aggregate"] for cluster in evaluation["clusters"])
 
 
 @pytest.mark.parametrize("recommender_type", ["svm_rank", "pairwise_logistic"])

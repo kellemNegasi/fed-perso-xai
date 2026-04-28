@@ -721,7 +721,7 @@ def _aggregate_client_metrics(clients: Sequence[Mapping[str, object]]) -> dict[s
         if weight <= 0:
             weight = 1.0
         for key, value in row.items():
-            if key in {"client_id"} or key.endswith("count") or not isinstance(value, (int, float)):
+            if key in {"client_id", "cluster_id"} or key.endswith("count") or not isinstance(value, (int, float)):
                 continue
             sums[key] = sums.get(key, 0.0) + float(value) * weight
             weights[key] = weights.get(key, 0.0) + weight
