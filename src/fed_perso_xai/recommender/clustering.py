@@ -12,45 +12,41 @@ from fed_perso_xai.utils.config import RecommenderClusteringConfig, RecommenderF
 
 
 @dataclass(frozen=True)
-class PCABasis:
-    """Global PCA basis broadcast to clients for local projection."""
+class RandomProjectionSpec:
+    """Global stateless random projection broadcast to clients for local projection."""
 
-    mean_vector: np.ndarray
-    components: np.ndarray
-    explained_variance: np.ndarray
-    explained_variance_ratio: np.ndarray
+    projection_matrix: np.ndarray
     requested_components: int
-    actual_components: int
+    seed: int
 
     def transform(self, flat_vector: np.ndarray) -> np.ndarray:
         vector = np.asarray(flat_vector, dtype=np.float64).reshape(-1)
-        if vector.shape[0] != self.mean_vector.shape[0]:
+        if vector.shape[0] != self.projection_matrix.shape[0]:
             raise ValueError(
-                f"Expected flattened vector length {self.mean_vector.shape[0]}, got {vector.shape[0]}."
+                f"Expected flattened vector length {self.projection_matrix.shape[0]}, got {vector.shape[0]}."
             )
-        centered = vector - self.mean_vector
-        return centered @ self.components.T
+        return vector @ self.projection_matrix
+
+    @property
+    def input_dimension(self) -> int:
+        return int(self.projection_matrix.shape[0])
+
+    @property
+    def actual_components(self) -> int:
+        return int(self.projection_matrix.shape[1])
 
     def to_metadata(self) -> dict[str, Any]:
         return {
             "requested_components": int(self.requested_components),
             "actual_components": int(self.actual_components),
-            "input_dimension": int(self.mean_vector.shape[0]),
-            "component_matrix_shape": [int(value) for value in self.components.shape],
-            "explained_variance": self.explained_variance.tolist(),
-            "explained_variance_ratio": self.explained_variance_ratio.tolist(),
-            "mean_vector": self.mean_vector.tolist(),
+            "input_dimension": int(self.input_dimension),
+            "projection_matrix_shape": [int(value) for value in self.projection_matrix.shape],
+            "projection_type": "gaussian_random",
+            "projection_seed": int(self.seed),
+            "data_dependent_fit": False,
             "projection_applied": "client_side",
-            "projection_basis_scope": "global_broadcast",
+            "projection_basis_scope": "global_seeded_matrix",
         }
-
-
-@dataclass(frozen=True)
-class PCAProjectionResult:
-    """Bootstrap PCA fit result over one collection of flattened weights."""
-
-    basis: PCABasis
-    reduced_vectors: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -127,54 +123,30 @@ class RecommenderWeightVectorExtractor:
         return client_ids, np.stack(flattened, axis=0)
 
 
-class PCAReducer:
-    """Fit and apply the global PCA basis for clustered training."""
-
-    def fit(self, weight_vectors: np.ndarray, requested_components: int) -> PCABasis:
-        vectors = np.asarray(weight_vectors, dtype=np.float64)
-        if vectors.ndim != 2:
-            raise ValueError("weight_vectors must be a 2D array.")
-        if vectors.shape[0] == 0:
-            raise ValueError("weight_vectors must contain at least one row.")
-
-        actual_components = max(1, min(int(requested_components), vectors.shape[0], vectors.shape[1]))
-        mean_vector = np.mean(vectors, axis=0)
-        centered = vectors - mean_vector
-        _, singular_values, vt = np.linalg.svd(centered, full_matrices=False)
-        components = vt[:actual_components].copy()
-        if vectors.shape[0] > 1:
-            explained_variance = (singular_values[:actual_components] ** 2) / float(vectors.shape[0] - 1)
-            total_variance = (singular_values**2).sum() / float(vectors.shape[0] - 1)
-        else:
-            explained_variance = np.zeros(actual_components, dtype=np.float64)
-            total_variance = 0.0
-        if total_variance > 0.0:
-            explained_variance_ratio = explained_variance / total_variance
-        else:
-            explained_variance_ratio = np.zeros(actual_components, dtype=np.float64)
-        return PCABasis(
-            mean_vector=mean_vector,
-            components=components,
-            explained_variance=explained_variance,
-            explained_variance_ratio=explained_variance_ratio,
-            requested_components=int(requested_components),
-            actual_components=int(actual_components),
-        )
-
-    def transform(self, flat_vector: np.ndarray, basis: PCABasis) -> np.ndarray:
-        return basis.transform(flat_vector)
-
-    def reduce(self, weight_vectors: np.ndarray, requested_components: int) -> PCAProjectionResult:
-        basis = self.fit(weight_vectors, requested_components)
-        reduced = np.stack(
-            [self.transform(vector, basis) for vector in np.asarray(weight_vectors, dtype=np.float64)],
-            axis=0,
-        )
-        return PCAProjectionResult(basis=basis, reduced_vectors=reduced)
+def build_random_projection_spec(
+    *,
+    input_dimension: int,
+    requested_components: int,
+    seed: int,
+) -> RandomProjectionSpec:
+    if int(input_dimension) <= 0:
+        raise ValueError("input_dimension must be positive.")
+    if int(requested_components) <= 0:
+        raise ValueError("requested_components must be positive.")
+    rng = np.random.default_rng(int(seed))
+    scale = 1.0 / math.sqrt(float(requested_components))
+    projection_matrix = (
+        rng.standard_normal(size=(int(input_dimension), int(requested_components))).astype(np.float64) * scale
+    )
+    return RandomProjectionSpec(
+        projection_matrix=projection_matrix,
+        requested_components=int(requested_components),
+        seed=int(seed),
+    )
 
 
-class ClientSidePCAProjector:
-    """Client-local flatten -> PCA -> secret sharing for clustered training."""
+class ClientSideRandomProjector:
+    """Client-local flatten -> random projection -> secret sharing for clustered training."""
 
     def __init__(self, training_config: RecommenderFederatedTrainingConfig) -> None:
         self.training_config = training_config
@@ -185,13 +157,13 @@ class ClientSidePCAProjector:
         *,
         client_id: str,
         parameters: Sequence[np.ndarray],
-        pca_basis: PCABasis,
+        projection_spec: RandomProjectionSpec,
         round_id: int,
     ) -> SecretSharedReducedVector:
         protocol = _build_private_clustering_protocol(self.training_config)
         share_encoder = _build_share_encoder(protocol, client_id=client_id, round_id=round_id)
         flat_vector = self.extractor.flatten(parameters)
-        reduced_vector = pca_basis.transform(flat_vector)
+        reduced_vector = projection_spec.transform(flat_vector)
         squared_norm = np.asarray([float(np.dot(reduced_vector, reduced_vector))], dtype=np.float64)
         vector_shares = tuple(
             share_encoder.encode(protocol.vector_quantizer.quantize(reduced_vector))
@@ -208,7 +180,7 @@ class ClientSidePCAProjector:
 
 
 class SecureKMeansClusterer:
-    """Secure K-means over secret-shared client-side PCA projections."""
+    """Secure K-means over secret-shared client-side projections."""
 
     def __init__(self, training_config: RecommenderFederatedTrainingConfig) -> None:
         self.training_config = training_config
@@ -217,7 +189,7 @@ class SecureKMeansClusterer:
         self,
         shared_reduced_vectors: Sequence[SecretSharedReducedVector],
         *,
-        pca_basis: PCABasis,
+        projection_spec: RandomProjectionSpec,
         seed: int,
         clustering_config: RecommenderClusteringConfig,
     ) -> SecureClusterAssignments:
@@ -229,12 +201,11 @@ class SecureKMeansClusterer:
         protocol = _build_private_clustering_protocol(self.training_config)
         dimension = int(shared_reduced_vectors[0].dimension)
         current = _initialize_centroids(
-            pca_basis=pca_basis,
+            projection_spec=projection_spec,
             dimension=dimension,
             n_clusters=clustering_config.k,
             seed=seed,
         )
-        initial_centroids = current.copy()
         labels = np.zeros(len(shared_reduced_vectors), dtype=np.int64)
         last_distance_helper_ids: tuple[int, ...] = ()
         last_distance_evaluation_points: tuple[int, ...] = ()
@@ -497,7 +468,7 @@ def weighted_average_parameter_sets(
 
 def _initialize_centroids(
     *,
-    pca_basis: PCABasis,
+    projection_spec: RandomProjectionSpec,
     dimension: int,
     n_clusters: int,
     seed: int,
@@ -506,9 +477,10 @@ def _initialize_centroids(
     centroids = rng.normal(loc=0.0, scale=1e-3, size=(n_clusters, dimension)).astype(np.float64)
     if dimension == 0:
         raise ValueError("dimension must be positive.")
-    scales = np.sqrt(np.maximum(pca_basis.explained_variance[:dimension], 1e-12))
+    scales = np.linalg.norm(projection_spec.projection_matrix, axis=0)
     if scales.shape[0] < dimension:
         scales = np.pad(scales, (0, dimension - scales.shape[0]), constant_values=1.0)
+    scales = np.maximum(scales[:dimension], 1e-3)
     for cluster_id in range(n_clusters):
         axis = cluster_id % dimension
         sign = -1.0 if cluster_id % 2 else 1.0

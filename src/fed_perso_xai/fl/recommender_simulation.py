@@ -28,11 +28,11 @@ from fed_perso_xai.recommender import (
     initialize_recommender_parameters,
 )
 from fed_perso_xai.recommender.clustering import (
-    ClientSidePCAProjector,
-    PCAReducer,
+    ClientSideRandomProjector,
     RecommenderWeightVectorExtractor,
     SecureClusterModelAggregator,
     SecureKMeansClusterer,
+    build_random_projection_spec,
     summarize_cluster_sizes,
     weighted_average_parameter_sets,
 )
@@ -48,7 +48,7 @@ class ClusteredRoundResult:
     round_id: int
     assignments: dict[str, int]
     cluster_sizes: dict[str, int]
-    pca_metadata: dict[str, Any]
+    projection_metadata: dict[str, Any]
     secure_clustering_metadata: dict[str, Any]
     secure_aggregation_metadata: dict[str, dict[str, Any]]
     cluster_parameters: dict[int, list[np.ndarray]]
@@ -338,8 +338,7 @@ def _run_clustered_recommender_training(
         recommender_type=config.recommender_type,
     )
     extractor = RecommenderWeightVectorExtractor()
-    pca_reducer = PCAReducer()
-    projector = ClientSidePCAProjector(config)
+    projector = ClientSideRandomProjector(config)
     clusterer = SecureKMeansClusterer(config)
     secure_aggregator = SecureClusterModelAggregator(config)
     previous_assignments: dict[str, int] = {}
@@ -349,7 +348,12 @@ def _run_clustered_recommender_training(
     }
     round_history: list[dict[str, object]] = []
     clustered_rounds: list[ClusteredRoundResult] = []
-    pca_basis = None
+    input_dimension = int(extractor.flatten(initial_parameters).shape[0])
+    projection_spec = build_random_projection_spec(
+        input_dimension=input_dimension,
+        requested_components=clustering_config.pca_components,
+        seed=int(config.seed),
+    )
 
     warnings = [
         "Clustered recommender training uses the in-process clustered sequential runtime.",
@@ -390,15 +394,11 @@ def _run_clustered_recommender_training(
             local_weights[client_name] = int(dataset.y_train.shape[0])
             train_losses[client_name] = float(train_loss)
 
-        if pca_basis is None:
-            _, flattened_vectors = extractor.flatten_many(local_parameters)
-            pca_basis = pca_reducer.fit(flattened_vectors, clustering_config.pca_components)
-
         shared_reduced_vectors = [
             projector.build_private_reduced_vector(
                 client_id=client_name,
                 parameters=local_parameters[client_name],
-                pca_basis=pca_basis,
+                projection_spec=projection_spec,
                 round_id=server_round,
             )
             for client_name in sorted(local_parameters)
@@ -406,7 +406,7 @@ def _run_clustered_recommender_training(
         clustering_seed = int(config.seed + server_round - 1)
         assignments_result = clusterer.cluster(
             shared_reduced_vectors,
-            pca_basis=pca_basis,
+            projection_spec=projection_spec,
             seed=clustering_seed,
             clustering_config=clustering_config,
         )
@@ -452,9 +452,9 @@ def _run_clustered_recommender_training(
                 round_id=int(server_round),
                 assignments=dict(assignments),
                 cluster_sizes=dict(cluster_sizes),
-                pca_metadata={
-                    **pca_basis.to_metadata(),
-                    "basis_estimation_mode": "bootstrap_central_broadcast_once",
+                projection_metadata={
+                    **projection_spec.to_metadata(),
+                    "projection_generation_mode": "seeded_stateless_broadcast_once",
                     "server_observes_raw_weights_during_clustering": False,
                 },
                 secure_clustering_metadata={
