@@ -15,7 +15,7 @@
 #SBATCH --cpus-per-task=7
 #SBATCH --mem=80G
 #SBATCH --time=4:00:00
-
+#SBATCH --nodelist=ares3
 # Environment setup ------------------------------------------------------------
 set -euo pipefail
 

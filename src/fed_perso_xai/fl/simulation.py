@@ -42,8 +42,6 @@ BACKEND_ALIASES = {
     "debug-sequential": "debug-sequential",
     "sequential_fallback": "debug-sequential",
 }
-
-
 @dataclass(frozen=True)
 class FlowerRuntimePlan:
     """Resolved runtime plan for a federated experiment."""
