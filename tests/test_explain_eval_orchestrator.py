@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from fed_perso_xai.data.serialization import save_federated_dataset
@@ -22,6 +23,7 @@ from fed_perso_xai.orchestration.explain_eval_aggregation import (
 from fed_perso_xai.orchestration.recommender_preprocessing import (
     prepare_recommender_context,
 )
+from fed_perso_xai.recommender import label_recommender_context
 from fed_perso_xai.utils.config import ArtifactPaths, LogisticRegressionConfig
 from fed_perso_xai.utils.paths import federated_run_artifact_dir, federated_run_metadata_path
 
@@ -626,6 +628,71 @@ def test_prepare_recommender_context_writes_client_ready_files(
     assert "is_pareto_optimal" in all_context.columns
 
 
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_label_recommender_context_writes_client_pairwise_labels(
+    tmp_path,
+    synthetic_client_splits,
+) -> None:
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    for config_id in ("lime__kernel-1.5__samples-50", "lime__kernel-2.0__samples-50"):
+        run_explain_eval_job(
+            run_id=run_id,
+            client_id="client_000",
+            explainer_name="lime",
+            config_id=config_id,
+            max_instances=2,
+            random_state=9,
+            paths=paths,
+            metric_names=["compactness_size"],
+        )
+        aggregate_explain_eval_results(
+            run_id=run_id,
+            selection_id="test__max-2__seed-9",
+            explainer_name="lime",
+            config_id=config_id,
+            paths=paths,
+        )
+    prepare_recommender_context(
+        run_id=run_id,
+        selection_id="test__max-2__seed-9",
+        explainers="lime",
+        config_ids="all",
+        clients="client_000",
+        paths=paths,
+    )
+
+    summary = label_recommender_context(
+        run_id=run_id,
+        selection_id="test__max-2__seed-9",
+        persona="lay",
+        clients="client_000",
+        context_filename="all_candidate_context.parquet",
+        seed=1,
+        label_seed=2,
+        concentration_c=10.0,
+        paths=paths,
+    )
+
+    assert summary["status"] == "labeled"
+    assert summary["client_count"] == 1
+    assert summary["pair_count"] == 2
+    client_artifacts = summary["clients"][0]["artifacts"]
+    labels = pd.read_parquet(client_artifacts["pairwise_labels"])
+    metadata = json.loads(Path(client_artifacts["simulation_metadata"]).read_text(encoding="utf-8"))
+
+    assert set(labels["label"]).issubset({0, 1})
+    assert set(labels["pair_1"]) == {"lime__kernel-1.5__samples-50"}
+    assert set(labels["pair_2"]) == {"lime__kernel-2.0__samples-50"}
+    assert set(labels["split"]) == {"train", "test"}
+    split_dataset_indices = (
+        metadata["instance_split"]["train_dataset_indices"]
+        + metadata["instance_split"]["test_dataset_indices"]
+    )
+    assert len(split_dataset_indices) == 2
+    assert sorted(labels["dataset_index"].unique().tolist()) == sorted(split_dataset_indices)
+    assert "compactness_sparsity" in metadata["simulation"]["active_metrics"]
+
+
 def test_plan_explain_eval_jobs_writes_matrix_jsonl_and_ignores_random_grid(
     tmp_path,
     synthetic_client_splits,
@@ -839,3 +906,50 @@ def test_explain_eval_plan_clis_are_wired_to_python_planner(
     assert calls["prepare_context"]["explainers"] == "lime"
     assert calls["prepare_context"]["config_ids"] == "lime__kernel-1.5__samples-50"
     assert calls["prepare_context"]["clients"] == "client_000"
+
+    def fake_label_context(**kwargs):
+        calls["label_context"] = kwargs
+        return {"status": "labeled", "pair_count": 6}
+
+    monkeypatch.setattr(cli_module, "label_recommender_context", fake_label_context)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fed-perso-xai",
+            "label-recommender-context",
+            "--run-id",
+            "run-123",
+            "--selection",
+            "test__max-10__seed-42",
+            "--persona",
+            "lay",
+            "--clients",
+            "client_000",
+            "--label-filename",
+            "custom_pairwise_labels.parquet",
+            "--seed",
+            "11",
+            "--label-seed",
+            "12",
+            "--instance-test-size",
+            "0.25",
+            "--instance-split-seed",
+            "13",
+            "--concentration-c",
+            "5",
+        ],
+    )
+    cli_module.main()
+    label_output = json.loads(capsys.readouterr().out)
+    assert label_output == {"status": "labeled", "pair_count": 6}
+    assert calls["label_context"]["run_id"] == "run-123"
+    assert calls["label_context"]["selection_id"] == "test__max-10__seed-42"
+    assert calls["label_context"]["persona"] == "lay"
+    assert calls["label_context"]["clients"] == "client_000"
+    assert calls["label_context"]["label_filename"] == "custom_pairwise_labels.parquet"
+    assert calls["label_context"]["seed"] == 11
+    assert calls["label_context"]["label_seed"] == 12
+    assert calls["label_context"]["instance_test_size"] == 0.25
+    assert calls["label_context"]["instance_split_seed"] == 13
+    assert calls["label_context"]["concentration_c"] == 5.0

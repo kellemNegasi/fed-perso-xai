@@ -1,0 +1,69 @@
+"""Recommender data preparation and user-simulation utilities."""
+
+from fed_perso_xai.recommender.data import (
+    PairwiseRecommenderData,
+    RecommenderInstanceSplit,
+    build_pairwise_recommender_data,
+    infer_recommender_feature_columns,
+    split_recommender_instance_ids,
+)
+from fed_perso_xai.recommender.model import (
+    DEFAULT_RECOMMENDER_TYPE,
+    SUPPORTED_RECOMMENDER_TYPES,
+    PairwiseLogisticConfig,
+    PairwiseLogisticRecommender,
+    PairwiseRecommenderModel,
+    SVMRankRecommender,
+    create_recommender,
+    initialize_recommender_parameters,
+    load_pairwise_logistic_recommender,
+    load_recommender,
+    load_svm_rank_recommender,
+    normalize_recommender_type,
+    recommender_artifact_model_type,
+)
+from fed_perso_xai.recommender.evaluation import (
+    build_ground_truth_order,
+    evaluate_grouped_ranked_scores,
+    evaluate_ranked_scores,
+)
+from fed_perso_xai.recommender.user_simulation import (
+    DEFAULT_USER_SIMULATOR_REGISTRY,
+    DirichletPersonaSimulator,
+    PairwiseLabelConfig,
+    PersonaConfig,
+    UserSimulator,
+    label_recommender_context,
+    load_persona_config,
+)
+
+__all__ = [
+    "DEFAULT_RECOMMENDER_TYPE",
+    "DEFAULT_USER_SIMULATOR_REGISTRY",
+    "DirichletPersonaSimulator",
+    "PairwiseLogisticConfig",
+    "PairwiseLogisticRecommender",
+    "PairwiseLabelConfig",
+    "PairwiseRecommenderData",
+    "PairwiseRecommenderModel",
+    "PersonaConfig",
+    "RecommenderInstanceSplit",
+    "SUPPORTED_RECOMMENDER_TYPES",
+    "SVMRankRecommender",
+    "UserSimulator",
+    "build_pairwise_recommender_data",
+    "build_ground_truth_order",
+    "create_recommender",
+    "evaluate_grouped_ranked_scores",
+    "evaluate_ranked_scores",
+    "infer_recommender_feature_columns",
+    "initialize_recommender_parameters",
+    "label_recommender_context",
+    "load_pairwise_logistic_recommender",
+    "load_persona_config",
+    "load_recommender",
+    "load_svm_rank_recommender",
+    "normalize_recommender_type",
+    "recommender_artifact_model_type",
+    "split_recommender_instance_ids",
+]

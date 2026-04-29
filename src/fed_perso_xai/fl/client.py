@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import logging
 import numpy as np
 
 FLOWER_IMPORT_ERROR_MESSAGE = (
@@ -20,6 +21,13 @@ except ImportError:  # pragma: no cover - exercised via optional dependency path
 
 from fed_perso_xai.evaluation.metrics import compute_classification_metrics
 from fed_perso_xai.models import create_model
+from fed_perso_xai.recommender import (
+    DEFAULT_RECOMMENDER_TYPE,
+    PairwiseLogisticConfig,
+    create_recommender,
+)
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,18 @@ class ClientData:
         if normalized in {"test", "local_test", "client_local_test"}:
             return self.X_test, self.y_test, self.row_ids_test
         raise ValueError(f"Unsupported client split '{split_name}'. Expected 'train' or 'test'.")
+
+
+@dataclass(frozen=True)
+class RecommenderClientData:
+    """Local pairwise arrays and held-out context for recommender FL."""
+
+    client_id: int
+    client_name: str
+    X_train: np.ndarray
+    y_train: np.ndarray
+    X_eval: np.ndarray
+    y_eval: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -168,6 +188,109 @@ if fl is not None:
             metrics["client_id"] = str(self.data.client_id)
             return float(loss), int(self.data.y_test.shape[0]), metrics
 
+
+    class FederatedPairwiseRecommenderClient(fl.client.NumPyClient):
+        """Flower NumPy client backed by the pairwise logistic recommender."""
+
+        def __init__(
+            self,
+            data: RecommenderClientData,
+            model_config: PairwiseLogisticConfig,
+            seed: int,
+            recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
+        ) -> None:
+            self.data = data
+            self.seed = int(seed)
+            self.model = create_recommender(
+                recommender_type=recommender_type,
+                n_features=data.X_train.shape[1],
+                config=model_config,
+            )
+
+        def get_parameters(self, config: dict[str, Any]) -> list[np.ndarray]:
+            return extract_shared_parameter_payload(self.model.get_parameters()).shared_parameters
+
+        def fit(
+            self,
+            parameters: list[np.ndarray],
+            config: dict[str, Any],
+        ) -> tuple[list[np.ndarray], int, dict[str, Any]]:
+            LOGGER.info(
+                "Recommender fit start client=%s train_pairs=%s",
+                self.data.client_name,
+                int(self.data.y_train.shape[0]),
+            )
+            merged_parameters = apply_shared_parameter_payload(
+                self.model.get_parameters(),
+                parameters,
+            )
+            self.model.set_parameters(merged_parameters)
+            train_loss = self.model.fit(
+                self.data.X_train,
+                self.data.y_train,
+                seed=self.seed + self.data.client_id,
+            )
+            shared_payload = extract_shared_parameter_payload(self.model.get_parameters())
+            metrics: dict[str, Any] = {
+                "train_loss": float(train_loss),
+                "client_id": self.data.client_name,
+                "aggregation_scope": "full_recommender",
+                "shared_parameter_count": int(len(shared_payload.shared_parameters)),
+                "shared_parameter_indices": ",".join(
+                    str(index) for index in shared_payload.shared_parameter_indices
+                ),
+            }
+            LOGGER.info(
+                "Recommender fit complete client=%s train_pairs=%s train_loss=%.6f",
+                self.data.client_name,
+                int(self.data.y_train.shape[0]),
+                float(train_loss),
+            )
+            return (
+                shared_payload.shared_parameters,
+                int(self.data.y_train.shape[0]),
+                metrics,
+            )
+
+        def evaluate(
+            self,
+            parameters: list[np.ndarray],
+            config: dict[str, Any],
+        ) -> tuple[float, int, dict[str, Any]]:
+            eval_pairs = int(self.data.y_eval.shape[0])
+            LOGGER.info(
+                "Recommender eval start client=%s eval_pairs=%s",
+                self.data.client_name,
+                eval_pairs,
+            )
+            if eval_pairs == 0:
+                LOGGER.info(
+                    "Recommender eval skipped client=%s eval_pairs=0",
+                    self.data.client_name,
+                )
+                return 0.0, 0, {"client_id": self.data.client_name}
+            merged_parameters = apply_shared_parameter_payload(
+                self.model.get_parameters(),
+                parameters,
+            )
+            self.model.set_parameters(merged_parameters)
+            loss = self.model.loss(self.data.X_eval, self.data.y_eval)
+            predictions = self.model.predict_pairwise(self.data.X_eval)
+            accuracy = float(np.mean(predictions == self.data.y_eval))
+            metrics: dict[str, Any] = {
+                "client_id": self.data.client_name,
+                "pairwise_accuracy": accuracy,
+            }
+            LOGGER.info(
+                "Recommender eval complete client=%s eval_pairs=%s eval_loss=%.6f pairwise_accuracy=%.6f",
+                self.data.client_name,
+                eval_pairs,
+                float(loss),
+                accuracy,
+            )
+            return float(loss), eval_pairs, metrics
+
+
 else:
 
     class FederatedLogisticRegressionClient:
@@ -181,3 +304,16 @@ else:
             seed: int,
         ) -> None:
             raise ImportError(FLOWER_IMPORT_ERROR_MESSAGE)
+
+    class FederatedPairwiseRecommenderClient:
+        """Placeholder used when Flower is not installed."""
+
+        def __init__(
+            self,
+            data: RecommenderClientData,
+            model_config: PairwiseLogisticConfig,
+            seed: int,
+            recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
+        ) -> None:
+            raise ImportError(FLOWER_IMPORT_ERROR_MESSAGE)
+

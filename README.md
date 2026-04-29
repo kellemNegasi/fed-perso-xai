@@ -1,33 +1,38 @@
 # fed-perso-xai
 
-`fed-perso-xai` is the baseline implementation for the larger federated Perso-XAI project. This repository currently covers predictive-model training with logistic regression plus post-training local explanation/evaluation jobs. Its data, evaluation, and artifact contracts are shaped for later recommender work.
+`fed-perso-xai` is the baseline implementation for the larger federated Perso-XAI project. This repository now covers predictive-model training, post-training local explanation/evaluation, recommender-context preparation, simulated pairwise preference labeling, and federated explanation-recommender training and evaluation. The predictive and recommender federated stages share the same optional secure-aggregation path and common artifact conventions.
 
 Implemented now:
 
 - dataset preparation for supported tabular datasets
 - frozen preprocessing fitted once on the global raw training pool
 - centralized logistic-regression training
-- Flower-based federated simulation as the primary federated path
+- Flower-based federated predictive training
+- optional secure aggregation for predictive and recommender FedAvg runs
 - explicit prediction, metrics, manifest, and provenance artifacts
 - centralized-versus-federated comparison reporting
 - client-local explanation generation
 - standalone post-training explain/evaluate jobs for federated `run_id` artifacts
 - JSONL matrix planning for Slurm array execution over client, shard, explainer, and config jobs
+- recommender-context feature preparation from aggregated explain/evaluate artifacts
+- simulated pairwise preference labeling with bundled persona configs
+- federated pairwise-logistic recommender training and evaluation
 
 Not implemented yet:
 
-- recommender training
-- pairwise comparison or preference learning
+- human-subject preference collection or serving infrastructure
+- recommender model families beyond the current pairwise logistic FedAvg baseline
 - clustering
 
 ## Repository Layout
 
 - `src/fed_perso_xai/data`: dataset specs, loaders, preprocessing, partitioning, serialization
-- `src/fed_perso_xai/models`: logistic-regression baseline
-- `src/fed_perso_xai/fl`: Flower client, strategy, and simulation runtime integration
+- `src/fed_perso_xai/models`: predictive-model registry and logistic-regression baseline
+- `src/fed_perso_xai/recommender`: recommender data builders, pairwise logistic model, evaluation, and user simulation
+- `src/fed_perso_xai/fl`: Flower client, strategy, and simulation runtime integration for predictive and recommender training
 - `src/fed_perso_xai/evaluation`: predictive metrics, prediction artifacts, comparison reports
-- `src/fed_perso_xai/orchestration`: prepare-data, training, explanation, and explain/evaluate entrypoints
-- `tests`: smoke and contract tests for the baseline
+- `src/fed_perso_xai/orchestration`: prepare-data, training, explanation, explain/evaluate, and recommender pipeline entrypoints
+- `tests`: smoke and contract tests for predictive and recommender flows
 
 ## Installation
 
@@ -263,7 +268,8 @@ Important artifacts:
 ### Aggregation Modes
 
 The federated strategy now supports two server-side aggregation modes over the
-same shared/global tensors:
+same shared/global tensors. The same strategy helpers are used by both
+predictive federated training and recommender federated training:
 
 - plain weighted averaging
 - protocol-first secure aggregation using in-process simulated helpers
@@ -467,6 +473,91 @@ python3 -m fed_perso_xai launch-experiment-jobs \
 The example YAML expands list-valued dataset, seed, partition, model, and training fields. Multiple model configurations can create multiple federated runs for the same dataset/client/alpha/seed tuple; in that case, use unique model labels and consider setting `training.force: true` so the canonical training directory can be refreshed while the run-addressable copies under `federated/runs/<run_id>/` remain distinct.
 
 Generated Slurm scripts follow the same operational pattern as the sibling `perso-xai` project: `#SBATCH` metadata at the top, optional `module load`, optional `.venv` activation, `PROJECT_ROOT`/`cd` setup, a `SLURM_ARRAY_TASK_ID` guard, and timestamped start/finish log lines. Configure those details under `explain_eval.slurm` in `configs/job_launcher.yml`.
+
+## Recommender Workflow
+
+The recommender stage starts from a completed federated predictive `run_id` plus aggregated explain/evaluate outputs for one `selection_id`. The implemented baseline is a federated pairwise logistic model over explanation-candidate feature vectors.
+
+### 1. Prepare Recommender Context
+
+This step converts aggregated explain/evaluate metrics into per-client candidate feature tables and Pareto-front views:
+
+```bash
+python3 -m fed_perso_xai prepare-recommender-context --run-id <run_id> --selection <selection_id> --clients all --explainers all --configs all
+```
+
+Per-client outputs are written under:
+
+```text
+federated/runs/<run_id>/clients/<client>/recommender_context/<selection_id>/
+```
+
+Important artifacts:
+
+- `candidate_context.parquet`: Pareto-optimal candidates only
+- `all_candidate_context.parquet`: all candidate rows before Pareto filtering
+- `pareto_front.json`: per-instance Pareto-front payload
+- `preprocessing_metadata.json`
+- root manifest: `federated/runs/<run_id>/recommender_context/<selection_id>/preprocessing_manifest.json`
+
+### 2. Label Recommender Context
+
+This step simulates a persona per client, splits dataset indices into train/test subsets, and generates pairwise labels over candidate variants:
+
+```bash
+python3 -m fed_perso_xai label-recommender-context --run-id <run_id> --selection <selection_id> --persona lay --clients all --context-filename candidate_context.parquet
+```
+
+Per-client outputs are written under:
+
+```text
+federated/runs/<run_id>/clients/<client>/recommender_labels/<selection_id>/<persona>/
+```
+
+Important artifacts:
+
+- `pairwise_labels.parquet`: train/test pairwise preferences with simulator metadata columns
+- `simulation_metadata.json`: persona, seeds, split metadata, and pair counts
+- root manifest: `federated/runs/<run_id>/recommender_labels/<selection_id>/<persona>/labeling_manifest.json`
+
+### 3. Train Federated Recommender
+
+The implemented recommender model is `PairwiseLogisticRecommender`, trained with FedAvg over pairwise difference vectors:
+
+```bash
+python3 -m fed_perso_xai train-recommender-federated --run-id <run_id> --selection <selection_id> --persona lay --rounds 10 --epochs 5 --batch-size 64 --learning-rate 0.05 --simulation-backend ray
+```
+
+Secure aggregation is available for recommender training with the same helper configuration style as predictive FL:
+
+```bash
+python3 -m fed_perso_xai train-recommender-federated --run-id <run_id> --selection <selection_id> --persona lay --rounds 10 --simulation-backend debug-sequential --secure-aggregation --secure-num-helpers 5 --secure-privacy-threshold 2 --secure-reconstruction-threshold 3 --secure-field-modulus 2147483647 --secure-quantization-scale 65536 --secure-seed 7
+```
+
+Outputs are written under:
+
+```text
+federated/runs/<run_id>/recommender_training/<selection_id>/<persona>/pairwise_logistic_fedavg/
+```
+
+Important artifacts:
+
+- `model/global_recommender.npz`
+- `model_metadata.json`
+- `feature_metadata.json`
+- `training_metadata.json`
+- `training_history.csv`
+- `runtime_report.json`
+- `evaluation_summary.json`
+- `COMPLETED.json`
+
+### 4. Evaluate Recommender
+
+```bash
+python3 -m fed_perso_xai evaluate-recommender --run-id <run_id> --selection <selection_id> --persona lay --clients all
+```
+
+Evaluation scores the candidate contexts with the trained global recommender, builds a deterministic ground-truth order from the held-out pairwise labels, and reports aggregate/client metrics such as Pearson rank correlation and `precision_at_k`.
 
 ## Artifact Contract
 

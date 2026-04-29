@@ -237,13 +237,38 @@ if fl is not None:
             round_record["fit_metrics"] = metrics
             round_record["aggregation"] = aggregation_record
             self.recorder.final_parameters = aggregated_parameters
+            LOGGER.info(
+                "Round %s/%s fit summary contributors=%s metrics=%s",
+                server_round,
+                self.training_config.rounds,
+                aggregation_record.get("num_contributors", 0),
+                _format_scalar_metrics(metrics),
+            )
             return fl.common.ndarrays_to_parameters(aggregated_parameters), metrics
 
         def aggregate_evaluate(self, server_round, results, failures):  # type: ignore[override]
+            if results and all(getattr(evaluate_res, "num_examples", 0) <= 0 for _, evaluate_res in results):
+                round_record = self._ensure_round_record(server_round)
+                round_record["evaluate_loss"] = None
+                round_record["evaluate_metrics"] = {}
+                round_record["evaluate_skipped"] = True
+                LOGGER.info(
+                    "Round %s/%s eval summary skipped=no_eval_examples",
+                    server_round,
+                    self.training_config.rounds,
+                )
+                return None, {}
             loss, metrics = super().aggregate_evaluate(server_round, results, failures)
             round_record = self._ensure_round_record(server_round)
             round_record["evaluate_loss"] = loss
             round_record["evaluate_metrics"] = metrics
+            LOGGER.info(
+                "Round %s/%s eval summary loss=%s metrics=%s",
+                server_round,
+                self.training_config.rounds,
+                "None" if loss is None else f"{float(loss):.6f}",
+                _format_scalar_metrics(metrics),
+            )
             return loss, metrics
 
         def _aggregate_plain_shared(
@@ -408,6 +433,17 @@ def create_strategy_factory(
 
     spec = (registry or DEFAULT_STRATEGY_REGISTRY).get(strategy_name)
     return spec.build_factory(training_config)
+
+
+def _format_scalar_metrics(metrics: dict[str, Any] | None) -> str:
+    if not metrics:
+        return "none"
+    items: list[str] = []
+    for key in sorted(metrics):
+        value = metrics[key]
+        if isinstance(value, (int, float)):
+            items.append(f"{key}={float(value):.6f}")
+    return ", ".join(items) if items else "none"
 
 
 def _aggregate_scalar_metrics(
