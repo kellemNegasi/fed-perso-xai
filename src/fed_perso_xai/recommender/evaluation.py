@@ -18,7 +18,11 @@ def is_recommender_metric_key(key: object) -> bool:
 
     if not isinstance(key, str):
         return False
-    return key == "pearson" or key.startswith("precision_at_")
+    return (
+        key == "pearson"
+        or key.startswith("precision_at_")
+        or key.startswith("pearson_at_")
+    )
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,37 @@ def pearson_rank_correlation(
     return 0.0 if not np.isfinite(corr) else corr
 
 
+def pearson_at_k(
+    predicted_order: Sequence[str],
+    ground_truth_order: Sequence[str],
+    k: int,
+) -> float:
+    """Compute Pearson correlation over truncated top-k rank positions.
+
+    Variants outside the top-k window receive the fallback rank ``k``. This keeps
+    the metric sensitive to agreement near the head of the ranking while still
+    being defined for all variants that appear in either ordering.
+    """
+
+    if not predicted_order or not ground_truth_order:
+        return 0.0
+    limit = min(max(1, int(k)), len(predicted_order), len(ground_truth_order))
+    variants = sorted(
+        set(str(item) for item in predicted_order) | set(str(item) for item in ground_truth_order)
+    )
+    if len(variants) < 2:
+        return 0.0
+
+    pred_rank = {str(variant): idx for idx, variant in enumerate(predicted_order[:limit])}
+    truth_rank = {str(variant): idx for idx, variant in enumerate(ground_truth_order[:limit])}
+    pred = np.asarray([float(pred_rank.get(variant, limit)) for variant in variants], dtype=float)
+    truth = np.asarray([float(truth_rank.get(variant, limit)) for variant in variants], dtype=float)
+    if float(np.std(pred)) == 0.0 or float(np.std(truth)) == 0.0:
+        return 0.0
+    corr = float(np.corrcoef(pred, truth)[0, 1])
+    return 0.0 if not np.isfinite(corr) else corr
+
+
 def order_scores(predicted_scores: Mapping[str, float]) -> list[str]:
     """Order predicted scores descending with deterministic variant tie-breaking."""
 
@@ -128,7 +163,7 @@ def evaluate_ranked_scores(
     *,
     predicted_scores: Mapping[str, float],
     pair_labels: pd.DataFrame,
-    top_k: Iterable[int] = (1, 3, 5),
+    top_k: Iterable[int] = (1, 3, 5, 8),
 ) -> dict[str, object]:
     """Evaluate predicted variant scores against pair-label-derived global order."""
 
@@ -141,7 +176,9 @@ def evaluate_ranked_scores(
         "variant_count": int(len(set(ground_truth) & set(predicted_order))),
     }
     for k in top_k:
-        metrics[f"precision_at_{int(k)}"] = precision_at_k(predicted_order, ground_truth, int(k))
+        limit = int(k)
+        metrics[f"precision_at_{limit}"] = precision_at_k(predicted_order, ground_truth, limit)
+        metrics[f"pearson_at_{limit}"] = pearson_at_k(predicted_order, ground_truth, limit)
     return metrics
 
 
@@ -149,7 +186,7 @@ def evaluate_grouped_ranked_scores(
     *,
     candidate_scores: pd.DataFrame,
     pair_labels: pd.DataFrame,
-    top_k: Iterable[int] = (1, 3, 5),
+    top_k: Iterable[int] = (1, 3, 5, 8),
 ) -> dict[str, object]:
     """Evaluate ranked candidate scores independently within each dataset_index."""
 
@@ -186,7 +223,7 @@ def evaluate_grouped_ranked_scores(
             "predicted_order": list(metrics.get("predicted_order", [])),
         }
         for key, value in metrics.items():
-            if key.startswith("precision_at_"):
+            if key.startswith("precision_at_") or key.startswith("pearson_at_"):
                 instance_row[key] = float(value)
         instance_metrics.append(instance_row)
 

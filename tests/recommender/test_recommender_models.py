@@ -98,9 +98,12 @@ def test_recommender_scores_work_with_grouped_evaluation_pipeline(recommender_ty
     metrics = evaluate_grouped_ranked_scores(
         candidate_scores=score_frame,
         pair_labels=labels,
-        top_k=(1, 2),
+        top_k=(1, 2, 8),
     )
 
     assert metrics["aggregate"]["precision_at_1"] == pytest.approx(1.0)
+    assert metrics["aggregate"]["precision_at_8"] == pytest.approx(1.0)
     assert metrics["aggregate"]["pearson"] == pytest.approx(1.0)
+    assert metrics["aggregate"]["pearson_at_1"] == pytest.approx(1.0)
+    assert metrics["aggregate"]["pearson_at_8"] == pytest.approx(1.0)
     assert "dataset_index" not in metrics["aggregate"]

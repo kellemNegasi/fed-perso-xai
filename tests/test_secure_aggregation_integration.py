@@ -9,7 +9,11 @@ from fed_perso_xai.fl.client import (
     apply_shared_parameter_payload,
     extract_shared_parameter_payload,
 )
-from fed_perso_xai.fl.strategy import _build_secure_aggregator, _weighted_average_parameter_sets
+from fed_perso_xai.fl.strategy import (
+    _build_secure_aggregator,
+    _plan_secure_quantization,
+    _weighted_average_parameter_sets,
+)
 from fed_perso_xai.models import load_global_model
 from fed_perso_xai.orchestration.data_preparation import prepare_federated_dataset
 from fed_perso_xai.orchestration.training import train_federated_from_prepared
@@ -95,6 +99,52 @@ def test_secure_aggregator_matches_plain_shared_weighted_average() -> None:
 
     np.testing.assert_allclose(secure_average[0], plain_average[0], atol=1e-5, rtol=0.0)
     np.testing.assert_allclose(secure_average[1], plain_average[1], atol=1e-5, rtol=0.0)
+
+
+def test_secure_quantization_plan_reduces_scale_when_payloads_would_overflow() -> None:
+    payloads = [
+        [np.array([6.0, -1.0], dtype=np.float64), np.array([0.25], dtype=np.float64)],
+        [np.array([5.0, 2.0], dtype=np.float64), np.array([-0.5], dtype=np.float64)],
+    ]
+
+    plan = _plan_secure_quantization(
+        payloads,
+        requested_scale=1 << 28,
+        field_modulus=3_037_000_493,
+    )
+
+    assert plan.requested_scale == 1 << 28
+    assert plan.effective_scale < plan.requested_scale
+    assert plan.effective_scale == 138_045_476
+    assert plan.max_component_l1 == pytest.approx(11.0)
+
+
+def test_secure_aggregator_handles_large_modulus_with_many_helpers() -> None:
+    config = FederatedTrainingConfig(
+        dataset_name="adult_income",
+        secure_aggregation=True,
+        secure_num_helpers=15,
+        secure_privacy_threshold=2,
+        secure_reconstruction_threshold=3,
+        secure_field_modulus=3_037_000_493,
+        secure_quantization_scale=1 << 24,
+        secure_seed=7,
+    )
+    secure_aggregator = _build_secure_aggregator(config)
+    payloads = [
+        [np.array([0.125, -0.25, 0.5], dtype=np.float64)],
+        [np.array([0.0625, 0.25, -0.125], dtype=np.float64)],
+    ]
+
+    result = secure_aggregator.aggregate(payloads, round_id=3, client_ids=["a", "b"])
+
+    assert result.max_abs_error < 1e-6
+    np.testing.assert_allclose(
+        result.aggregated_tensors[0],
+        np.array([0.1875, 0.0, 0.375], dtype=np.float64),
+        atol=1e-6,
+        rtol=0.0,
+    )
 
 
 @pytest.mark.skipif(

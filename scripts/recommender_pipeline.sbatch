@@ -2,9 +2,7 @@
 #
 # Generic single-job Slurm script for rerunning one recommender pipeline.
 # Submit with:
-#   sbatch scripts/recommender_pipeline.sbatch
-#
-# To reuse this script for another task, change only the TARGET_CMD block below.
+#   sbatch scripts/recommender_pipeline.sbatch RUN_ID SECURE_AGGREGATION [SELECTION_ID] [PERSONA]
 #
 
 # Job metadata -----------------------------------------------------------------
@@ -14,8 +12,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --partition=main
-#SBATCH --cpus-per-task=15
-#SBATCH --mem=60G
+#SBATCH --cpus-per-task=7
+#SBATCH --mem=80G
 #SBATCH --time=4:00:00
 
 # Environment setup ------------------------------------------------------------
@@ -34,18 +32,47 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
+usage() {
+  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID SECURE_AGGREGATION [SELECTION_ID] [PERSONA]" >&2
+  echo "  RUN_ID: predictive training run id" >&2
+  echo "  SECURE_AGGREGATION: 1/0 or secure/plain" >&2
+  echo "  SELECTION_ID defaults to test__max-20__seed-42" >&2
+  echo "  PERSONA defaults to lay" >&2
+}
+
+if [[ $# -lt 2 || $# -gt 4 ]]; then
+  usage
+  exit 2
+fi
+
+RUN_ID="$1"
+SECURE_AGGREGATION_RAW="$2"
+SELECTION_ID="${3:-${SELECTION_ID:-test__max-20__seed-42}}"
+PERSONA="${4:-${PERSONA:-lay}}"
+
+case "${SECURE_AGGREGATION_RAW,,}" in
+  1|true|secure)
+    SECURE_AGGREGATION_VALUE=1
+    ;;
+  0|false|plain)
+    SECURE_AGGREGATION_VALUE=0
+    ;;
+  *)
+    echo "ERROR: SECURE_AGGREGATION must be one of 1, 0, secure, plain, true, false." >&2
+    exit 2
+    ;;
+esac
+
 # Workload ---------------------------------------------------------------------
 echo "[$(date --iso-8601=seconds)] Starting recommender pipeline job"
 echo "  project_root=${PROJECT_ROOT}"
 echo "  host=${HOSTNAME}"
 echo "  pwd=$(pwd)"
+echo "  run_id=${RUN_ID}"
+echo "  selection_id=${SELECTION_ID}"
+echo "  persona=${PERSONA}"
+echo "  secure_aggregation=${SECURE_AGGREGATION_VALUE}"
 
-# Change only this block when reusing the script for another target.
-# With the current recommender runtime, each Ray client reserves 1 CPU.
-# Setting cpus-per-task to the number of clients allows all clients to run concurrently.
-# Set SKIP_LABELING=1 here when pairwise labels already exist and should be reused.
-# Secure aggregation and clustered training are toggled here via environment variables
-# passed to the wrapper.
 TARGET_CMD=(
   env
   FORCE_TRAINING=1
@@ -54,18 +81,18 @@ TARGET_CMD=(
   RECOMMENDER_TYPE=svm_rank
   TRAIN_BATCH_SIZE=2048
   SIMULATION_BACKEND=auto
-  SECURE_AGGREGATION=1
+  SECURE_AGGREGATION=${SECURE_AGGREGATION_VALUE}
   CLUSTERED=0
-  SECURE_NUM_HELPERS=10
+  SECURE_NUM_HELPERS=15
   SECURE_PRIVACY_THRESHOLD=2
   SECURE_RECONSTRUCTION_THRESHOLD=3
-  SECURE_FIELD_MODULUS=2147483647
-  SECURE_QUANTIZATION_SCALE=65536
+  SECURE_FIELD_MODULUS=3037000493
+  SECURE_QUANTIZATION_SCALE=16777216
   SECURE_SEED=7
   scripts/run_recommender_pipeline.sh
-  federated-training-adult_income-20260427t063710289874+0000-logistic_regression-15clients-alpha0.3-seed42-536f2cd41ed2
-  test__max-20__seed-42
-  lay
+  "${RUN_ID}"
+  "${SELECTION_ID}"
+  "${PERSONA}"
 )
 
 printf '  command='

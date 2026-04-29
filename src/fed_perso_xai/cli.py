@@ -388,7 +388,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Load the plain recommender artifact path when both secure and plain outputs exist.",
     )
-    recommender_eval_parser.set_defaults(secure_aggregation=None)
+    recommender_eval_group.add_argument(
+        "--clustered",
+        action="store_true",
+        help="Load the clustered recommender artifact path when clustered and non-clustered outputs coexist.",
+    )
+    recommender_eval_parser.set_defaults(secure_aggregation=None, clustered=None)
     recommender_eval_parser.add_argument("--top-k", default="1,3,5")
     recommender_eval_parser.add_argument("--output", type=Path)
 
@@ -774,6 +779,7 @@ def main() -> None:
             label_filename=args.label_filename,
             top_k=_parse_top_k(args.top_k),
             secure_aggregation=args.secure_aggregation,
+            clustered=args.clustered,
             paths=_build_artifact_paths(args),
             output_path=args.output,
         )

@@ -285,6 +285,8 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     )
 
     assert metadata["clustered"] is True
+    assert metadata["training_variant"] == "clustered"
+    assert artifacts.run_dir.name == "clustered"
     assert projection_spec_calls == [(3, 8, 13)]
     assert len(captured_projector_calls) == 8
     assert {call[0] for call in captured_projector_calls} == {
@@ -332,6 +334,7 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
 
     evaluation = json.loads(artifacts.evaluation_summary_path.read_text(encoding="utf-8"))
     assert evaluation["status"] == "evaluated_clustered"
+    assert evaluation["training_variant"] == "clustered"
     assert len(evaluation["clusters"]) == 3
     assert "cluster_id" not in evaluation["aggregate"]
     assert "dataset_index" not in evaluation["aggregate"]
@@ -394,6 +397,8 @@ def test_clustered_recommender_training_supports_both_backends(
     assert artifacts.cluster_manifest_path.exists()
     assert metadata["status"] == "completed"
     assert metadata["clustered"] is True
+    assert metadata["training_variant"] == "clustered"
+    assert artifacts.run_dir.name == "clustered"
     assert metadata["recommender_type"] == recommender_type
 
 

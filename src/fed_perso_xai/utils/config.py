@@ -250,7 +250,7 @@ class RecommenderFederatedTrainingConfig:
     learning_rate: float = 0.05
     l2_regularization: float = 0.0
     seed: int = 42
-    top_k: tuple[int, ...] = (1, 3, 5)
+    top_k: tuple[int, ...] = (1, 3, 5, 8)
     context_filename: str = "candidate_context.parquet"
     label_filename: str = "pairwise_labels.parquet"
     clients: str = "all"
