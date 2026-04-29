@@ -66,11 +66,13 @@ def train_federated_recommender(
     _require_safe_segment(config.context_filename, label="context_filename")
     _require_safe_segment(config.label_filename, label="label_filename")
     run_context = resolve_federated_run_context(paths=config.paths, run_id=config.run_id)
+    aggregation_mode = _aggregation_mode_label(config.secure_aggregation)
     run_dir = _recommender_training_dir(
         run_context.run_artifact_dir,
         config.selection_id,
         config.persona,
         recommender_type=config.recommender_type,
+        secure_aggregation=config.secure_aggregation,
     )
     artifacts = _build_artifacts(run_dir)
     if artifacts.completion_marker_path.exists() and not force:
@@ -170,6 +172,7 @@ def train_federated_recommender(
         "run_id": config.run_id,
         "selection_id": config.selection_id,
         "persona": config.persona,
+        "aggregation_mode": aggregation_mode,
         "feature_columns": list(feature_columns),
         "feature_count": int(len(feature_columns)),
         "context_filename": config.context_filename,
@@ -212,6 +215,7 @@ def train_federated_recommender(
                 paths=config.paths,
                 output_path=artifacts.evaluation_summary_path,
                 recommender_type=config.recommender_type,
+                secure_aggregation=config.secure_aggregation,
             )
     else:
         evaluation = {
@@ -219,6 +223,7 @@ def train_federated_recommender(
             "run_id": config.run_id,
             "selection_id": config.selection_id,
             "persona": config.persona,
+            "aggregation_mode": aggregation_mode,
             "model_path": str(artifacts.model_artifact_path),
             "feature_count": int(len(feature_columns)),
             "client_count": 0,
@@ -236,6 +241,7 @@ def train_federated_recommender(
         "selection_id": config.selection_id,
         "persona": config.persona,
         "recommender_type": config.recommender_type,
+        "aggregation_mode": aggregation_mode,
         "model_type": recommender_artifact_model_type(config.recommender_type),
         "model_artifact_path": str(artifacts.model_artifact_path.relative_to(run_dir)),
         "feature_metadata_path": str(artifacts.feature_metadata_path.relative_to(run_dir)),
@@ -265,6 +271,7 @@ def train_federated_recommender(
         "selection_id": config.selection_id,
         "persona": config.persona,
         "recommender_type": config.recommender_type,
+        "aggregation_mode": aggregation_mode,
         "clustered": bool(training_result.clustered),
         "started_at": started_at,
         "completed_at": completed_at,
@@ -345,6 +352,7 @@ def evaluate_recommender_model(
     context_filename: str = "candidate_context.parquet",
     label_filename: str = "pairwise_labels.parquet",
     top_k: Iterable[int] = (1, 3, 5),
+    secure_aggregation: bool | None = None,
     paths: ArtifactPaths | None = None,
     output_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -358,11 +366,12 @@ def evaluate_recommender_model(
     artifact_paths = paths or ArtifactPaths()
     run_context = resolve_federated_run_context(paths=artifact_paths, run_id=run_id)
     resolved_model_path = model_path or (
-        _recommender_training_dir(
+        _resolve_recommender_training_dir(
             run_context.run_artifact_dir,
             selection_id,
             persona,
             recommender_type=recommender_type,
+            secure_aggregation=secure_aggregation,
         )
         / "model"
         / "global_recommender.npz"
@@ -418,6 +427,7 @@ def evaluate_recommender_model(
         "selection_id": selection_id,
         "persona": persona,
         "recommender_type": recommender_type,
+        "aggregation_mode": _artifact_aggregation_mode_label(resolved_model_path.parent.parent),
         "model_path": str(resolved_model_path),
         "feature_count": int(len(feature_columns)),
         "client_count": int(len(client_metrics)),
@@ -659,6 +669,7 @@ def _evaluate_clustered_recommender_models(
         "selection_id": selection_id,
         "persona": persona,
         "recommender_type": recommender_type,
+        "aggregation_mode": _artifact_aggregation_mode_label(next(iter(cluster_model_paths.values())).parent.parent),
         "clustered": True,
         "feature_count": int(len(feature_columns)),
         "client_count": int(len(client_metrics)),
@@ -682,7 +693,11 @@ def _evaluate_clustered_recommender_models(
     return payload
 
 
-def _recommender_training_dir(
+def _aggregation_mode_label(secure_aggregation: bool) -> str:
+    return "secure" if bool(secure_aggregation) else "plain"
+
+
+def _legacy_recommender_training_dir(
     run_artifact_dir: Path,
     selection_id: str,
     persona: str,
@@ -696,6 +711,102 @@ def _recommender_training_dir(
         / persona
         / f"{recommender_type}_fedavg"
     )
+
+
+def _recommender_training_dir(
+    run_artifact_dir: Path,
+    selection_id: str,
+    persona: str,
+    *,
+    recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
+    secure_aggregation: bool,
+) -> Path:
+    return _legacy_recommender_training_dir(
+        run_artifact_dir,
+        selection_id,
+        persona,
+        recommender_type=recommender_type,
+    ) / _aggregation_mode_label(secure_aggregation)
+
+
+def _resolve_recommender_training_dir(
+    run_artifact_dir: Path,
+    selection_id: str,
+    persona: str,
+    *,
+    recommender_type: str = DEFAULT_RECOMMENDER_TYPE,
+    secure_aggregation: bool | None = None,
+) -> Path:
+    legacy_dir = _legacy_recommender_training_dir(
+        run_artifact_dir,
+        selection_id,
+        persona,
+        recommender_type=recommender_type,
+    )
+    plain_dir = _recommender_training_dir(
+        run_artifact_dir,
+        selection_id,
+        persona,
+        recommender_type=recommender_type,
+        secure_aggregation=False,
+    )
+    secure_dir = _recommender_training_dir(
+        run_artifact_dir,
+        selection_id,
+        persona,
+        recommender_type=recommender_type,
+        secure_aggregation=True,
+    )
+    if secure_aggregation is not None:
+        preferred_dir = secure_dir if secure_aggregation else plain_dir
+        if preferred_dir.exists():
+            return preferred_dir
+        legacy_secure_aggregation = _legacy_training_dir_secure_aggregation(legacy_dir)
+        if legacy_dir.exists() and (
+            legacy_secure_aggregation == secure_aggregation
+            or (legacy_secure_aggregation is None and not secure_aggregation)
+        ):
+            return legacy_dir
+        return preferred_dir
+
+    existing_mode_dirs = [path for path in (plain_dir, secure_dir) if path.exists()]
+    if len(existing_mode_dirs) == 1:
+        return existing_mode_dirs[0]
+    if len(existing_mode_dirs) > 1:
+        raise FileExistsError(
+            "Both plain and secure recommender training directories exist for "
+            f"selection_id={selection_id!r}, persona={persona!r}, recommender_type={recommender_type!r}. "
+            "Pass secure_aggregation explicitly or provide model_path."
+        )
+    if legacy_dir.exists():
+        return legacy_dir
+    return plain_dir
+
+
+def _legacy_training_dir_secure_aggregation(train_dir: Path) -> bool | None:
+    metadata_path = train_dir / "training_metadata.json"
+    if not metadata_path.exists():
+        return None
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    config = payload.get("config")
+    if not isinstance(config, Mapping):
+        return None
+    raw_value = config.get("secure_aggregation")
+    if raw_value is None:
+        return None
+    return bool(raw_value)
+
+
+def _artifact_aggregation_mode_label(train_dir: Path) -> str | None:
+    if train_dir.name in {"plain", "secure"}:
+        return train_dir.name
+    secure_aggregation = _legacy_training_dir_secure_aggregation(train_dir)
+    if secure_aggregation is None:
+        return None
+    return _aggregation_mode_label(secure_aggregation)
 
 
 def _write_training_history_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:

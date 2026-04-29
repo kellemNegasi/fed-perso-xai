@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from fed_perso_xai.orchestration.recommender_training import (
+    _recommender_training_dir,
+    _resolve_recommender_training_dir,
     evaluate_recommender_model,
     train_federated_recommender,
 )
@@ -29,6 +32,63 @@ def _paths(tmp_path):
         comparison_root=tmp_path / "comparisons",
         cache_dir=tmp_path / "cache",
     )
+
+
+def test_recommender_training_dir_includes_aggregation_mode() -> None:
+    run_root = Path("/tmp/unit-run")
+
+    assert _recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        secure_aggregation=False,
+    ) == run_root / "recommender_training" / "selection-0" / "lay" / "svm_rank_fedavg" / "plain"
+    assert _recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        secure_aggregation=True,
+    ) == run_root / "recommender_training" / "selection-0" / "lay" / "svm_rank_fedavg" / "secure"
+
+
+def test_resolve_recommender_training_dir_requires_explicit_mode_when_both_exist(tmp_path) -> None:
+    run_root = tmp_path / "run"
+    plain_dir = _recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        secure_aggregation=False,
+    )
+    secure_dir = _recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        secure_aggregation=True,
+    )
+    plain_dir.mkdir(parents=True)
+    secure_dir.mkdir(parents=True)
+
+    with pytest.raises(FileExistsError, match="Both plain and secure recommender training directories exist"):
+        _resolve_recommender_training_dir(run_root, "selection-0", "lay")
+
+
+def test_resolve_recommender_training_dir_falls_back_to_legacy_plain_dir(tmp_path) -> None:
+    run_root = tmp_path / "run"
+    legacy_dir = run_root / "recommender_training" / "selection-0" / "lay" / "svm_rank_fedavg"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "training_metadata.json").write_text(
+        json.dumps({"config": {"secure_aggregation": False}}),
+        encoding="utf-8",
+    )
+
+    resolved = _resolve_recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        secure_aggregation=False,
+    )
+
+    assert resolved == legacy_dir
 
 
 @pytest.mark.parametrize(
@@ -240,6 +300,7 @@ def test_train_federated_recommender_allows_clients_without_eval_pairs(tmp_path)
     )
 
     assert artifacts.model_artifact_path.exists()
+    assert artifacts.run_dir.name == "plain"
     assert metadata["status"] == "completed"
     assert metadata["clients_without_eval"] == ["client_001"]
     assert metadata["raw_pair_count"] == 2

@@ -138,6 +138,11 @@ TRAIN_EXTRA+=(--clustering-k "$CLUSTERING_K")
 TRAIN_EXTRA+=(--clustering-pca-components "$CLUSTERING_PCA_COMPONENTS")
 
 EVAL_EXTRA=()
+if [[ "$SECURE_AGGREGATION" == "1" ]]; then
+  EVAL_EXTRA+=(--secure-aggregation)
+else
+  EVAL_EXTRA+=(--plain-aggregation)
+fi
 if [[ -n "$EVAL_OUTPUT" ]]; then
   EVAL_EXTRA+=(--output "$EVAL_OUTPUT")
 fi

@@ -375,6 +375,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_RECOMMENDER_TYPE,
     )
     recommender_eval_parser.add_argument("--model-path", type=Path)
+    recommender_eval_group = recommender_eval_parser.add_mutually_exclusive_group()
+    recommender_eval_group.add_argument(
+        "--secure-aggregation",
+        dest="secure_aggregation",
+        action="store_true",
+        help="Load the secure recommender artifact path when both secure and plain outputs exist.",
+    )
+    recommender_eval_group.add_argument(
+        "--plain-aggregation",
+        dest="secure_aggregation",
+        action="store_false",
+        help="Load the plain recommender artifact path when both secure and plain outputs exist.",
+    )
+    recommender_eval_parser.set_defaults(secure_aggregation=None)
     recommender_eval_parser.add_argument("--top-k", default="1,3,5")
     recommender_eval_parser.add_argument("--output", type=Path)
 
@@ -759,6 +773,7 @@ def main() -> None:
             context_filename=args.context_filename,
             label_filename=args.label_filename,
             top_k=_parse_top_k(args.top_k),
+            secure_aggregation=args.secure_aggregation,
             paths=_build_artifact_paths(args),
             output_path=args.output,
         )

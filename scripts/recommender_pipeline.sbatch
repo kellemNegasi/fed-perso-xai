@@ -54,7 +54,7 @@ TARGET_CMD=(
   RECOMMENDER_TYPE=svm_rank
   TRAIN_BATCH_SIZE=2048
   SIMULATION_BACKEND=auto
-  SECURE_AGGREGATION=0
+  SECURE_AGGREGATION=1
   CLUSTERED=0
   SECURE_NUM_HELPERS=10
   SECURE_PRIVACY_THRESHOLD=2
@@ -63,7 +63,7 @@ TARGET_CMD=(
   SECURE_QUANTIZATION_SCALE=65536
   SECURE_SEED=7
   scripts/run_recommender_pipeline.sh
-  federated-training-adult_income-20260425t192946577949+0000-logistic_regression-10clients-alpha1.0-seed42-dba03a50b07b
+  federated-training-adult_income-20260427t063710289874+0000-logistic_regression-15clients-alpha0.3-seed42-536f2cd41ed2
   test__max-20__seed-42
   lay
 )
