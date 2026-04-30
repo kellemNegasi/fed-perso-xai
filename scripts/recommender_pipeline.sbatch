@@ -2,7 +2,7 @@
 #
 # Generic single-job Slurm script for rerunning one recommender pipeline.
 # Submit with:
-#   sbatch scripts/recommender_pipeline.sbatch RUN_ID SECURE_AGGREGATION [SELECTION_ID] [PERSONA]
+#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA]
 #
 
 # Job metadata -----------------------------------------------------------------
@@ -15,7 +15,6 @@
 #SBATCH --cpus-per-task=7
 #SBATCH --mem=80G
 #SBATCH --time=4:00:00
-#SBATCH --nodelist=ares3
 # Environment setup ------------------------------------------------------------
 set -euo pipefail
 
@@ -33,9 +32,9 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 usage() {
-  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID SECURE_AGGREGATION [SELECTION_ID] [PERSONA]" >&2
+  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA]" >&2
   echo "  RUN_ID: predictive training run id" >&2
-  echo "  SECURE_AGGREGATION: 1/0 or secure/plain" >&2
+  echo "  MODE: plain, secure, clustered, 1/0, or true/false" >&2
   echo "  SELECTION_ID defaults to test__max-20__seed-42" >&2
   echo "  PERSONA defaults to lay" >&2
 }
@@ -46,21 +45,30 @@ if [[ $# -lt 2 || $# -gt 4 ]]; then
 fi
 
 RUN_ID="$1"
-SECURE_AGGREGATION_RAW="$2"
+MODE_RAW="$2"
 SELECTION_ID="${3:-${SELECTION_ID:-test__max-20__seed-42}}"
 PERSONA="${4:-${PERSONA:-lay}}"
 RAY_NUM_CPUS="${RAY_NUM_CPUS:-4}"
 CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-1}"
 
-case "${SECURE_AGGREGATION_RAW,,}" in
+case "${MODE_RAW,,}" in
   1|true|secure)
     SECURE_AGGREGATION_VALUE=1
+    CLUSTERED_VALUE=0
+    MODE_VALUE="secure"
     ;;
   0|false|plain)
     SECURE_AGGREGATION_VALUE=0
+    CLUSTERED_VALUE=0
+    MODE_VALUE="plain"
+    ;;
+  clustered)
+    SECURE_AGGREGATION_VALUE=0
+    CLUSTERED_VALUE=1
+    MODE_VALUE="clustered"
     ;;
   *)
-    echo "ERROR: SECURE_AGGREGATION must be one of 1, 0, secure, plain, true, false." >&2
+    echo "ERROR: MODE must be one of plain, secure, clustered, 1, 0, true, or false." >&2
     exit 2
     ;;
 esac
@@ -73,7 +81,9 @@ echo "  pwd=$(pwd)"
 echo "  run_id=${RUN_ID}"
 echo "  selection_id=${SELECTION_ID}"
 echo "  persona=${PERSONA}"
+echo "  mode=${MODE_VALUE}"
 echo "  secure_aggregation=${SECURE_AGGREGATION_VALUE}"
+echo "  clustered=${CLUSTERED_VALUE}"
 echo "  ray_num_cpus=${RAY_NUM_CPUS}"
 echo "  client_num_cpus=${CLIENT_NUM_CPUS}"
 
@@ -88,7 +98,7 @@ TARGET_CMD=(
   RAY_NUM_CPUS=${RAY_NUM_CPUS}
   CLIENT_NUM_CPUS=${CLIENT_NUM_CPUS}
   SECURE_AGGREGATION=${SECURE_AGGREGATION_VALUE}
-  CLUSTERED=0
+  CLUSTERED=${CLUSTERED_VALUE}
   SECURE_NUM_HELPERS=15
   SECURE_PRIVACY_THRESHOLD=2
   SECURE_RECONSTRUCTION_THRESHOLD=3
