@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
+import itertools
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
@@ -32,7 +33,7 @@ from fed_perso_xai.recommender.clustering import (
     RecommenderWeightVectorExtractor,
     SecureClusterModelAggregator,
     SecureKMeansClusterer,
-    build_random_projection_spec,
+    build_centered_pca_projection_spec,
     summarize_cluster_sizes,
     weighted_average_parameter_sets,
 )
@@ -66,6 +67,39 @@ class RecommenderSimulationArtifacts:
     clustered_rounds: list[ClusteredRoundResult] = field(default_factory=list)
     final_cluster_assignments: dict[str, int] = field(default_factory=dict)
     final_cluster_parameters: dict[int, list[np.ndarray]] = field(default_factory=dict)
+
+
+def _align_cluster_labels_to_previous_round(
+    *,
+    previous_assignments: Mapping[str, int],
+    current_assignments: Mapping[str, int],
+    cluster_count: int,
+) -> tuple[dict[int, int], int]:
+    """Align current cluster ids to the previous round by maximum client overlap."""
+
+    identity_mapping = {cluster_id: cluster_id for cluster_id in range(cluster_count)}
+    shared_clients = sorted(set(previous_assignments).intersection(current_assignments))
+    if not shared_clients:
+        return identity_mapping, 0
+
+    cluster_ids = tuple(range(cluster_count))
+    best_mapping = identity_mapping
+    best_permutation = cluster_ids
+    best_overlap = -1
+    for permutation in itertools.permutations(cluster_ids):
+        candidate_mapping = {
+            current_cluster_id: aligned_cluster_id
+            for current_cluster_id, aligned_cluster_id in zip(cluster_ids, permutation, strict=True)
+        }
+        overlap = sum(
+            int(previous_assignments[client_id]) == candidate_mapping[int(current_assignments[client_id])]
+            for client_id in shared_clients
+        )
+        if overlap > best_overlap or (overlap == best_overlap and permutation < best_permutation):
+            best_mapping = candidate_mapping
+            best_permutation = permutation
+            best_overlap = overlap
+    return best_mapping, int(best_overlap)
 
 
 def run_federated_recommender_training(
@@ -351,12 +385,6 @@ def _run_clustered_recommender_training(
     }
     round_history: list[dict[str, object]] = []
     clustered_rounds: list[ClusteredRoundResult] = []
-    input_dimension = int(extractor.flatten(initial_parameters).shape[0])
-    projection_spec = build_random_projection_spec(
-        input_dimension=input_dimension,
-        requested_components=clustering_config.pca_components,
-        seed=int(config.seed),
-    )
 
     warnings = [
         "Clustered recommender training uses the in-process clustered sequential runtime.",
@@ -397,14 +425,24 @@ def _run_clustered_recommender_training(
             local_weights[client_name] = int(dataset.y_train.shape[0])
             train_losses[client_name] = float(train_loss)
 
+        ordered_local_parameters = {
+            client_name: local_parameters[client_name]
+            for client_name in sorted(local_parameters)
+        }
+        _, flattened_vectors = extractor.flatten_many(ordered_local_parameters)
+        projection_spec = build_centered_pca_projection_spec(
+            flattened_vectors=flattened_vectors,
+            requested_components=clustering_config.pca_components,
+            seed=int(config.seed + server_round - 1),
+        )
         shared_reduced_vectors = [
             projector.build_private_reduced_vector(
                 client_id=client_name,
-                parameters=local_parameters[client_name],
+                parameters=ordered_local_parameters[client_name],
                 projection_spec=projection_spec,
                 round_id=server_round,
             )
-            for client_name in sorted(local_parameters)
+            for client_name in ordered_local_parameters
         ]
         clustering_seed = int(config.seed + server_round - 1)
         assignments_result = clusterer.cluster(
@@ -413,9 +451,17 @@ def _run_clustered_recommender_training(
             seed=clustering_seed,
             clustering_config=clustering_config,
         )
-        assignments = {
+        raw_assignments = {
             shared_vector.client_id: int(label)
             for shared_vector, label in zip(shared_reduced_vectors, assignments_result.labels, strict=True)
+        }
+        label_alignment, label_alignment_overlap = _align_cluster_labels_to_previous_round(
+            previous_assignments=previous_assignments,
+            current_assignments=raw_assignments,
+            cluster_count=clustering_config.k,
+        )
+        assignments = {
+            client_id: int(label_alignment[cluster_id]) for client_id, cluster_id in raw_assignments.items()
         }
         cluster_sizes = summarize_cluster_sizes(assignments, clustering_config.k)
         aggregated_clusters = secure_aggregator.aggregate(
@@ -457,11 +503,16 @@ def _run_clustered_recommender_training(
                 cluster_sizes=dict(cluster_sizes),
                 projection_metadata={
                     **projection_spec.to_metadata(),
-                    "projection_generation_mode": "seeded_stateless_broadcast_once",
-                    "server_observes_raw_weights_during_clustering": False,
+                    "projection_generation_mode": "server_fit_from_centered_local_models_per_round",
+                    "server_observes_raw_weights_during_projection_fit": True,
                 },
                 secure_clustering_metadata={
                     **assignments_result.secure_metadata,
+                    "label_alignment_to_previous_round": {
+                        str(cluster_id): int(aligned_cluster_id)
+                        for cluster_id, aligned_cluster_id in label_alignment.items()
+                    },
+                    "label_alignment_overlap_count": int(label_alignment_overlap),
                     "initial_centroid_indices": [
                         int(value) for value in assignments_result.initial_centroid_indices
                     ],

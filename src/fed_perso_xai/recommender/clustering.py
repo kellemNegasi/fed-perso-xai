@@ -50,6 +50,53 @@ class RandomProjectionSpec:
 
 
 @dataclass(frozen=True)
+class PCAProjectionSpec:
+    """Centered PCA basis broadcast to clients for local projection."""
+
+    projection_matrix: np.ndarray
+    mean_vector: np.ndarray
+    requested_components: int
+    seed: int
+    explained_variance: np.ndarray
+    explained_variance_ratio: np.ndarray
+    fit_client_count: int
+
+    def transform(self, flat_vector: np.ndarray) -> np.ndarray:
+        vector = np.asarray(flat_vector, dtype=np.float64).reshape(-1)
+        if vector.shape[0] != self.projection_matrix.shape[0]:
+            raise ValueError(
+                f"Expected flattened vector length {self.projection_matrix.shape[0]}, got {vector.shape[0]}."
+            )
+        centered = vector - self.mean_vector
+        return centered @ self.projection_matrix
+
+    @property
+    def input_dimension(self) -> int:
+        return int(self.projection_matrix.shape[0])
+
+    @property
+    def actual_components(self) -> int:
+        return int(self.projection_matrix.shape[1])
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "requested_components": int(self.requested_components),
+            "actual_components": int(self.actual_components),
+            "input_dimension": int(self.input_dimension),
+            "projection_matrix_shape": [int(value) for value in self.projection_matrix.shape],
+            "projection_type": "pca_covariance_eigh",
+            "projection_seed": int(self.seed),
+            "data_dependent_fit": True,
+            "projection_applied": "client_side",
+            "projection_basis_scope": "round_centered_client_models",
+            "centering_applied": True,
+            "fit_client_count": int(self.fit_client_count),
+            "explained_variance": [float(value) for value in self.explained_variance],
+            "explained_variance_ratio": [float(value) for value in self.explained_variance_ratio],
+        }
+
+
+@dataclass(frozen=True)
 class SecureClusterAssignments:
     """Assignments and metadata from one secure clustering round."""
 
@@ -145,6 +192,53 @@ def build_random_projection_spec(
     )
 
 
+def build_centered_pca_projection_spec(
+    *,
+    flattened_vectors: np.ndarray,
+    requested_components: int,
+    seed: int,
+) -> PCAProjectionSpec:
+    matrix = np.asarray(flattened_vectors, dtype=np.float64)
+    if matrix.ndim != 2:
+        raise ValueError("flattened_vectors must be a 2D array.")
+    if matrix.shape[0] == 0 or matrix.shape[1] == 0:
+        raise ValueError("flattened_vectors must contain at least one row and one column.")
+    if int(requested_components) <= 0:
+        raise ValueError("requested_components must be positive.")
+
+    # TODO This leaks some form aggregated information, consider updating it.
+    mean_vector = np.mean(matrix, axis=0)
+    centered = matrix - mean_vector
+    covariance = (centered.T @ centered) / float(matrix.shape[0])
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    order = np.argsort(eigenvalues)[::-1]
+    component_count = min(int(requested_components), int(matrix.shape[1]))
+    selected_eigenvalues = np.clip(eigenvalues[order[:component_count]], a_min=0.0, a_max=None)
+    projection_matrix = np.asarray(eigenvectors[:, order[:component_count]], dtype=np.float64)
+
+    # Stabilize signs so repeated runs produce consistent components.
+    for column_index in range(projection_matrix.shape[1]):
+        column = projection_matrix[:, column_index]
+        anchor_index = int(np.argmax(np.abs(column)))
+        if float(column[anchor_index]) < 0.0:
+            projection_matrix[:, column_index] *= -1.0
+
+    total_variance = float(np.clip(np.sum(eigenvalues), a_min=0.0, a_max=None))
+    if total_variance > 0.0:
+        explained_variance_ratio = selected_eigenvalues / total_variance
+    else:
+        explained_variance_ratio = np.zeros_like(selected_eigenvalues, dtype=np.float64)
+    return PCAProjectionSpec(
+        projection_matrix=projection_matrix,
+        mean_vector=np.asarray(mean_vector, dtype=np.float64),
+        requested_components=int(requested_components),
+        seed=int(seed),
+        explained_variance=np.asarray(selected_eigenvalues, dtype=np.float64),
+        explained_variance_ratio=np.asarray(explained_variance_ratio, dtype=np.float64),
+        fit_client_count=int(matrix.shape[0]),
+    )
+
+
 class ClientSideRandomProjector:
     """Client-local flatten -> random projection -> secret sharing for clustered training."""
 
@@ -157,7 +251,7 @@ class ClientSideRandomProjector:
         *,
         client_id: str,
         parameters: Sequence[np.ndarray],
-        projection_spec: RandomProjectionSpec,
+        projection_spec: RandomProjectionSpec | PCAProjectionSpec,
         round_id: int,
     ) -> SecretSharedReducedVector:
         protocol = _build_private_clustering_protocol(self.training_config)
@@ -189,7 +283,7 @@ class SecureKMeansClusterer:
         self,
         shared_reduced_vectors: Sequence[SecretSharedReducedVector],
         *,
-        projection_spec: RandomProjectionSpec,
+        projection_spec: RandomProjectionSpec | PCAProjectionSpec,
         seed: int,
         clustering_config: RecommenderClusteringConfig,
     ) -> SecureClusterAssignments:

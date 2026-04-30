@@ -8,12 +8,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from fed_perso_xai.fl.recommender_simulation import _align_cluster_labels_to_previous_round
 from fed_perso_xai.orchestration.recommender_training import train_federated_recommender
 from fed_perso_xai.recommender.clustering import (
     ClientSideRandomProjector,
+    PCAProjectionSpec,
     RandomProjectionSpec,
     SecretSharedReducedVector,
     SecureClusterAssignments,
+    build_centered_pca_projection_spec,
     build_random_projection_spec,
 )
 from fed_perso_xai.utils.config import (
@@ -25,6 +28,41 @@ from fed_perso_xai.utils.config import (
 FLOWER_AVAILABLE = importlib.util.find_spec("flwr") is not None
 PYARROW_AVAILABLE = importlib.util.find_spec("pyarrow") is not None
 LCC_AVAILABLE = importlib.util.find_spec("lcc_lib") is not None
+
+
+def test_align_cluster_labels_to_previous_round_matches_by_maximum_overlap() -> None:
+    previous_assignments = {
+        "client_000": 0,
+        "client_001": 0,
+        "client_002": 1,
+        "client_003": 2,
+    }
+    current_assignments = {
+        "client_000": 2,
+        "client_001": 2,
+        "client_002": 0,
+        "client_003": 1,
+    }
+
+    mapping, overlap = _align_cluster_labels_to_previous_round(
+        previous_assignments=previous_assignments,
+        current_assignments=current_assignments,
+        cluster_count=3,
+    )
+
+    assert mapping == {0: 1, 1: 2, 2: 0}
+    assert overlap == 4
+
+
+def test_align_cluster_labels_to_previous_round_returns_identity_without_shared_clients() -> None:
+    mapping, overlap = _align_cluster_labels_to_previous_round(
+        previous_assignments={"client_000": 0},
+        current_assignments={"client_111": 2},
+        cluster_count=3,
+    )
+
+    assert mapping == {0: 0, 1: 1, 2: 2}
+    assert overlap == 0
 
 
 def _paths(tmp_path: Path) -> ArtifactPaths:
@@ -191,9 +229,10 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
         "client_002": [np.asarray([-1.0, -2.0], dtype=np.float64), np.asarray([-0.1], dtype=np.float64)],
         "client_003": [np.asarray([3.0, 3.5], dtype=np.float64), np.asarray([0.4], dtype=np.float64)],
     }
-    projection_spec_calls: list[tuple[int, int, int]] = []
+    projection_spec_calls: list[tuple[tuple[int, int], int, int]] = []
     captured_projector_calls: list[tuple[str, int]] = []
     secure_aggregate_calls: list[tuple[int, tuple[str, ...]]] = []
+    flatten_many_calls: list[tuple[str, ...]] = []
 
     import fed_perso_xai.fl.recommender_simulation as recommender_simulation
     import fed_perso_xai.recommender.clustering as clustering_module
@@ -203,17 +242,21 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
         return fake_local_parameters[dataset.client_name], 0.01
 
     original_build = ClientSideRandomProjector.build_private_reduced_vector
-    original_projection_builder = recommender_simulation.build_random_projection_spec
-    def spy_projection_builder(*, input_dimension, requested_components, seed):
-        projection_spec_calls.append((int(input_dimension), int(requested_components), int(seed)))
+    original_projection_builder = recommender_simulation.build_centered_pca_projection_spec
+
+    def spy_projection_builder(*, flattened_vectors, requested_components, seed):
+        projection_spec_calls.append((tuple(int(value) for value in flattened_vectors.shape), int(requested_components), int(seed)))
         return original_projection_builder(
-            input_dimension=input_dimension,
+            flattened_vectors=flattened_vectors,
             requested_components=requested_components,
             seed=seed,
         )
 
-    def fail_flatten_many(self, parameter_sets):
-        raise AssertionError("flatten_many must not be used in the clustering path.")
+    original_flatten_many = clustering_module.RecommenderWeightVectorExtractor.flatten_many
+
+    def spy_flatten_many(self, parameter_sets):
+        flatten_many_calls.append(tuple(parameter_sets))
+        return original_flatten_many(self, parameter_sets)
 
     def spy_build(self, *, client_id, parameters, projection_spec, round_id):
         captured_projector_calls.append((str(client_id), int(round_id)))
@@ -228,12 +271,13 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config):
         assert clustering_config.k == 3
         assert clustering_config.pca_components == 8
-        assert isinstance(projection_spec, RandomProjectionSpec)
-        assert projection_spec.seed == 13
-        assert projection_spec.projection_matrix.shape == (3, 8)
+        assert isinstance(projection_spec, PCAProjectionSpec)
+        assert projection_spec.seed in {13, 14}
+        assert projection_spec.projection_matrix.shape == (3, 3)
+        assert projection_spec.mean_vector.shape == (3,)
         assert all(isinstance(item, SecretSharedReducedVector) for item in shared_reduced_vectors)
         assert all(not hasattr(item, "reduced_vector") for item in shared_reduced_vectors)
-        assert all(item.dimension == 8 for item in shared_reduced_vectors)
+        assert all(item.dimension == 3 for item in shared_reduced_vectors)
         labels = np.asarray([0, 0, 1, 2], dtype=np.int64)
         return SecureClusterAssignments(
             labels=labels,
@@ -261,8 +305,8 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
         return original_secure_aggregate(self, client_vectors, round_id, client_ids)
 
     monkeypatch.setattr(recommender_simulation, "_fit_local_recommender", fake_fit_local_recommender)
-    monkeypatch.setattr(recommender_simulation, "build_random_projection_spec", spy_projection_builder)
-    monkeypatch.setattr(clustering_module.RecommenderWeightVectorExtractor, "flatten_many", fail_flatten_many)
+    monkeypatch.setattr(recommender_simulation, "build_centered_pca_projection_spec", spy_projection_builder)
+    monkeypatch.setattr(clustering_module.RecommenderWeightVectorExtractor, "flatten_many", spy_flatten_many)
     monkeypatch.setattr(clustering_module.ClientSideRandomProjector, "build_private_reduced_vector", spy_build)
     monkeypatch.setattr(clustering_module.SecureKMeansClusterer, "cluster", fake_cluster)
     monkeypatch.setattr(LCCSecureAggregator, "aggregate", spy_secure_aggregate)
@@ -287,7 +331,11 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     assert metadata["clustered"] is True
     assert metadata["training_variant"] == "clustered"
     assert artifacts.run_dir.name == "clustered"
-    assert projection_spec_calls == [(3, 8, 13)]
+    assert projection_spec_calls == [((4, 3), 8, 13), ((4, 3), 8, 14)]
+    assert flatten_many_calls == [
+        ("client_000", "client_001", "client_002", "client_003"),
+        ("client_000", "client_001", "client_002", "client_003"),
+    ]
     assert len(captured_projector_calls) == 8
     assert {call[0] for call in captured_projector_calls} == {
         "client_000",
@@ -315,9 +363,12 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     }
     assert round_one["cluster_sizes"] == {"0": 2, "1": 1, "2": 1}
     assert round_one["projection"]["projection_applied"] == "client_side"
-    assert round_one["projection"]["projection_type"] == "gaussian_random"
+    assert round_one["projection"]["projection_type"] == "pca_covariance_eigh"
     assert round_one["projection"]["projection_seed"] == 13
-    assert round_one["projection"]["data_dependent_fit"] is False
+    assert round_one["projection"]["data_dependent_fit"] is True
+    assert round_one["projection"]["centering_applied"] is True
+    assert round_one["projection"]["fit_client_count"] == 4
+    assert round_one["projection"]["actual_components"] == 3
     assert round_one["secure_clustering"]["server_observes_raw_weights"] is False
     assert round_one["secure_clustering"]["server_observes_reduced_vectors"] is False
     assert round_one["secure_aggregation_per_cluster"]["0"]["mode"] == "secure"

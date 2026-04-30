@@ -21,7 +21,9 @@ set -euo pipefail
 PROJECT_ROOT="${PROJECT_ROOT:-/gpfs/helios/home/kelemnegasi/fed-xai/fed-perso-xai}"
 cd "$PROJECT_ROOT"
 
-module load python/3.14.0
+# module load python/3.14.0
+# Load the latest available Python 3.14 module, if any
+module load $(module -t avail python 2>&1 | grep '^python/3\.14' | head -n 1)
 if [[ -f ".venv/bin/activate" ]]; then
   source ".venv/bin/activate"
 fi
