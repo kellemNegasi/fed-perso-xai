@@ -102,6 +102,22 @@ def _align_cluster_labels_to_previous_round(
     return best_mapping, int(best_overlap)
 
 
+def _count_assignment_changes(
+    *,
+    previous_assignments: Mapping[str, int],
+    current_assignments: Mapping[str, int],
+) -> tuple[int, int]:
+    """Count assignment changes across the shared clients of two rounds."""
+
+    shared_clients = sorted(set(previous_assignments).intersection(current_assignments))
+    if not shared_clients:
+        return 0, 0
+    changed = sum(
+        int(previous_assignments[client_id]) != int(current_assignments[client_id]) for client_id in shared_clients
+    )
+    return int(changed), int(len(shared_clients))
+
+
 def run_federated_recommender_training(
     *,
     client_datasets: list[RecommenderClientData],
@@ -464,6 +480,10 @@ def _run_clustered_recommender_training(
             client_id: int(label_alignment[cluster_id]) for client_id, cluster_id in raw_assignments.items()
         }
         cluster_sizes = summarize_cluster_sizes(assignments, clustering_config.k)
+        changed_clients, compared_clients = _count_assignment_changes(
+            previous_assignments=previous_assignments,
+            current_assignments=assignments,
+        )
         aggregated_clusters = secure_aggregator.aggregate(
             client_parameters=local_parameters,
             client_weights=local_weights,
@@ -480,12 +500,23 @@ def _run_clustered_recommender_training(
             for cluster_id in range(clustering_config.k)
         }
         previous_assignments = dict(assignments)
+        weighted_train_loss = _weighted_scalar_average(train_losses, local_weights)
+
+        LOGGER.info(
+            "Clustered recommender round=%s sizes=%s changed_clients=%s/%s label_alignment_overlap=%s train_loss_weighted=%.6f",
+            int(server_round),
+            dict(cluster_sizes),
+            int(changed_clients),
+            int(compared_clients),
+            int(label_alignment_overlap),
+            float(weighted_train_loss),
+        )
 
         round_history.append(
             {
                 "round": int(server_round),
                 "fit_metrics": {
-                    "train_loss_weighted": _weighted_scalar_average(train_losses, local_weights),
+                    "train_loss_weighted": float(weighted_train_loss),
                 },
                 "aggregation": {
                     "mode": "clustered_secure",

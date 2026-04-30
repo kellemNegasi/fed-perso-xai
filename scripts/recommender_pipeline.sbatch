@@ -2,7 +2,7 @@
 #
 # Generic single-job Slurm script for rerunning one recommender pipeline.
 # Submit with:
-#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA]
+#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [CLUSTERING_K]
 #
 
 # Job metadata -----------------------------------------------------------------
@@ -34,14 +34,18 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 usage() {
-  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA]" >&2
+  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [CLUSTERING_K]" >&2
   echo "  RUN_ID: predictive training run id" >&2
   echo "  MODE: plain, secure, clustered, 1/0, or true/false" >&2
   echo "  SELECTION_ID defaults to test__max-20__seed-42" >&2
   echo "  PERSONA defaults to lay" >&2
+  echo "  TRAIN_ROUNDS defaults to 10" >&2
+  echo "  TRAIN_EPOCHS defaults to 5" >&2
+  echo "  TRAIN_BATCH_SIZE defaults to 2048" >&2
+  echo "  CLUSTERING_K defaults to 3" >&2
 }
 
-if [[ $# -lt 2 || $# -gt 4 ]]; then
+if [[ $# -lt 2 || $# -gt 8 ]]; then
   usage
   exit 2
 fi
@@ -50,8 +54,17 @@ RUN_ID="$1"
 MODE_RAW="$2"
 SELECTION_ID="${3:-${SELECTION_ID:-test__max-20__seed-42}}"
 PERSONA="${4:-${PERSONA:-lay}}"
+TRAIN_ROUNDS="${5:-${TRAIN_ROUNDS:-10}}"
+TRAIN_EPOCHS="${6:-${TRAIN_EPOCHS:-5}}"
+TRAIN_BATCH_SIZE="${7:-${TRAIN_BATCH_SIZE:-2048}}"
+CLUSTERING_K="${8:-${CLUSTERING_K:-3}}"
 RAY_NUM_CPUS="${RAY_NUM_CPUS:-4}"
 CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-1}"
+
+if [[ ! "$CLUSTERING_K" =~ ^[0-9]+$ ]] || [[ "$CLUSTERING_K" -lt 1 ]]; then
+  echo "ERROR: CLUSTERING_K must be a positive integer." >&2
+  exit 2
+fi
 
 case "${MODE_RAW,,}" in
   1|true|secure)
@@ -86,6 +99,10 @@ echo "  persona=${PERSONA}"
 echo "  mode=${MODE_VALUE}"
 echo "  secure_aggregation=${SECURE_AGGREGATION_VALUE}"
 echo "  clustered=${CLUSTERED_VALUE}"
+echo "  train_rounds=${TRAIN_ROUNDS}"
+echo "  train_epochs=${TRAIN_EPOCHS}"
+echo "  train_batch_size=${TRAIN_BATCH_SIZE}"
+echo "  clustering_k=${CLUSTERING_K}"
 echo "  ray_num_cpus=${RAY_NUM_CPUS}"
 echo "  client_num_cpus=${CLIENT_NUM_CPUS}"
 
@@ -95,12 +112,15 @@ TARGET_CMD=(
   SKIP_LABELING=1
   CONTEXT_FILENAME=candidate_context.parquet
   RECOMMENDER_TYPE=svm_rank
-  TRAIN_BATCH_SIZE=2048
+  TRAIN_ROUNDS=${TRAIN_ROUNDS}
+  TRAIN_EPOCHS=${TRAIN_EPOCHS}
+  TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE}
   SIMULATION_BACKEND=auto
   RAY_NUM_CPUS=${RAY_NUM_CPUS}
   CLIENT_NUM_CPUS=${CLIENT_NUM_CPUS}
   SECURE_AGGREGATION=${SECURE_AGGREGATION_VALUE}
   CLUSTERED=${CLUSTERED_VALUE}
+  CLUSTERING_K=${CLUSTERING_K}
   SECURE_NUM_HELPERS=15
   SECURE_PRIVACY_THRESHOLD=2
   SECURE_RECONSTRUCTION_THRESHOLD=3
