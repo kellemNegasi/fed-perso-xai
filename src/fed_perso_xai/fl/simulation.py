@@ -341,6 +341,7 @@ def _run_debug_sequential_runtime(
     recorder.final_parameters = parameters
     return parameters
 
+
 def _canonicalize_backend(requested_backend: str) -> str:
     try:
         return BACKEND_ALIASES[requested_backend]
