@@ -27,6 +27,8 @@ Environment variables:
   EVALUATE_FRACTION=1.0                 Fraction of clients sampled for eval.
   MIN_AVAILABLE_CLIENTS=2               Minimum clients for fit/eval.
   SIMULATION_BACKEND=auto               auto, ray, debug-sequential, sequential_fallback.
+  RAY_NUM_CPUS=4                        Ray runtime CPU cap passed to Flower init_args.
+  CLIENT_NUM_CPUS=1                     CPU reservation per Flower client actor.
   DEBUG_FALLBACK_ON_ERROR=0             Pass --debug-fallback-on-error to training.
   SKIP_LABELING=0                       Skip label-recommender-context when set to 1.
   SECURE_AGGREGATION=0                  Pass --secure-aggregation to training when set to 1.
@@ -82,6 +84,8 @@ FIT_FRACTION="${FIT_FRACTION:-1.0}"
 EVALUATE_FRACTION="${EVALUATE_FRACTION:-1.0}"
 MIN_AVAILABLE_CLIENTS="${MIN_AVAILABLE_CLIENTS:-2}"
 SIMULATION_BACKEND="${SIMULATION_BACKEND:-auto}"
+RAY_NUM_CPUS="${RAY_NUM_CPUS:-4}"
+CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-1}"
 DEBUG_FALLBACK_ON_ERROR="${DEBUG_FALLBACK_ON_ERROR:-0}"
 SKIP_LABELING="${SKIP_LABELING:-1}"
 SECURE_AGGREGATION="${SECURE_AGGREGATION:-1}"
@@ -138,6 +142,11 @@ TRAIN_EXTRA+=(--clustering-k "$CLUSTERING_K")
 TRAIN_EXTRA+=(--clustering-pca-components "$CLUSTERING_PCA_COMPONENTS")
 
 EVAL_EXTRA=()
+if [[ "$SECURE_AGGREGATION" == "1" ]]; then
+  EVAL_EXTRA+=(--secure-aggregation)
+else
+  EVAL_EXTRA+=(--plain-aggregation)
+fi
 if [[ -n "$EVAL_OUTPUT" ]]; then
   EVAL_EXTRA+=(--output "$EVAL_OUTPUT")
 fi
@@ -177,6 +186,8 @@ echo "==> Training federated recommender"
   --evaluate-fraction "$EVALUATE_FRACTION" \
   --min-available-clients "$MIN_AVAILABLE_CLIENTS" \
   --simulation-backend "$SIMULATION_BACKEND" \
+  --ray-num-cpus "$RAY_NUM_CPUS" \
+  --client-num-cpus "$CLIENT_NUM_CPUS" \
   --top-k "$TOP_K" \
   "${TRAIN_EXTRA[@]}"
 

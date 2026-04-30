@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from fed_perso_xai.orchestration.recommender_training import (
+    _recommender_training_dir,
+    _resolve_recommender_training_dir,
     evaluate_recommender_model,
     train_federated_recommender,
 )
@@ -29,6 +32,91 @@ def _paths(tmp_path):
         comparison_root=tmp_path / "comparisons",
         cache_dir=tmp_path / "cache",
     )
+
+
+def test_recommender_training_dir_includes_training_variant() -> None:
+    run_root = Path("/tmp/unit-run")
+
+    assert _recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        secure_aggregation=False,
+    ) == run_root / "recommender_training" / "selection-0" / "lay" / "svm_rank_fedavg" / "plain"
+    assert _recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        secure_aggregation=True,
+    ) == run_root / "recommender_training" / "selection-0" / "lay" / "svm_rank_fedavg" / "secure"
+    assert _recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        secure_aggregation=False,
+        clustered=True,
+    ) == run_root / "recommender_training" / "selection-0" / "lay" / "svm_rank_fedavg" / "clustered"
+
+
+def test_resolve_recommender_training_dir_requires_explicit_variant_when_multiple_exist(tmp_path) -> None:
+    run_root = tmp_path / "run"
+    plain_dir = _recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        secure_aggregation=False,
+    )
+    secure_dir = _recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        secure_aggregation=True,
+    )
+    plain_dir.mkdir(parents=True)
+    secure_dir.mkdir(parents=True)
+
+    with pytest.raises(FileExistsError, match="Multiple recommender training directories exist"):
+        _resolve_recommender_training_dir(run_root, "selection-0", "lay")
+
+
+def test_resolve_recommender_training_dir_prefers_clustered_variant_when_requested(tmp_path) -> None:
+    run_root = tmp_path / "run"
+    clustered_dir = _recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        secure_aggregation=False,
+        clustered=True,
+    )
+    clustered_dir.mkdir(parents=True)
+
+    resolved = _resolve_recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        clustered=True,
+    )
+
+    assert resolved == clustered_dir
+
+
+def test_resolve_recommender_training_dir_falls_back_to_legacy_plain_dir(tmp_path) -> None:
+    run_root = tmp_path / "run"
+    legacy_dir = run_root / "recommender_training" / "selection-0" / "lay" / "svm_rank_fedavg"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "training_metadata.json").write_text(
+        json.dumps({"config": {"secure_aggregation": False}}),
+        encoding="utf-8",
+    )
+
+    resolved = _resolve_recommender_training_dir(
+        run_root,
+        "selection-0",
+        "lay",
+        secure_aggregation=False,
+    )
+
+    assert resolved == legacy_dir
 
 
 @pytest.mark.parametrize(
@@ -120,7 +208,7 @@ def test_evaluate_ranked_scores_uses_global_pairwise_order_and_pearson() -> None
     metrics = evaluate_ranked_scores(
         predicted_scores={"a": 2.0, "b": -1.0},
         pair_labels=labels,
-        top_k=(1, 2, 5),
+        top_k=(1, 2, 5, 8),
     )
 
     assert metrics["ground_truth_order"] == ["a", "b"]
@@ -128,7 +216,12 @@ def test_evaluate_ranked_scores_uses_global_pairwise_order_and_pearson() -> None
     assert metrics["precision_at_1"] == pytest.approx(1.0)
     assert metrics["precision_at_2"] == pytest.approx(1.0)
     assert metrics["precision_at_5"] == pytest.approx(1.0)
+    assert metrics["precision_at_8"] == pytest.approx(1.0)
     assert metrics["pearson"] == pytest.approx(1.0)
+    assert metrics["pearson_at_1"] == pytest.approx(1.0)
+    assert metrics["pearson_at_2"] == pytest.approx(1.0)
+    assert metrics["pearson_at_5"] == pytest.approx(1.0)
+    assert metrics["pearson_at_8"] == pytest.approx(1.0)
 
 
 def test_evaluate_grouped_ranked_scores_keeps_instances_separate() -> None:
@@ -151,12 +244,15 @@ def test_evaluate_grouped_ranked_scores_keeps_instances_separate() -> None:
     metrics = evaluate_grouped_ranked_scores(
         candidate_scores=candidate_scores,
         pair_labels=labels,
-        top_k=(1, 2),
+        top_k=(1, 2, 8),
     )
 
     assert metrics["instance_count"] == 2
     assert metrics["aggregate"]["precision_at_1"] == pytest.approx(1.0)
+    assert metrics["aggregate"]["precision_at_8"] == pytest.approx(1.0)
     assert metrics["aggregate"]["pearson"] == pytest.approx(1.0)
+    assert metrics["aggregate"]["pearson_at_1"] == pytest.approx(1.0)
+    assert metrics["aggregate"]["pearson_at_8"] == pytest.approx(1.0)
     assert "dataset_index" not in metrics["aggregate"]
 
 
@@ -240,6 +336,7 @@ def test_train_federated_recommender_allows_clients_without_eval_pairs(tmp_path)
     )
 
     assert artifacts.model_artifact_path.exists()
+    assert artifacts.run_dir.name == "plain"
     assert metadata["status"] == "completed"
     assert metadata["clients_without_eval"] == ["client_001"]
     assert metadata["raw_pair_count"] == 2

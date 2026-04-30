@@ -22,3 +22,4 @@ job_launcher
 logs
 notebooks/recommender_evaluation_outputs*
 ./*.ipynb_checkpoints
+recommender_evaluation_*

@@ -171,6 +171,7 @@ class FederatedTrainingConfig(ExperimentConfig):
     min_available_clients: int = 2
     simulation_backend: str = "auto"
     debug_fallback_on_error: bool = False
+    ray_num_cpus: int = 4
     secure_aggregation: bool = False
     secure_num_helpers: int = 5
     secure_privacy_threshold: int = 2
@@ -179,7 +180,7 @@ class FederatedTrainingConfig(ExperimentConfig):
     secure_quantization_scale: int = 1 << 16
     secure_seed: int = 0
     simulation_resources: dict[str, float] = field(
-        default_factory=lambda: {"num_cpus": 1.0}
+        default_factory=lambda: {"num_cpus": 1.0, "num_gpus": 0.0}
     )
 
     def __post_init__(self) -> None:
@@ -192,6 +193,7 @@ class FederatedTrainingConfig(ExperimentConfig):
         _require_fraction_or_one("evaluate_fraction", self.evaluate_fraction)
         _require_fraction_or_one("prediction_threshold", self.prediction_threshold)
         _require_integer_at_least("min_available_clients", self.min_available_clients, minimum=1)
+        _require_integer_at_least("ray_num_cpus", self.ray_num_cpus, minimum=1)
         _require_integer_at_least("secure_num_helpers", self.secure_num_helpers, minimum=1)
         _require_integer_at_least(
             "secure_privacy_threshold",
@@ -219,10 +221,7 @@ class FederatedTrainingConfig(ExperimentConfig):
             minimum=1,
         )
         _require_non_negative_integer("secure_seed", self.secure_seed)
-        if not isinstance(self.simulation_resources, dict):
-            raise TypeError("simulation_resources must be a dictionary.")
-        for resource_name, value in self.simulation_resources.items():
-            _require_positive(f"simulation_resources[{resource_name!r}]", value)
+        _validate_simulation_resources(self.simulation_resources)
 
         from fed_perso_xai.fl.strategy import DEFAULT_STRATEGY_REGISTRY
 
@@ -245,12 +244,13 @@ class RecommenderFederatedTrainingConfig:
     min_available_clients: int = 2
     simulation_backend: str = "auto"
     debug_fallback_on_error: bool = False
+    ray_num_cpus: int = 4
     epochs: int = 5
     batch_size: int = 64
     learning_rate: float = 0.05
     l2_regularization: float = 0.0
     seed: int = 42
-    top_k: tuple[int, ...] = (1, 3, 5)
+    top_k: tuple[int, ...] = (1, 3, 5, 8)
     context_filename: str = "candidate_context.parquet"
     label_filename: str = "pairwise_labels.parquet"
     clients: str = "all"
@@ -266,7 +266,7 @@ class RecommenderFederatedTrainingConfig:
         default_factory=lambda: RecommenderClusteringConfig()
     )
     simulation_resources: dict[str, float] = field(
-        default_factory=lambda: {"num_cpus": 1.0}
+        default_factory=lambda: {"num_cpus": 1.0, "num_gpus": 0.0}
     )
 
     def __post_init__(self) -> None:
@@ -279,6 +279,7 @@ class RecommenderFederatedTrainingConfig:
         _require_fraction_or_one("fit_fraction", self.fit_fraction)
         _require_fraction_or_one("evaluate_fraction", self.evaluate_fraction)
         _require_integer_at_least("min_available_clients", self.min_available_clients, minimum=1)
+        _require_integer_at_least("ray_num_cpus", self.ray_num_cpus, minimum=1)
         _require_integer_at_least("epochs", self.epochs, minimum=1)
         _require_integer_at_least("batch_size", self.batch_size, minimum=1)
         _require_positive("learning_rate", self.learning_rate)
@@ -326,10 +327,7 @@ class RecommenderFederatedTrainingConfig:
                 raise ValueError(
                     "clustering.k cannot exceed the loaded recommender client count."
                 )
-        if not isinstance(self.simulation_resources, dict):
-            raise TypeError("simulation_resources must be a dictionary.")
-        for resource_name, value in self.simulation_resources.items():
-            _require_positive(f"simulation_resources[{resource_name!r}]", value)
+        _validate_simulation_resources(self.simulation_resources)
 
         from fed_perso_xai.fl.strategy import DEFAULT_STRATEGY_REGISTRY
 
@@ -358,6 +356,7 @@ class RecommenderFederatedTrainingConfig:
             min_available_clients=self.min_available_clients,
             simulation_backend=self.simulation_backend,
             debug_fallback_on_error=self.debug_fallback_on_error,
+            ray_num_cpus=self.ray_num_cpus,
             epochs=self.epochs,
             batch_size=self.batch_size,
             learning_rate=self.learning_rate,
@@ -467,6 +466,17 @@ def _require_non_negative(field_name: str, value: float) -> None:
         raise TypeError(f"{field_name} must be numeric.")
     if float(value) < 0.0:
         raise ValueError(f"{field_name} must be non-negative.")
+
+
+def _validate_simulation_resources(simulation_resources: dict[str, float]) -> None:
+    if not isinstance(simulation_resources, dict):
+        raise TypeError("simulation_resources must be a dictionary.")
+    for resource_name, value in simulation_resources.items():
+        field_name = f"simulation_resources[{resource_name!r}]"
+        if resource_name == "num_gpus":
+            _require_non_negative(field_name, value)
+            continue
+        _require_positive(field_name, value)
 
 
 def _require_probability(field_name: str, value: float) -> None:

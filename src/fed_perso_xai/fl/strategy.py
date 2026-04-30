@@ -35,6 +35,16 @@ class FederatedRunRecorder:
     final_parameters: list[np.ndarray] | None = None
 
 
+@dataclass(frozen=True)
+class SecureQuantizationPlan:
+    """Resolved per-round quantization settings for secure aggregation."""
+
+    requested_scale: int
+    effective_scale: int
+    signed_bound: int
+    max_component_l1: float
+
+
 class StrategyFactory(Protocol):
     """Protocol for pluggable aggregation strategies in later stages."""
 
@@ -145,7 +155,59 @@ def _validate_secure_config(training_config: FederatedTrainingConfig) -> None:
         )
 
 
-def _build_secure_aggregator(training_config: FederatedTrainingConfig) -> Any:
+def _flatten_secure_payload(payload: Sequence[np.ndarray]) -> np.ndarray:
+    flattened = [
+        np.asarray(parameter, dtype=np.float64).reshape(-1)
+        for parameter in payload
+    ]
+    if not flattened:
+        raise ValueError("Secure aggregation payloads must contain at least one tensor.")
+    return np.concatenate(flattened)
+
+
+def _plan_secure_quantization(
+    payloads: Sequence[Sequence[np.ndarray]],
+    *,
+    requested_scale: int,
+    field_modulus: int,
+) -> SecureQuantizationPlan:
+    if requested_scale < 1:
+        raise ValueError("requested_scale must be at least 1.")
+    if field_modulus <= 2:
+        raise ValueError("field_modulus must be greater than 2.")
+    if not payloads:
+        raise ValueError("payloads must contain at least one client payload.")
+
+    stacked = np.stack([_flatten_secure_payload(payload) for payload in payloads], axis=0)
+    max_component_l1 = float(np.max(np.sum(np.abs(stacked), axis=0))) if stacked.size else 0.0
+    if not np.isfinite(max_component_l1):
+        raise ValueError("Secure aggregation payloads must be finite.")
+
+    signed_bound = (field_modulus - 1) // 2
+    if max_component_l1 <= 0.0:
+        effective_scale = int(requested_scale)
+    else:
+        max_safe_scale = int(signed_bound // max_component_l1)
+        if max_safe_scale < 1:
+            raise ValueError(
+                "Secure aggregation payload magnitude exceeds the finite-field range even "
+                "at scale=1. Reduce model magnitude or use a larger field modulus."
+            )
+        effective_scale = min(int(requested_scale), max_safe_scale)
+
+    return SecureQuantizationPlan(
+        requested_scale=int(requested_scale),
+        effective_scale=int(effective_scale),
+        signed_bound=int(signed_bound),
+        max_component_l1=max_component_l1,
+    )
+
+
+def _build_secure_aggregator(
+    training_config: FederatedTrainingConfig,
+    *,
+    scale_override: int | None = None,
+) -> Any:
     _validate_secure_config(training_config)
     try:
         from lcc_lib.aggregation.secure_aggregator import (
@@ -166,7 +228,11 @@ def _build_secure_aggregator(training_config: FederatedTrainingConfig) -> Any:
             field_config=FieldConfig(modulus=training_config.secure_field_modulus),
             quantization=QuantizationConfig(
                 field_modulus=training_config.secure_field_modulus,
-                scale=training_config.secure_quantization_scale,
+                scale=(
+                    int(scale_override)
+                    if scale_override is not None
+                    else training_config.secure_quantization_scale
+                ),
             ),
             encoding=ShareEncodingConfig(
                 num_helpers=training_config.secure_num_helpers,
@@ -317,11 +383,33 @@ if fl is not None:
                 _scale_parameter_set(payload, fit_res.num_examples / total_weight)
                 for payload, (_, fit_res) in zip(shared_payloads, results, strict=True)
             ]
+            quantization_plan = _plan_secure_quantization(
+                weighted_payloads,
+                requested_scale=self.training_config.secure_quantization_scale,
+                field_modulus=self.training_config.secure_field_modulus,
+            )
+            secure_aggregator = self._secure_aggregator
+            if secure_aggregator is None:
+                raise RuntimeError("Secure aggregation was requested but no aggregator is configured.")
+            if quantization_plan.effective_scale != quantization_plan.requested_scale:
+                LOGGER.warning(
+                    "Round %s secure quantization scale adjusted from %s to %s to stay within field modulus=%s (max_component_l1=%.6g, signed_bound=%s)",
+                    server_round,
+                    quantization_plan.requested_scale,
+                    quantization_plan.effective_scale,
+                    self.training_config.secure_field_modulus,
+                    quantization_plan.max_component_l1,
+                    quantization_plan.signed_bound,
+                )
+                secure_aggregator = _build_secure_aggregator(
+                    self.training_config,
+                    scale_override=quantization_plan.effective_scale,
+                )
             client_ids = [
                 str(fit_res.metrics.get("client_id", index))
                 for index, (_, fit_res) in enumerate(results)
             ]
-            secure_result = self._secure_aggregator.aggregate(
+            secure_result = secure_aggregator.aggregate(
                 weighted_payloads,
                 round_id=server_round,
                 client_ids=client_ids,
@@ -332,7 +420,7 @@ if fl is not None:
                 server_round,
                 secure_result.num_contributors,
                 len(secure_result.helper_ids),
-                self.training_config.secure_quantization_scale,
+                quantization_plan.effective_scale,
                 self.training_config.secure_field_modulus,
                 secure_result.max_abs_error,
             )
@@ -341,7 +429,9 @@ if fl is not None:
                 "num_contributors": secure_result.num_contributors,
                 "helper_count": len(secure_result.helper_ids),
                 "field_modulus": self.training_config.secure_field_modulus,
-                "quantization_scale": self.training_config.secure_quantization_scale,
+                "quantization_scale": quantization_plan.effective_scale,
+                "requested_quantization_scale": quantization_plan.requested_scale,
+                "max_component_l1": quantization_plan.max_component_l1,
                 "max_abs_error": secure_result.max_abs_error,
             }
 
