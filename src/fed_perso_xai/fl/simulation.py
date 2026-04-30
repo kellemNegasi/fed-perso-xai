@@ -249,7 +249,10 @@ def _run_flower_simulation(
     server_app = ServerApp(server_fn=server_fn)
     backend_config = {
         "client_resources": dict(config.simulation_resources),
-        "init_args": {"ignore_reinit_error": True},
+        "init_args": {
+            "ignore_reinit_error": True,
+            "num_cpus": config.ray_num_cpus,
+        },
     }
     fl.simulation.run_simulation(
         server_app=server_app,

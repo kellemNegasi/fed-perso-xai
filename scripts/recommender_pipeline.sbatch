@@ -49,6 +49,8 @@ RUN_ID="$1"
 SECURE_AGGREGATION_RAW="$2"
 SELECTION_ID="${3:-${SELECTION_ID:-test__max-20__seed-42}}"
 PERSONA="${4:-${PERSONA:-lay}}"
+RAY_NUM_CPUS="${RAY_NUM_CPUS:-4}"
+CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-1}"
 
 case "${SECURE_AGGREGATION_RAW,,}" in
   1|true|secure)
@@ -72,6 +74,8 @@ echo "  run_id=${RUN_ID}"
 echo "  selection_id=${SELECTION_ID}"
 echo "  persona=${PERSONA}"
 echo "  secure_aggregation=${SECURE_AGGREGATION_VALUE}"
+echo "  ray_num_cpus=${RAY_NUM_CPUS}"
+echo "  client_num_cpus=${CLIENT_NUM_CPUS}"
 
 TARGET_CMD=(
   env
@@ -81,6 +85,8 @@ TARGET_CMD=(
   RECOMMENDER_TYPE=svm_rank
   TRAIN_BATCH_SIZE=2048
   SIMULATION_BACKEND=auto
+  RAY_NUM_CPUS=${RAY_NUM_CPUS}
+  CLIENT_NUM_CPUS=${CLIENT_NUM_CPUS}
   SECURE_AGGREGATION=${SECURE_AGGREGATION_VALUE}
   CLUSTERED=0
   SECURE_NUM_HELPERS=15

@@ -115,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="If Ray simulation fails, explicitly continue with the debug sequential runtime.",
     )
+    _add_simulation_resource_args(train_parser)
     train_parser.add_argument(
         "--secure-aggregation",
         action="store_true",
@@ -331,6 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
     )
     recommender_train_parser.add_argument("--debug-fallback-on-error", action="store_true")
+    _add_simulation_resource_args(recommender_train_parser)
     recommender_train_parser.add_argument(
         "--secure-aggregation",
         action="store_true",
@@ -500,6 +502,11 @@ def main() -> None:
             min_available_clients=args.min_available_clients,
             simulation_backend=args.simulation_backend,
             debug_fallback_on_error=args.debug_fallback_on_error,
+            ray_num_cpus=args.ray_num_cpus,
+            simulation_resources={
+                "num_cpus": args.client_num_cpus,
+                "num_gpus": 0.0,
+            },
             secure_aggregation=args.secure_aggregation,
             secure_num_helpers=args.secure_num_helpers,
             secure_privacy_threshold=args.secure_privacy_threshold,
@@ -728,6 +735,7 @@ def main() -> None:
                 min_available_clients=args.min_available_clients,
                 simulation_backend=args.simulation_backend,
                 debug_fallback_on_error=args.debug_fallback_on_error,
+                ray_num_cpus=args.ray_num_cpus,
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 learning_rate=args.learning_rate,
@@ -737,6 +745,10 @@ def main() -> None:
                 context_filename=args.context_filename,
                 label_filename=args.label_filename,
                 clients=args.clients,
+                simulation_resources={
+                    "num_cpus": args.client_num_cpus,
+                    "num_gpus": 0.0,
+                },
                 secure_aggregation=args.secure_aggregation,
                 secure_num_helpers=args.secure_num_helpers,
                 secure_privacy_threshold=args.secure_privacy_threshold,
@@ -844,6 +856,11 @@ def _add_model_args(parser: argparse.ArgumentParser, model_choices: list[str]) -
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     parser.add_argument("--l2-regularization", type=float, default=0.0)
+
+
+def _add_simulation_resource_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--ray-num-cpus", type=int, default=4)
+    parser.add_argument("--client-num-cpus", type=float, default=1.0)
 
 
 def _build_artifact_paths(args: argparse.Namespace) -> ArtifactPaths:
