@@ -356,6 +356,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recommender_train_parser.add_argument("--clustering-k", type=int, default=3)
     recommender_train_parser.add_argument("--clustering-pca-components", type=int, default=8)
+    recommender_train_parser.add_argument("--clustering-warmup-rounds", type=int, default=0)
+    recommender_train_parser.add_argument(
+        "--clustering-freeze-pca-after-warmup",
+        action="store_true",
+        help="Fit PCA on the first post-warmup clustering round and reuse that basis thereafter.",
+    )
     recommender_train_parser.add_argument("--top-k", default="1,3,5")
     recommender_train_parser.add_argument("--force", action="store_true")
 
@@ -761,6 +767,8 @@ def main() -> None:
                     method=args.clustering_method,
                     k=args.clustering_k,
                     pca_components=args.clustering_pca_components,
+                    warmup_rounds=args.clustering_warmup_rounds,
+                    freeze_pca_after_warmup=args.clustering_freeze_pca_after_warmup,
                 ),
             ),
             force=args.force,

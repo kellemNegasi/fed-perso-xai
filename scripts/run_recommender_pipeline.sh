@@ -41,7 +41,9 @@ Environment variables:
   CLUSTERED=0                           Pass --clustered to training when set to 1.
   CLUSTERING_METHOD=secure_kmeans       Clustered training method.
   CLUSTERING_K=3                        Number of recommender clusters when clustering is enabled.
-  CLUSTERING_PCA_COMPONENTS=8           Random projection components for clustered training.
+  CLUSTERING_PCA_COMPONENTS=8           PCA components for clustered training.
+  CLUSTERING_WARMUP_ROUNDS=0            Initial global-only rounds before clustering starts.
+  CLUSTERING_FREEZE_PCA_AFTER_WARMUP=0  Pass --clustering-freeze-pca-after-warmup when set to 1.
   TOP_K=1,3,5                           Comma-separated precision@k cutoffs.
   FORCE_TRAINING=0                      Pass --force to train-recommender-federated.
   EVAL_OUTPUT=                          Optional path for evaluate-recommender JSON output.
@@ -99,6 +101,8 @@ CLUSTERED="${CLUSTERED:-0}"
 CLUSTERING_METHOD="${CLUSTERING_METHOD:-secure_kmeans}"
 CLUSTERING_K="${CLUSTERING_K:-3}"
 CLUSTERING_PCA_COMPONENTS="${CLUSTERING_PCA_COMPONENTS:-8}"
+CLUSTERING_WARMUP_ROUNDS="${CLUSTERING_WARMUP_ROUNDS:-0}"
+CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-0}"
 TOP_K="${TOP_K:-1,3,5}"
 FORCE_TRAINING="${FORCE_TRAINING:-1}"
 EVAL_OUTPUT="${EVAL_OUTPUT:-}"
@@ -140,6 +144,10 @@ TRAIN_EXTRA+=(--secure-seed "$SECURE_SEED")
 TRAIN_EXTRA+=(--clustering-method "$CLUSTERING_METHOD")
 TRAIN_EXTRA+=(--clustering-k "$CLUSTERING_K")
 TRAIN_EXTRA+=(--clustering-pca-components "$CLUSTERING_PCA_COMPONENTS")
+TRAIN_EXTRA+=(--clustering-warmup-rounds "$CLUSTERING_WARMUP_ROUNDS")
+if [[ "$CLUSTERING_FREEZE_PCA_AFTER_WARMUP" == "1" ]]; then
+  TRAIN_EXTRA+=(--clustering-freeze-pca-after-warmup)
+fi
 
 EVAL_EXTRA=()
 if [[ "$CLUSTERED" == "1" ]]; then

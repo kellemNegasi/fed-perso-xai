@@ -327,6 +327,10 @@ class RecommenderFederatedTrainingConfig:
                 raise ValueError(
                     "clustering.k cannot exceed the loaded recommender client count."
                 )
+        if self.clustering.enabled and self.clustering.warmup_rounds >= self.rounds:
+            raise ValueError(
+                "clustering.warmup_rounds must be smaller than rounds when clustered training is enabled."
+            )
         _validate_simulation_resources(self.simulation_resources)
 
         from fed_perso_xai.fl.strategy import DEFAULT_STRATEGY_REGISTRY
@@ -390,6 +394,8 @@ class RecommenderClusteringConfig:
     method: str = "secure_kmeans"
     k: int = 3
     pca_components: int = 8
+    warmup_rounds: int = 0
+    freeze_pca_after_warmup: bool = False
     max_iterations: int = 20
     tolerance: float = 1e-6
 
@@ -399,6 +405,9 @@ class RecommenderClusteringConfig:
         _normalize_recommender_clustering_method(self.method)
         _require_integer_at_least("k", self.k, minimum=1)
         _require_integer_at_least("pca_components", self.pca_components, minimum=1)
+        _require_non_negative_integer("warmup_rounds", self.warmup_rounds)
+        if not isinstance(self.freeze_pca_after_warmup, bool):
+            raise TypeError("freeze_pca_after_warmup must be a boolean.")
         _require_integer_at_least("max_iterations", self.max_iterations, minimum=1)
         _require_positive("tolerance", self.tolerance)
 

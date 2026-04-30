@@ -627,6 +627,8 @@ def _persist_clustered_training_artifacts(
         "method": config.clustering.method,
         "k": int(config.clustering.k),
         "pca_components": int(config.clustering.pca_components),
+        "warmup_rounds": int(config.clustering.warmup_rounds),
+        "freeze_pca_after_warmup": bool(config.clustering.freeze_pca_after_warmup),
         "round_count": int(len(training_result.clustered_rounds)),
         "final_cluster_assignments": dict(training_result.final_cluster_assignments),
         "final_cluster_model_checkpoint_paths": final_cluster_model_checkpoint_paths,

@@ -2,7 +2,7 @@
 #
 # Generic single-job Slurm script for rerunning one recommender pipeline.
 # Submit with:
-#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [CLUSTERING_K]
+#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K]
 #
 
 # Job metadata -----------------------------------------------------------------
@@ -34,7 +34,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 usage() {
-  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [CLUSTERING_K]" >&2
+  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K]" >&2
   echo "  RUN_ID: predictive training run id" >&2
   echo "  MODE: plain, secure, clustered, 1/0, or true/false" >&2
   echo "  SELECTION_ID defaults to test__max-20__seed-42" >&2
@@ -43,9 +43,12 @@ usage() {
   echo "  TRAIN_EPOCHS defaults to 5" >&2
   echo "  TRAIN_BATCH_SIZE defaults to 2048" >&2
   echo "  CLUSTERING_K defaults to 3" >&2
+  echo "  CLUSTERING_WARMUP_ROUNDS defaults to 0" >&2
+  echo "  CLUSTERING_FREEZE_PCA_AFTER_WARMUP defaults to 0" >&2
+  echo "  TOP_K defaults to 1,3,5" >&2
 }
 
-if [[ $# -lt 2 || $# -gt 8 ]]; then
+if [[ $# -lt 2 || $# -gt 11 ]]; then
   usage
   exit 2
 fi
@@ -58,11 +61,26 @@ TRAIN_ROUNDS="${5:-${TRAIN_ROUNDS:-10}}"
 TRAIN_EPOCHS="${6:-${TRAIN_EPOCHS:-5}}"
 TRAIN_BATCH_SIZE="${7:-${TRAIN_BATCH_SIZE:-2048}}"
 CLUSTERING_K="${8:-${CLUSTERING_K:-3}}"
+CLUSTERING_WARMUP_ROUNDS="${9:-${CLUSTERING_WARMUP_ROUNDS:-0}}"
+CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${10:-${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-0}}"
+TOP_K="${11:-${TOP_K:-1,3,5}}"
 RAY_NUM_CPUS="${RAY_NUM_CPUS:-4}"
 CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-1}"
 
 if [[ ! "$CLUSTERING_K" =~ ^[0-9]+$ ]] || [[ "$CLUSTERING_K" -lt 1 ]]; then
   echo "ERROR: CLUSTERING_K must be a positive integer." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_WARMUP_ROUNDS" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: CLUSTERING_WARMUP_ROUNDS must be a non-negative integer." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_FREEZE_PCA_AFTER_WARMUP" =~ ^(0|1)$ ]]; then
+  echo "ERROR: CLUSTERING_FREEZE_PCA_AFTER_WARMUP must be 0 or 1." >&2
+  exit 2
+fi
+if [[ -z "$TOP_K" ]]; then
+  echo "ERROR: TOP_K must be a non-empty comma-separated list." >&2
   exit 2
 fi
 
@@ -103,6 +121,9 @@ echo "  train_rounds=${TRAIN_ROUNDS}"
 echo "  train_epochs=${TRAIN_EPOCHS}"
 echo "  train_batch_size=${TRAIN_BATCH_SIZE}"
 echo "  clustering_k=${CLUSTERING_K}"
+echo "  clustering_warmup_rounds=${CLUSTERING_WARMUP_ROUNDS}"
+echo "  clustering_freeze_pca_after_warmup=${CLUSTERING_FREEZE_PCA_AFTER_WARMUP}"
+echo "  top_k=${TOP_K}"
 echo "  ray_num_cpus=${RAY_NUM_CPUS}"
 echo "  client_num_cpus=${CLIENT_NUM_CPUS}"
 
@@ -121,6 +142,9 @@ TARGET_CMD=(
   SECURE_AGGREGATION=${SECURE_AGGREGATION_VALUE}
   CLUSTERED=${CLUSTERED_VALUE}
   CLUSTERING_K=${CLUSTERING_K}
+  CLUSTERING_WARMUP_ROUNDS=${CLUSTERING_WARMUP_ROUNDS}
+  CLUSTERING_FREEZE_PCA_AFTER_WARMUP=${CLUSTERING_FREEZE_PCA_AFTER_WARMUP}
+  TOP_K=${TOP_K}
   SECURE_NUM_HELPERS=15
   SECURE_PRIVACY_THRESHOLD=2
   SECURE_RECONSTRUCTION_THRESHOLD=3
