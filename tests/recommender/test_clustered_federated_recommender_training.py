@@ -264,6 +264,30 @@ def test_random_projection_spec_is_seeded_and_deterministic() -> None:
     assert not np.allclose(spec_a.projection_matrix, spec_c.projection_matrix)
 
 
+def test_centered_pca_projection_spec_uses_compact_svd_for_tall_parameter_space() -> None:
+    flattened_vectors = np.asarray(
+        [
+            [1.0, 0.0, 2.0, 0.0, 3.0],
+            [0.0, 1.0, 1.0, 0.0, 2.0],
+            [2.0, 1.0, 3.0, 1.0, 4.0],
+        ],
+        dtype=np.float64,
+    )
+
+    spec = build_centered_pca_projection_spec(
+        flattened_vectors=flattened_vectors,
+        requested_components=4,
+        seed=17,
+    )
+
+    assert spec.projection_matrix.shape == (5, 3)
+    assert spec.actual_components == 3
+    assert spec.fit_client_count == 3
+    assert spec.explained_variance.shape == (3,)
+    assert spec.explained_variance_ratio.shape == (3,)
+    assert np.isclose(np.sum(spec.explained_variance_ratio), 1.0)
+
+
 @pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
 @pytest.mark.skipif(not LCC_AVAILABLE, reason="lcc-lib is required for clustered recommender tests.")
 def test_clustered_recommender_training_uses_seeded_random_projection_and_secure_cluster_aggregation(

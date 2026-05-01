@@ -209,12 +209,22 @@ def build_centered_pca_projection_spec(
     # TODO This leaks some form aggregated information, consider updating it.
     mean_vector = np.mean(matrix, axis=0)
     centered = matrix - mean_vector
-    covariance = (centered.T @ centered) / float(matrix.shape[0])
-    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
-    order = np.argsort(eigenvalues)[::-1]
-    component_count = min(int(requested_components), int(matrix.shape[1]))
-    selected_eigenvalues = np.clip(eigenvalues[order[:component_count]], a_min=0.0, a_max=None)
-    projection_matrix = np.asarray(eigenvectors[:, order[:component_count]], dtype=np.float64)
+
+    # Compute PCA from the centered client-by-parameter matrix directly via
+    # compact SVD. This avoids materializing the dense d x d covariance matrix
+    # from centered.T @ centered, which would cost O(d^2) memory and roughly
+    # O(d^3) eigendecomposition time for flattened model dimension d. With n
+    # participating clients and n << d, compact SVD works on the n x d matrix
+    # instead, using O(n*d) storage for centered data and roughly O(n^2*d)
+    # compute to recover the top PCA directions.
+    _, singular_values, right_singular_vectors_t = np.linalg.svd(centered, full_matrices=False)
+    component_count = min(int(requested_components), int(right_singular_vectors_t.shape[0]))
+    projection_matrix = np.asarray(right_singular_vectors_t[:component_count].T, dtype=np.float64)
+    selected_eigenvalues = np.clip(
+        (singular_values[:component_count] ** 2) / float(matrix.shape[0]),
+        a_min=0.0,
+        a_max=None,
+    )
 
     # Stabilize signs so repeated runs produce consistent components.
     for column_index in range(projection_matrix.shape[1]):
@@ -223,7 +233,7 @@ def build_centered_pca_projection_spec(
         if float(column[anchor_index]) < 0.0:
             projection_matrix[:, column_index] *= -1.0
 
-    total_variance = float(np.clip(np.sum(eigenvalues), a_min=0.0, a_max=None))
+    total_variance = float(np.clip(np.sum((singular_values**2) / float(matrix.shape[0])), a_min=0.0, a_max=None))
     if total_variance > 0.0:
         explained_variance_ratio = selected_eigenvalues / total_variance
     else:
