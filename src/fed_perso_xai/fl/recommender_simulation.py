@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
-import itertools
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 from fed_perso_xai.fl.client import FederatedPairwiseRecommenderClient, RecommenderClientData
 from fed_perso_xai.fl.simulation import (
@@ -83,24 +83,36 @@ def _align_cluster_labels_to_previous_round(
     if not shared_clients:
         return identity_mapping, 0
 
-    cluster_ids = tuple(range(cluster_count))
-    best_mapping = identity_mapping
-    best_permutation = cluster_ids
-    best_overlap = -1
-    for permutation in itertools.permutations(cluster_ids):
-        candidate_mapping = {
-            current_cluster_id: aligned_cluster_id
-            for current_cluster_id, aligned_cluster_id in zip(cluster_ids, permutation, strict=True)
-        }
-        overlap = sum(
-            int(previous_assignments[client_id]) == candidate_mapping[int(current_assignments[client_id])]
-            for client_id in shared_clients
+    overlap_matrix = np.zeros((cluster_count, cluster_count), dtype=np.int64)
+    for client_id in shared_clients:
+        previous_cluster_id = int(previous_assignments[client_id])
+        current_cluster_id = int(current_assignments[client_id])
+        overlap_matrix[previous_cluster_id, current_cluster_id] += 1
+
+    # Break ties deterministically in favor of lexicographically smaller
+    # previous-label assignments while keeping the primary objective as
+    # maximum overlap.
+    tie_break_bias = np.fromfunction(
+        lambda previous_cluster_id, current_cluster_id: -(
+            current_cluster_id.astype(np.int64) * cluster_count + previous_cluster_id.astype(np.int64)
+        ),
+        overlap_matrix.shape,
+        dtype=np.int64,
+    )
+    row_indices, column_indices = linear_sum_assignment(
+        overlap_matrix * (cluster_count**2) + tie_break_bias,
+        maximize=True,
+    )
+    aligned_pairs = sorted(
+        (
+            int(current_cluster_id),
+            int(previous_cluster_id),
         )
-        if overlap > best_overlap or (overlap == best_overlap and permutation < best_permutation):
-            best_mapping = candidate_mapping
-            best_permutation = permutation
-            best_overlap = overlap
-    return best_mapping, int(best_overlap)
+        for previous_cluster_id, current_cluster_id in zip(row_indices, column_indices, strict=True)
+    )
+    mapping = {current_cluster_id: previous_cluster_id for current_cluster_id, previous_cluster_id in aligned_pairs}
+    overlap = sum(int(overlap_matrix[previous_cluster_id, current_cluster_id]) for current_cluster_id, previous_cluster_id in aligned_pairs)
+    return mapping, overlap
 
 
 def _count_assignment_changes(
@@ -528,6 +540,9 @@ def _run_clustered_recommender_training(
             shared_vector.client_id: int(label)
             for shared_vector, label in zip(shared_reduced_vectors, assignments_result.labels, strict=True)
         }
+        # Raw clustering labels are arbitrary each round. Remap them to the
+        # previous round's cluster ids so the carried-forward cluster models
+        # keep a stable identity across rounds.
         label_alignment, label_alignment_overlap = _align_cluster_labels_to_previous_round(
             previous_assignments=previous_assignments,
             current_assignments=raw_assignments,

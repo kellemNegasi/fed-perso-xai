@@ -65,6 +65,55 @@ def test_align_cluster_labels_to_previous_round_returns_identity_without_shared_
     assert overlap == 0
 
 
+def test_align_cluster_labels_to_previous_round_scales_beyond_small_permutations() -> None:
+    previous_assignments = {
+        f"client_{cluster_id:03d}": cluster_id
+        for cluster_id in range(8)
+    }
+    current_assignments = {
+        f"client_{cluster_id:03d}": (cluster_id + 3) % 8
+        for cluster_id in range(8)
+    }
+
+    mapping, overlap = _align_cluster_labels_to_previous_round(
+        previous_assignments=previous_assignments,
+        current_assignments=current_assignments,
+        cluster_count=8,
+    )
+
+    assert mapping == {
+        0: 5,
+        1: 6,
+        2: 7,
+        3: 0,
+        4: 1,
+        5: 2,
+        6: 3,
+        7: 4,
+    }
+    assert overlap == 8
+
+
+def test_align_cluster_labels_to_previous_round_breaks_ties_deterministically() -> None:
+    previous_assignments = {
+        "client_000": 0,
+        "client_001": 1,
+    }
+    current_assignments = {
+        "client_000": 1,
+        "client_001": 0,
+    }
+
+    mapping, overlap = _align_cluster_labels_to_previous_round(
+        previous_assignments=previous_assignments,
+        current_assignments=current_assignments,
+        cluster_count=3,
+    )
+
+    assert mapping == {0: 1, 1: 0, 2: 2}
+    assert overlap == 2
+
+
 def _paths(tmp_path: Path) -> ArtifactPaths:
     return ArtifactPaths(
         prepared_root=tmp_path / "prepared",
