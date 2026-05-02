@@ -280,7 +280,23 @@ def build_parser() -> argparse.ArgumentParser:
     recommender_label_parser.add_argument("--selection", dest="selection_id", required=True)
     recommender_label_parser.add_argument("--persona", default="lay")
     recommender_label_parser.add_argument("--persona-config", type=Path)
+    recommender_label_parser.add_argument(
+        "--output-persona",
+        help="Artifact namespace for labeled preferences. Defaults to the fixed persona name or 'dirichlet_sampled'.",
+    )
     recommender_label_parser.add_argument("--simulator", default="dirichlet_persona")
+    recommender_label_parser.add_argument(
+        "--persona-assignment-policy",
+        choices=("fixed", "dirichlet_sampled"),
+        default="fixed",
+        help="Use a fixed persona per client or sample one persona per client from a Dirichlet-controlled client mixture.",
+    )
+    recommender_label_parser.add_argument(
+        "--persona-assignment-alpha",
+        type=float,
+        default=0.3,
+        help="Dirichlet concentration for heterogeneous client-level persona assignment. Larger values are more balanced across personas; smaller values are more concentrated.",
+    )
     recommender_label_parser.add_argument(
         "--clients",
         default="all",
@@ -719,6 +735,7 @@ def main() -> None:
             selection_id=args.selection_id,
             persona=args.persona,
             persona_config_path=args.persona_config,
+            output_persona=args.output_persona,
             simulator=args.simulator,
             clients=args.clients,
             context_filename=args.context_filename,
@@ -729,6 +746,8 @@ def main() -> None:
             instance_split_seed=args.instance_split_seed,
             tau=args.tau,
             concentration_c=args.concentration_c,
+            persona_assignment_policy=args.persona_assignment_policy,
+            persona_assignment_alpha=args.persona_assignment_alpha,
             paths=_build_artifact_paths(args),
         )
         print(json.dumps(payload, indent=2))

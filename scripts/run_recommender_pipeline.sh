@@ -15,7 +15,11 @@ Environment variables:
                                         Label artifact name expected by training/eval.
   SIMULATOR=dirichlet_persona           Labeling simulator name.
   LABEL_SEED=1729                       RNG seed for simulated pairwise labels.
-  PERSONA_SEED=42                       RNG seed for persona weight sampling.
+  PERSONA_SEED=42                       RNG seed for persona assignment / metric sampling.
+  PERSONA_ASSIGNMENT_POLICY=dirichlet_sampled
+                                        Labeling persona assignment policy.
+  PERSONA_ASSIGNMENT_ALPHA=             Optional Dirichlet concentration for client-level persona assignment.
+  PERSONA=dirichlet_sampled             Shared label namespace used by label/train/eval.
   TRAIN_ROUNDS=10                       Federated recommender rounds.
   TRAIN_EPOCHS=5                        Local recommender epochs.
   TRAIN_BATCH_SIZE=64                   Local recommender batch size.
@@ -70,7 +74,7 @@ fi
 
 RUN_ID="$1"
 SELECTION_ID="$2"
-PERSONA="${3:-${PERSONA:-lay}}"
+PERSONA="${3:-${PERSONA:-dirichlet_sampled}}"
 
 CLIENTS="${CLIENTS:-all}"
 CONTEXT_FILENAME="${CONTEXT_FILENAME:-candidate_context.parquet}"
@@ -78,6 +82,8 @@ LABEL_FILENAME="${LABEL_FILENAME:-pairwise_labels.parquet}"
 SIMULATOR="${SIMULATOR:-dirichlet_persona}"
 LABEL_SEED="${LABEL_SEED:-1729}"
 PERSONA_SEED="${PERSONA_SEED:-42}"
+PERSONA_ASSIGNMENT_POLICY="${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}"
+PERSONA_ASSIGNMENT_ALPHA="${PERSONA_ASSIGNMENT_ALPHA:-}"
 TRAIN_ROUNDS="${TRAIN_ROUNDS:-10}"
 TRAIN_EPOCHS="${TRAIN_EPOCHS:-5}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-64}"
@@ -172,6 +178,14 @@ if [[ -n "$EVAL_OUTPUT" ]]; then
   EVAL_EXTRA+=(--output "$EVAL_OUTPUT")
 fi
 
+LABEL_EXTRA=(
+  --persona-assignment-policy "$PERSONA_ASSIGNMENT_POLICY"
+  --output-persona "$PERSONA"
+)
+if [[ -n "$PERSONA_ASSIGNMENT_ALPHA" ]]; then
+  LABEL_EXTRA+=(--persona-assignment-alpha "$PERSONA_ASSIGNMENT_ALPHA")
+fi
+
 if [[ "$SKIP_LABELING" == "1" ]]; then
   echo "==> Skipping recommender labeling"
 else
@@ -185,7 +199,8 @@ else
     --context-filename "$CONTEXT_FILENAME" \
     --label-filename "$LABEL_FILENAME" \
     --seed "$PERSONA_SEED" \
-    --label-seed "$LABEL_SEED"
+    --label-seed "$LABEL_SEED" \
+    "${LABEL_EXTRA[@]}"
 fi
 
 echo "==> Training federated recommender"
@@ -229,4 +244,4 @@ echo "==> Evaluating federated recommender"
 echo "==> Recommender pipeline complete"
 echo "Run ID: $RUN_ID"
 echo "Selection: $SELECTION_ID"
-echo "Persona: $PERSONA"
+echo "Label Namespace: $PERSONA"
