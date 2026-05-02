@@ -305,7 +305,7 @@ def _encode_candidate_context(
     explainer_metadata = _explainer_metadata()
 
     encoded_rows: list[dict[str, Any]] = []
-    dataset_name = str(run_metadata.get("dataset_name", ""))
+    dataset_name = _dataset_name_from_metadata(run_metadata)
     model_type = str(run_metadata.get("model_type", ""))
     for _, row in candidates.iterrows():
         explainer_name = str(row["explainer_name"])
@@ -659,6 +659,47 @@ def _safe_float(value: Any) -> float:
     return numeric
 
 
+def _dataset_name_from_metadata(metadata: Mapping[str, Any]) -> str:
+    dataset_name = str(metadata.get("dataset_name", "")).strip()
+    if dataset_name:
+        return dataset_name
+    training_config = metadata.get("training_config")
+    if isinstance(training_config, Mapping):
+        return str(training_config.get("dataset_name", "")).strip()
+    return ""
+
+
+def _resolve_dataset_z_score(
+    *,
+    dataset_name: str,
+    dataset_records: Mapping[str, Mapping[str, Any]],
+    raw_field: str,
+    legacy_z_field: str,
+) -> float:
+    raw_values = _collect_finite_dataset_values(dataset_records, raw_field)
+    if len(raw_values) == len(dataset_records):
+        _, z_scores = _compute_z_scores(raw_values)
+        return float(z_scores.get(dataset_name, 0.0))
+
+    legacy_values = _collect_finite_dataset_values(dataset_records, legacy_z_field)
+    if len(legacy_values) == len(dataset_records):
+        return float(legacy_values.get(dataset_name, 0.0))
+    return 0.0
+
+
+def _collect_finite_dataset_values(
+    dataset_records: Mapping[str, Mapping[str, Any]],
+    field: str,
+) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for name, record in dataset_records.items():
+        numeric = _coerce_optional_float(record.get(field))
+        if numeric is None or not math.isfinite(numeric):
+            continue
+        values[name] = float(numeric)
+    return values
+
+
 
 
 
@@ -667,7 +708,7 @@ def _resolve_dataset_context_features(
     run_context: Any,
     paths: ArtifactPaths,
 ) -> dict[str, Any]:
-    dataset_name = str(run_context.metadata.get("dataset_name", "")).strip()
+    dataset_name = _dataset_name_from_metadata(run_context.metadata)
     if not dataset_name:
         return _encode_dataset_context_features(
             dataset_name="",
@@ -681,24 +722,13 @@ def _resolve_dataset_context_features(
             dataset_records=legacy_records,
         )
 
-    dataset_records: dict[str, dict[str, Any]] = {}
-    registry_names = DEFAULT_DATASET_REGISTRY.list_keys()
-    for dataset_id, name in enumerate(registry_names):
-        try:
-            dataset_records[name] = _build_registry_dataset_record(
-                dataset_name=name,
-                dataset_id=dataset_id,
-                cache_dir=paths.cache_dir,
-            )
-        except Exception:
-            continue
-
-    if dataset_name not in dataset_records:
-        dataset_records[dataset_name] = _build_run_fallback_dataset_record(
+    dataset_records = {
+        dataset_name: _build_run_fallback_dataset_record(
             run_context=run_context,
             dataset_name=dataset_name,
-            dataset_id=len(dataset_records),
+            dataset_id=0,
         )
+    }
 
     return _encode_dataset_context_features(
         dataset_name=dataset_name,
@@ -857,25 +887,24 @@ def _encode_dataset_context_features(
     for dataset_id in dataset_ids:
         encoded[f"dataset_id_oh_{dataset_id}"] = 1 if dataset_id == current_dataset_id else 0
 
-    raw_log_feature_count = {
-        name: _safe_float(record.get("log_feature_count"))
-        for name, record in dataset_records.items()
-    }
-    raw_class_entropy = {
-        name: _safe_float(record.get("class_entropy"))
-        for name, record in dataset_records.items()
-    }
-    raw_ratio = {
-        name: _safe_float(record.get("categorical_to_numerical_ratio"))
-        for name, record in dataset_records.items()
-    }
-    _, log_feature_count_z = _compute_z_scores(raw_log_feature_count)
-    _, class_entropy_z = _compute_z_scores(raw_class_entropy)
-    _, ratio_z = _compute_z_scores(raw_ratio)
-
-    encoded["dataset_log_feature_count_z"] = float(log_feature_count_z.get(dataset_name, 0.0))
-    encoded["dataset_class_entropy_z"] = float(class_entropy_z.get(dataset_name, 0.0))
-    encoded["dataset_categorical_to_numerical_ratio_z"] = float(ratio_z.get(dataset_name, 0.0))
+    encoded["dataset_log_feature_count_z"] = _resolve_dataset_z_score(
+        dataset_name=dataset_name,
+        dataset_records=dataset_records,
+        raw_field="log_feature_count",
+        legacy_z_field="log_feature_count_z",
+    )
+    encoded["dataset_class_entropy_z"] = _resolve_dataset_z_score(
+        dataset_name=dataset_name,
+        dataset_records=dataset_records,
+        raw_field="class_entropy",
+        legacy_z_field="class_entropy_z",
+    )
+    encoded["dataset_categorical_to_numerical_ratio_z"] = _resolve_dataset_z_score(
+        dataset_name=dataset_name,
+        dataset_records=dataset_records,
+        raw_field="categorical_to_numerical_ratio",
+        legacy_z_field="categorical_to_numerical_ratio_z",
+    )
     encoded["dataset_has_sensitive_attributes"] = bool(current.get("has_sensitive_attributes", False))
     encoded["dataset_high_stakes_domain"] = bool(current.get("high_stakes_domain", False))
     return encoded
