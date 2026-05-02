@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import math
 import os
 import uuid
@@ -33,6 +34,8 @@ from fed_perso_xai.recommender import (
 from fed_perso_xai.recommender.evaluation import is_recommender_metric_key
 from fed_perso_xai.utils.config import ArtifactPaths, RecommenderFederatedTrainingConfig
 from fed_perso_xai.utils.provenance import current_utc_timestamp
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -121,6 +124,8 @@ def train_federated_recommender(
         batch_size=config.batch_size,
         learning_rate=config.learning_rate,
         l2_regularization=config.l2_regularization,
+        svm_c=config.svm_c,
+        svm_intercept_scaling=config.svm_intercept_scaling,
     )
     client_data = [
         RecommenderClientData(
@@ -206,6 +211,19 @@ def train_federated_recommender(
                 top_k=config.top_k,
                 output_path=artifacts.evaluation_summary_path,
             )
+            _log_clustered_evaluation_summary(
+                run_dir=run_dir,
+                evaluation=evaluation,
+                plain_evaluation_path=_recommender_training_dir(
+                    run_context.run_artifact_dir,
+                    config.selection_id,
+                    config.persona,
+                    recommender_type=config.recommender_type,
+                    secure_aggregation=False,
+                    clustered=False,
+                )
+                / "evaluation_summary.json",
+            )
         else:
             evaluation = evaluate_recommender_model(
                 run_id=config.run_id,
@@ -268,6 +286,8 @@ def train_federated_recommender(
             "batch_size": config.batch_size,
             "learning_rate": config.learning_rate,
             "l2_regularization": config.l2_regularization,
+            "svm_c": config.svm_c,
+            "svm_intercept_scaling": config.svm_intercept_scaling,
         },
     }
     _write_json_atomic(artifacts.model_metadata_path, model_metadata)
@@ -610,7 +630,10 @@ def _persist_clustered_training_artifacts(
         "enabled": True,
         "method": config.clustering.method,
         "k": int(config.clustering.k),
+        "enable_pca": bool(config.clustering.enable_pca),
         "pca_components": int(config.clustering.pca_components),
+        "warmup_rounds": int(config.clustering.warmup_rounds),
+        "freeze_pca_after_warmup": bool(config.clustering.freeze_pca_after_warmup),
         "round_count": int(len(training_result.clustered_rounds)),
         "final_cluster_assignments": dict(training_result.final_cluster_assignments),
         "final_cluster_model_checkpoint_paths": final_cluster_model_checkpoint_paths,
@@ -704,6 +727,127 @@ def _evaluate_clustered_recommender_models(
     if output_path is not None:
         _write_json_atomic(output_path, payload)
     return payload
+
+
+def _log_clustered_evaluation_summary(
+    *,
+    run_dir: Path,
+    evaluation: Mapping[str, Any],
+    plain_evaluation_path: Path,
+) -> None:
+    aggregate = evaluation.get("aggregate", {})
+    if isinstance(aggregate, Mapping):
+        LOGGER.info(
+            "Clustered recommender evaluation aggregate pearson_at_3=%s pearson_at_5=%s precision_at_3=%s precision_at_5=%s",
+            _format_optional_metric(aggregate.get("pearson_at_3")),
+            _format_optional_metric(aggregate.get("pearson_at_5")),
+            _format_optional_metric(aggregate.get("precision_at_3")),
+            _format_optional_metric(aggregate.get("precision_at_5")),
+        )
+
+    for cluster in evaluation.get("clusters", []):
+        if not isinstance(cluster, Mapping):
+            continue
+        cluster_aggregate = cluster.get("aggregate", {})
+        if not isinstance(cluster_aggregate, Mapping):
+            cluster_aggregate = {}
+        LOGGER.info(
+            "Clustered recommender final cluster cluster_id=%s client_count=%s pearson_at_3=%s pearson_at_5=%s precision_at_3=%s precision_at_5=%s",
+            cluster.get("cluster_id"),
+            cluster.get("client_count"),
+            _format_optional_metric(cluster_aggregate.get("pearson_at_3")),
+            _format_optional_metric(cluster_aggregate.get("pearson_at_5")),
+            _format_optional_metric(cluster_aggregate.get("precision_at_3")),
+            _format_optional_metric(cluster_aggregate.get("precision_at_5")),
+        )
+
+    if not plain_evaluation_path.exists():
+        LOGGER.info(
+            "Clustered recommender comparison to plain skipped plain_evaluation_path=%s missing",
+            plain_evaluation_path,
+        )
+        return
+
+    plain_evaluation = json.loads(plain_evaluation_path.read_text(encoding="utf-8"))
+    plain_clients = plain_evaluation.get("clients", [])
+    clustered_clients = evaluation.get("clients", [])
+    if not isinstance(plain_clients, list) or not isinstance(clustered_clients, list):
+        return
+
+    plain_by_client = {
+        str(item["client_id"]): item for item in plain_clients if isinstance(item, Mapping) and "client_id" in item
+    }
+    clustered_by_client = {
+        str(item["client_id"]): item
+        for item in clustered_clients
+        if isinstance(item, Mapping) and "client_id" in item
+    }
+    deltas: list[dict[str, object]] = []
+    for client_id in sorted(set(plain_by_client).intersection(clustered_by_client)):
+        plain_row = plain_by_client[client_id]
+        clustered_row = clustered_by_client[client_id]
+        delta_at_3 = _metric_delta(clustered_row, plain_row, "pearson_at_3")
+        delta_at_5 = _metric_delta(clustered_row, plain_row, "pearson_at_5")
+        deltas.append(
+            {
+                "client_id": client_id,
+                "cluster_id": clustered_row.get("cluster_id"),
+                "delta_pearson_at_3": delta_at_3,
+                "delta_pearson_at_5": delta_at_5,
+            }
+        )
+
+    improved_at_3 = sum(
+        1 for item in deltas if isinstance(item["delta_pearson_at_3"], float) and item["delta_pearson_at_3"] > 0.0
+    )
+    improved_at_5 = sum(
+        1 for item in deltas if isinstance(item["delta_pearson_at_5"], float) and item["delta_pearson_at_5"] > 0.0
+    )
+    LOGGER.info(
+        "Clustered recommender comparison_vs_plain clients=%s improved_at_3=%s improved_at_5=%s",
+        int(len(deltas)),
+        int(improved_at_3),
+        int(improved_at_5),
+    )
+
+    for label, rows in (
+        ("worst_at_3", sorted(deltas, key=lambda item: _sort_metric_value(item["delta_pearson_at_3"]))[:3]),
+        ("best_at_3", sorted(deltas, key=lambda item: _sort_metric_value(item["delta_pearson_at_3"]), reverse=True)[:3]),
+    ):
+        formatted_rows = [
+            {
+                "client_id": str(item["client_id"]),
+                "cluster_id": item["cluster_id"],
+                "delta_pearson_at_3": _format_optional_metric(item["delta_pearson_at_3"]),
+                "delta_pearson_at_5": _format_optional_metric(item["delta_pearson_at_5"]),
+            }
+            for item in rows
+        ]
+        LOGGER.info("Clustered recommender comparison_vs_plain %s=%s", label, formatted_rows)
+
+
+def _metric_delta(
+    lhs: Mapping[str, Any],
+    rhs: Mapping[str, Any],
+    key: str,
+) -> float | None:
+    lhs_value = lhs.get(key)
+    rhs_value = rhs.get(key)
+    if not isinstance(lhs_value, (int, float)) or not isinstance(rhs_value, (int, float)):
+        return None
+    return float(lhs_value) - float(rhs_value)
+
+
+def _format_optional_metric(value: object) -> str:
+    if isinstance(value, (int, float)):
+        return f"{float(value):.6f}"
+    return "n/a"
+
+
+def _sort_metric_value(value: object) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return float("-inf")
 
 
 def _training_variant_label(*, secure_aggregation: bool, clustered: bool = False) -> str:

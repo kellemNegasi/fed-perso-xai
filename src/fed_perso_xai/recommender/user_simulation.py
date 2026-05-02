@@ -201,11 +201,11 @@ class DirichletPersonaSimulator:
 
     def label_client_candidates(self, candidates: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
         _validate_candidate_frame(candidates)
-        metric_columns = _resolve_metric_z_columns(candidates, self.persona_config.metric_names())
+        metric_columns = _resolve_metric_columns(candidates, self.persona_config.metric_names())
         if not metric_columns:
             raise ValueError(
-                "No persona metrics are present in candidate context. Expected columns like "
-                "'metric_<metric_name>_z'."
+                "No persona metrics are present in candidate context. Expected metric columns like "
+                "'<metric_name>' or legacy 'metric_<metric_name>_z'."
             )
 
         active_metrics = tuple(metric_columns)
@@ -507,18 +507,20 @@ def _resolve_concentration(
     return float(max(float(value), MIN_DIRICHLET_CONCENTRATION))
 
 
-def _resolve_metric_z_columns(candidates: pd.DataFrame, metric_names: Sequence[str]) -> tuple[str, ...]:
+def _resolve_metric_columns(candidates: pd.DataFrame, metric_names: Sequence[str]) -> tuple[str, ...]:
     available = set(candidates.columns)
     resolved: list[str] = []
     for metric_name in metric_names:
-        z_col = f"metric_{metric_name}_z"
-        if z_col in available:
+        if metric_name in available or f"metric_{metric_name}_z" in available:
             resolved.append(metric_name)
     return tuple(resolved)
 
 
 def _metric_matrix(candidates: pd.DataFrame, metric_names: Sequence[str]) -> np.ndarray:
-    columns = [f"metric_{name}_z" for name in metric_names]
+    columns = [
+        name if name in candidates.columns else f"metric_{name}_z"
+        for name in metric_names
+    ]
     return (
         candidates.loc[:, columns]
         .apply(pd.to_numeric, errors="coerce")

@@ -249,6 +249,8 @@ class RecommenderFederatedTrainingConfig:
     batch_size: int = 64
     learning_rate: float = 0.05
     l2_regularization: float = 0.0
+    svm_c: float = 1.0
+    svm_intercept_scaling: float = 1.0
     seed: int = 42
     top_k: tuple[int, ...] = (1, 3, 5, 8)
     context_filename: str = "candidate_context.parquet"
@@ -284,6 +286,8 @@ class RecommenderFederatedTrainingConfig:
         _require_integer_at_least("batch_size", self.batch_size, minimum=1)
         _require_positive("learning_rate", self.learning_rate)
         _require_non_negative("l2_regularization", self.l2_regularization)
+        _require_positive("svm_c", self.svm_c)
+        _require_positive("svm_intercept_scaling", self.svm_intercept_scaling)
         _require_non_negative_integer("seed", self.seed)
         _require_non_empty_string("context_filename", self.context_filename)
         _require_non_empty_string("label_filename", self.label_filename)
@@ -327,6 +331,10 @@ class RecommenderFederatedTrainingConfig:
                 raise ValueError(
                     "clustering.k cannot exceed the loaded recommender client count."
                 )
+        if self.clustering.enabled and self.clustering.warmup_rounds >= self.rounds:
+            raise ValueError(
+                "clustering.warmup_rounds must be smaller than rounds when clustered training is enabled."
+            )
         _validate_simulation_resources(self.simulation_resources)
 
         from fed_perso_xai.fl.strategy import DEFAULT_STRATEGY_REGISTRY
@@ -361,6 +369,8 @@ class RecommenderFederatedTrainingConfig:
             batch_size=self.batch_size,
             learning_rate=self.learning_rate,
             l2_regularization=self.l2_regularization,
+            svm_c=self.svm_c,
+            svm_intercept_scaling=self.svm_intercept_scaling,
             seed=self.seed,
             top_k=tuple(self.top_k),
             context_filename=self.context_filename,
@@ -389,7 +399,10 @@ class RecommenderClusteringConfig:
     enabled: bool = False
     method: str = "secure_kmeans"
     k: int = 3
+    enable_pca: bool = True
     pca_components: int = 8
+    warmup_rounds: int = 0
+    freeze_pca_after_warmup: bool = False
     max_iterations: int = 20
     tolerance: float = 1e-6
 
@@ -398,7 +411,12 @@ class RecommenderClusteringConfig:
             raise TypeError("enabled must be a boolean.")
         _normalize_recommender_clustering_method(self.method)
         _require_integer_at_least("k", self.k, minimum=1)
+        if not isinstance(self.enable_pca, bool):
+            raise TypeError("enable_pca must be a boolean.")
         _require_integer_at_least("pca_components", self.pca_components, minimum=1)
+        _require_non_negative_integer("warmup_rounds", self.warmup_rounds)
+        if not isinstance(self.freeze_pca_after_warmup, bool):
+            raise TypeError("freeze_pca_after_warmup must be a boolean.")
         _require_integer_at_least("max_iterations", self.max_iterations, minimum=1)
         _require_positive("tolerance", self.tolerance)
 
@@ -489,5 +507,5 @@ def _require_probability(field_name: str, value: float) -> None:
 def _require_fraction_or_one(field_name: str, value: float) -> None:
     if not isinstance(value, (int, float)):
         raise TypeError(f"{field_name} must be numeric.")
-    if not 0.0 < float(value) <= 1.0:
-        raise ValueError(f"{field_name} must be in the interval (0, 1].")
+    if not 0.0 <= float(value) <= 1.0:
+        raise ValueError(f"{field_name} must be in the interval [0, 1].")

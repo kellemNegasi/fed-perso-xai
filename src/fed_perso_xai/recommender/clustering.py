@@ -50,6 +50,90 @@ class RandomProjectionSpec:
 
 
 @dataclass(frozen=True)
+class PCAProjectionSpec:
+    """Centered PCA basis broadcast to clients for local projection."""
+
+    projection_matrix: np.ndarray
+    mean_vector: np.ndarray
+    requested_components: int
+    seed: int
+    explained_variance: np.ndarray
+    explained_variance_ratio: np.ndarray
+    fit_client_count: int
+
+    def transform(self, flat_vector: np.ndarray) -> np.ndarray:
+        vector = np.asarray(flat_vector, dtype=np.float64).reshape(-1)
+        if vector.shape[0] != self.projection_matrix.shape[0]:
+            raise ValueError(
+                f"Expected flattened vector length {self.projection_matrix.shape[0]}, got {vector.shape[0]}."
+            )
+        centered = vector - self.mean_vector
+        return centered @ self.projection_matrix
+
+    @property
+    def input_dimension(self) -> int:
+        return int(self.projection_matrix.shape[0])
+
+    @property
+    def actual_components(self) -> int:
+        return int(self.projection_matrix.shape[1])
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "requested_components": int(self.requested_components),
+            "actual_components": int(self.actual_components),
+            "input_dimension": int(self.input_dimension),
+            "projection_matrix_shape": [int(value) for value in self.projection_matrix.shape],
+            "projection_type": "pca_covariance_eigh",
+            "projection_seed": int(self.seed),
+            "data_dependent_fit": True,
+            "projection_applied": "client_side",
+            "projection_basis_scope": "round_centered_client_models",
+            "centering_applied": True,
+            "fit_client_count": int(self.fit_client_count),
+            "explained_variance": [float(value) for value in self.explained_variance],
+            "explained_variance_ratio": [float(value) for value in self.explained_variance_ratio],
+        }
+
+
+@dataclass(frozen=True)
+class IdentityProjectionSpec:
+    """Direct flattened-weight space used when clustered training skips PCA."""
+
+    input_dimension_value: int
+
+    def transform(self, flat_vector: np.ndarray) -> np.ndarray:
+        vector = np.asarray(flat_vector, dtype=np.float64).reshape(-1)
+        if vector.shape[0] != self.input_dimension_value:
+            raise ValueError(
+                f"Expected flattened vector length {self.input_dimension_value}, got {vector.shape[0]}."
+            )
+        return vector
+
+    @property
+    def input_dimension(self) -> int:
+        return int(self.input_dimension_value)
+
+    @property
+    def actual_components(self) -> int:
+        return int(self.input_dimension_value)
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "requested_components": int(self.input_dimension_value),
+            "actual_components": int(self.actual_components),
+            "input_dimension": int(self.input_dimension),
+            "projection_matrix_shape": None,
+            "projection_type": "identity_no_projection",
+            "projection_seed": None,
+            "data_dependent_fit": False,
+            "projection_applied": "client_side",
+            "projection_basis_scope": "raw_flattened_weights",
+            "centering_applied": False,
+        }
+
+
+@dataclass(frozen=True)
 class SecureClusterAssignments:
     """Assignments and metadata from one secure clustering round."""
 
@@ -145,6 +229,72 @@ def build_random_projection_spec(
     )
 
 
+def build_centered_pca_projection_spec(
+    *,
+    flattened_vectors: np.ndarray,
+    requested_components: int,
+    seed: int,
+) -> PCAProjectionSpec:
+    matrix = np.asarray(flattened_vectors, dtype=np.float64)
+    if matrix.ndim != 2:
+        raise ValueError("flattened_vectors must be a 2D array.")
+    if matrix.shape[0] == 0 or matrix.shape[1] == 0:
+        raise ValueError("flattened_vectors must contain at least one row and one column.")
+    if int(requested_components) <= 0:
+        raise ValueError("requested_components must be positive.")
+
+    # TODO This leaks some form aggregated information, consider updating it.
+    mean_vector = np.mean(matrix, axis=0)
+    centered = matrix - mean_vector
+
+    # Compute PCA from the centered client-by-parameter matrix directly via
+    # compact SVD. This avoids materializing the dense d x d covariance matrix
+    # from centered.T @ centered, which would cost O(d^2) memory and roughly
+    # O(d^3) eigendecomposition time for flattened model dimension d. With n
+    # participating clients and n << d, compact SVD works on the n x d matrix
+    # instead, using O(n*d) storage for centered data and roughly O(n^2*d)
+    # compute to recover the top PCA directions.
+    _, singular_values, right_singular_vectors_t = np.linalg.svd(centered, full_matrices=False)
+    component_count = min(int(requested_components), int(right_singular_vectors_t.shape[0]))
+    projection_matrix = np.asarray(right_singular_vectors_t[:component_count].T, dtype=np.float64)
+    selected_eigenvalues = np.clip(
+        (singular_values[:component_count] ** 2) / float(matrix.shape[0]),
+        a_min=0.0,
+        a_max=None,
+    )
+
+    # Stabilize signs so repeated runs produce consistent components.
+    for column_index in range(projection_matrix.shape[1]):
+        column = projection_matrix[:, column_index]
+        anchor_index = int(np.argmax(np.abs(column)))
+        if float(column[anchor_index]) < 0.0:
+            projection_matrix[:, column_index] *= -1.0
+
+    total_variance = float(np.clip(np.sum((singular_values**2) / float(matrix.shape[0])), a_min=0.0, a_max=None))
+    if total_variance > 0.0:
+        explained_variance_ratio = selected_eigenvalues / total_variance
+    else:
+        explained_variance_ratio = np.zeros_like(selected_eigenvalues, dtype=np.float64)
+    return PCAProjectionSpec(
+        projection_matrix=projection_matrix,
+        mean_vector=np.asarray(mean_vector, dtype=np.float64),
+        requested_components=int(requested_components),
+        seed=int(seed),
+        explained_variance=np.asarray(selected_eigenvalues, dtype=np.float64),
+        explained_variance_ratio=np.asarray(explained_variance_ratio, dtype=np.float64),
+        fit_client_count=int(matrix.shape[0]),
+    )
+
+
+def build_identity_projection_spec(
+    *,
+    input_dimension: int,
+) -> IdentityProjectionSpec:
+    if int(input_dimension) <= 0:
+        raise ValueError("input_dimension must be positive.")
+    return IdentityProjectionSpec(input_dimension_value=int(input_dimension))
+
+
 class ClientSideRandomProjector:
     """Client-local flatten -> random projection -> secret sharing for clustered training."""
 
@@ -157,7 +307,7 @@ class ClientSideRandomProjector:
         *,
         client_id: str,
         parameters: Sequence[np.ndarray],
-        projection_spec: RandomProjectionSpec,
+        projection_spec: RandomProjectionSpec | PCAProjectionSpec | IdentityProjectionSpec,
         round_id: int,
     ) -> SecretSharedReducedVector:
         protocol = _build_private_clustering_protocol(self.training_config)
@@ -189,7 +339,7 @@ class SecureKMeansClusterer:
         self,
         shared_reduced_vectors: Sequence[SecretSharedReducedVector],
         *,
-        projection_spec: RandomProjectionSpec,
+        projection_spec: RandomProjectionSpec | PCAProjectionSpec | IdentityProjectionSpec,
         seed: int,
         clustering_config: RecommenderClusteringConfig,
     ) -> SecureClusterAssignments:
@@ -475,7 +625,7 @@ def weighted_average_parameter_sets(
 
 def _initialize_centroids(
     *,
-    projection_spec: RandomProjectionSpec,
+    projection_spec: RandomProjectionSpec | PCAProjectionSpec | IdentityProjectionSpec,
     dimension: int,
     n_clusters: int,
     seed: int,
@@ -484,15 +634,24 @@ def _initialize_centroids(
     centroids = rng.normal(loc=0.0, scale=1e-3, size=(n_clusters, dimension)).astype(np.float64)
     if dimension == 0:
         raise ValueError("dimension must be positive.")
-    scales = np.linalg.norm(projection_spec.projection_matrix, axis=0)
-    if scales.shape[0] < dimension:
-        scales = np.pad(scales, (0, dimension - scales.shape[0]), constant_values=1.0)
-    scales = np.maximum(scales[:dimension], 1e-3)
+    scales = _projection_axis_scales(projection_spec, dimension)
     for cluster_id in range(n_clusters):
         axis = cluster_id % dimension
         sign = -1.0 if cluster_id % 2 else 1.0
         centroids[cluster_id, axis] += sign * float(scales[axis])
     return centroids
+
+
+def _projection_axis_scales(
+    projection_spec: RandomProjectionSpec | PCAProjectionSpec | IdentityProjectionSpec,
+    dimension: int,
+) -> np.ndarray:
+    if isinstance(projection_spec, IdentityProjectionSpec):
+        return np.ones(int(dimension), dtype=np.float64)
+    scales = np.linalg.norm(projection_spec.projection_matrix, axis=0)
+    if scales.shape[0] < dimension:
+        scales = np.pad(scales, (0, dimension - scales.shape[0]), constant_values=1.0)
+    return np.maximum(scales[:dimension], 1e-3)
 
 
 def _scale_parameter_set(

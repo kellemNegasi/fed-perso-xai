@@ -21,6 +21,8 @@ Environment variables:
   TRAIN_BATCH_SIZE=64                   Local recommender batch size.
   TRAIN_LEARNING_RATE=0.05              Local recommender learning rate.
   TRAIN_L2_REGULARIZATION=0.0           Local recommender L2 regularization.
+  TRAIN_SVM_C=0.5                       LinearSVC-style SVM C parameter.
+  TRAIN_SVM_INTERCEPT_SCALING=1.0       LinearSVC-style intercept scaling.
   TRAIN_SEED=42                         Federated recommender training seed.
   RECOMMENDER_TYPE=svm_rank             Recommender backend: svm_rank or pairwise_logistic.
   FIT_FRACTION=1.0                      Fraction of clients sampled for fit.
@@ -41,7 +43,10 @@ Environment variables:
   CLUSTERED=0                           Pass --clustered to training when set to 1.
   CLUSTERING_METHOD=secure_kmeans       Clustered training method.
   CLUSTERING_K=3                        Number of recommender clusters when clustering is enabled.
-  CLUSTERING_PCA_COMPONENTS=8           Random projection components for clustered training.
+  CLUSTERING_ENABLE_PCA=1              Pass --no-clustering-enable-pca when set to 0.
+  CLUSTERING_PCA_COMPONENTS=8           PCA components for clustered training.
+  CLUSTERING_WARMUP_ROUNDS=0            Initial global-only rounds before clustering starts.
+  CLUSTERING_FREEZE_PCA_AFTER_WARMUP=0  Pass --clustering-freeze-pca-after-warmup when set to 1.
   TOP_K=1,3,5                           Comma-separated precision@k cutoffs.
   FORCE_TRAINING=0                      Pass --force to train-recommender-federated.
   EVAL_OUTPUT=                          Optional path for evaluate-recommender JSON output.
@@ -78,6 +83,8 @@ TRAIN_EPOCHS="${TRAIN_EPOCHS:-5}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-64}"
 TRAIN_LEARNING_RATE="${TRAIN_LEARNING_RATE:-0.05}"
 TRAIN_L2_REGULARIZATION="${TRAIN_L2_REGULARIZATION:-0.0}"
+TRAIN_SVM_C="${TRAIN_SVM_C:-0.5}"
+TRAIN_SVM_INTERCEPT_SCALING="${TRAIN_SVM_INTERCEPT_SCALING:-1.0}"
 TRAIN_SEED="${TRAIN_SEED:-42}"
 RECOMMENDER_TYPE="${RECOMMENDER_TYPE:-svm_rank}"
 FIT_FRACTION="${FIT_FRACTION:-1.0}"
@@ -98,7 +105,10 @@ SECURE_SEED="${SECURE_SEED:-0}"
 CLUSTERED="${CLUSTERED:-0}"
 CLUSTERING_METHOD="${CLUSTERING_METHOD:-secure_kmeans}"
 CLUSTERING_K="${CLUSTERING_K:-3}"
+CLUSTERING_ENABLE_PCA="${CLUSTERING_ENABLE_PCA:-1}"
 CLUSTERING_PCA_COMPONENTS="${CLUSTERING_PCA_COMPONENTS:-8}"
+CLUSTERING_WARMUP_ROUNDS="${CLUSTERING_WARMUP_ROUNDS:-0}"
+CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-0}"
 TOP_K="${TOP_K:-1,3,5}"
 FORCE_TRAINING="${FORCE_TRAINING:-1}"
 EVAL_OUTPUT="${EVAL_OUTPUT:-}"
@@ -139,10 +149,21 @@ TRAIN_EXTRA+=(--secure-quantization-scale "$SECURE_QUANTIZATION_SCALE")
 TRAIN_EXTRA+=(--secure-seed "$SECURE_SEED")
 TRAIN_EXTRA+=(--clustering-method "$CLUSTERING_METHOD")
 TRAIN_EXTRA+=(--clustering-k "$CLUSTERING_K")
+if [[ "$CLUSTERING_ENABLE_PCA" == "0" ]]; then
+  TRAIN_EXTRA+=(--no-clustering-enable-pca)
+else
+  TRAIN_EXTRA+=(--clustering-enable-pca)
+fi
 TRAIN_EXTRA+=(--clustering-pca-components "$CLUSTERING_PCA_COMPONENTS")
+TRAIN_EXTRA+=(--clustering-warmup-rounds "$CLUSTERING_WARMUP_ROUNDS")
+if [[ "$CLUSTERING_FREEZE_PCA_AFTER_WARMUP" == "1" ]]; then
+  TRAIN_EXTRA+=(--clustering-freeze-pca-after-warmup)
+fi
 
 EVAL_EXTRA=()
-if [[ "$SECURE_AGGREGATION" == "1" ]]; then
+if [[ "$CLUSTERED" == "1" ]]; then
+  EVAL_EXTRA+=(--clustered)
+elif [[ "$SECURE_AGGREGATION" == "1" ]]; then
   EVAL_EXTRA+=(--secure-aggregation)
 else
   EVAL_EXTRA+=(--plain-aggregation)
@@ -181,6 +202,8 @@ echo "==> Training federated recommender"
   --batch-size "$TRAIN_BATCH_SIZE" \
   --learning-rate "$TRAIN_LEARNING_RATE" \
   --l2-regularization "$TRAIN_L2_REGULARIZATION" \
+  --svm-c "$TRAIN_SVM_C" \
+  --svm-intercept-scaling "$TRAIN_SVM_INTERCEPT_SCALING" \
   --seed "$TRAIN_SEED" \
   --fit-fraction "$FIT_FRACTION" \
   --evaluate-fraction "$EVALUATE_FRACTION" \

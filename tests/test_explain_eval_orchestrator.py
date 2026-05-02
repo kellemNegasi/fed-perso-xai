@@ -622,10 +622,145 @@ def test_prepare_recommender_context_writes_client_ready_files(
         "lime__kernel-1.5__samples-50",
         "lime__kernel-2.0__samples-50",
     }
-    assert "dataset_client_train_size_z" in all_context.columns
+    assert "dataset_id_oh_0" in all_context.columns
+    assert "dataset_log_feature_count_z" in all_context.columns
+    assert "explainer_type" in all_context.columns
     assert "hp_lime_kernel_width" in all_context.columns
-    assert "metric_compactness_sparsity_z" in all_context.columns
+    assert "is_applicable_lime_kernel_width" in all_context.columns
+    assert "compactness_sparsity" in all_context.columns
+    assert "metric_compactness_sparsity_z" not in all_context.columns
+    assert "metric_compactness_sparsity_oriented" not in all_context.columns
+    assert "dataset_client_train_size_z" not in all_context.columns
+    assert "run_alpha" not in all_context.columns
     assert "is_pareto_optimal" in all_context.columns
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_prepare_recommender_context_preserves_legacy_dataset_z_scores(
+    tmp_path,
+    synthetic_client_splits,
+) -> None:
+    import pandas as pd
+
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+    run_root = federated_run_artifact_dir(paths, run_id)
+    (run_root / "dataset_metadata.json").write_text(
+        json.dumps(
+            {
+                "datasets": {
+                    "toy": {
+                        "dataset_id": 0,
+                        "log_feature_count_z": 1.25,
+                        "class_entropy_z": -0.5,
+                        "categorical_to_numerical_ratio_z": 0.75,
+                        "has_sensitive_attributes": True,
+                        "high_stakes_domain": False,
+                    },
+                    "other_dataset": {
+                        "dataset_id": 1,
+                        "log_feature_count_z": -1.25,
+                        "class_entropy_z": 0.5,
+                        "categorical_to_numerical_ratio_z": -0.75,
+                        "has_sensitive_attributes": False,
+                        "high_stakes_domain": True,
+                    },
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    for config_id in ("lime__kernel-1.5__samples-50", "lime__kernel-2.0__samples-50"):
+        run_explain_eval_job(
+            run_id=run_id,
+            client_id="client_000",
+            explainer_name="lime",
+            config_id=config_id,
+            max_instances=2,
+            random_state=9,
+            paths=paths,
+            metric_names=["compactness_size"],
+        )
+        aggregate_explain_eval_results(
+            run_id=run_id,
+            selection_id="test__max-2__seed-9",
+            explainer_name="lime",
+            config_id=config_id,
+            paths=paths,
+        )
+
+    summary = prepare_recommender_context(
+        run_id=run_id,
+        selection_id="test__max-2__seed-9",
+        explainers="lime",
+        config_ids="all",
+        clients="client_000",
+        paths=paths,
+    )
+
+    all_context = pd.read_parquet(summary["clients"][0]["artifacts"]["all_candidate_context"])
+    assert set(all_context["dataset"]) == {"toy"}
+    assert all_context["dataset_log_feature_count_z"].tolist() == pytest.approx([1.25] * len(all_context))
+    assert all_context["dataset_class_entropy_z"].tolist() == pytest.approx([-0.5] * len(all_context))
+    assert all_context["dataset_categorical_to_numerical_ratio_z"].tolist() == pytest.approx(
+        [0.75] * len(all_context)
+    )
+    assert set(all_context["dataset_has_sensitive_attributes"]) == {True}
+    assert set(all_context["dataset_high_stakes_domain"]) == {False}
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+def test_prepare_recommender_context_uses_local_run_metadata_only(
+    tmp_path,
+    synthetic_client_splits,
+    monkeypatch,
+) -> None:
+    from fed_perso_xai.orchestration import recommender_preprocessing as module
+
+    import pandas as pd
+
+    paths, run_id = _materialize_run_artifact(tmp_path, synthetic_client_splits)
+
+    def fail_registry_load(**kwargs) -> dict[str, object]:
+        raise AssertionError("registry dataset loading should not run during context prep")
+
+    monkeypatch.setattr(module, "_build_registry_dataset_record", fail_registry_load)
+
+    for config_id in ("lime__kernel-1.5__samples-50", "lime__kernel-2.0__samples-50"):
+        run_explain_eval_job(
+            run_id=run_id,
+            client_id="client_000",
+            explainer_name="lime",
+            config_id=config_id,
+            max_instances=2,
+            random_state=9,
+            paths=paths,
+            metric_names=["compactness_size"],
+        )
+        aggregate_explain_eval_results(
+            run_id=run_id,
+            selection_id="test__max-2__seed-9",
+            explainer_name="lime",
+            config_id=config_id,
+            paths=paths,
+        )
+
+    summary = prepare_recommender_context(
+        run_id=run_id,
+        selection_id="test__max-2__seed-9",
+        explainers="lime",
+        config_ids="all",
+        clients="client_000",
+        paths=paths,
+    )
+
+    all_context = pd.read_parquet(summary["clients"][0]["artifacts"]["all_candidate_context"])
+    assert set(all_context["dataset"]) == {"toy"}
+    assert all_context["dataset_log_feature_count_z"].tolist() == pytest.approx([0.0] * len(all_context))
+    assert all_context["dataset_class_entropy_z"].tolist() == pytest.approx([0.0] * len(all_context))
+    assert all_context["dataset_categorical_to_numerical_ratio_z"].tolist() == pytest.approx(
+        [0.0] * len(all_context)
+    )
 
 
 @pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")

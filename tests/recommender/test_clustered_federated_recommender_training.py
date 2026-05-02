@@ -8,12 +8,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from fed_perso_xai.fl.recommender_simulation import _align_cluster_labels_to_previous_round
 from fed_perso_xai.orchestration.recommender_training import train_federated_recommender
 from fed_perso_xai.recommender.clustering import (
     ClientSideRandomProjector,
+    IdentityProjectionSpec,
+    PCAProjectionSpec,
     RandomProjectionSpec,
     SecretSharedReducedVector,
     SecureClusterAssignments,
+    build_centered_pca_projection_spec,
+    build_identity_projection_spec,
     build_random_projection_spec,
 )
 from fed_perso_xai.utils.config import (
@@ -25,6 +30,90 @@ from fed_perso_xai.utils.config import (
 FLOWER_AVAILABLE = importlib.util.find_spec("flwr") is not None
 PYARROW_AVAILABLE = importlib.util.find_spec("pyarrow") is not None
 LCC_AVAILABLE = importlib.util.find_spec("lcc_lib") is not None
+
+
+def test_align_cluster_labels_to_previous_round_matches_by_maximum_overlap() -> None:
+    previous_assignments = {
+        "client_000": 0,
+        "client_001": 0,
+        "client_002": 1,
+        "client_003": 2,
+    }
+    current_assignments = {
+        "client_000": 2,
+        "client_001": 2,
+        "client_002": 0,
+        "client_003": 1,
+    }
+
+    mapping, overlap = _align_cluster_labels_to_previous_round(
+        previous_assignments=previous_assignments,
+        current_assignments=current_assignments,
+        cluster_count=3,
+    )
+
+    assert mapping == {0: 1, 1: 2, 2: 0}
+    assert overlap == 4
+
+
+def test_align_cluster_labels_to_previous_round_returns_identity_without_shared_clients() -> None:
+    mapping, overlap = _align_cluster_labels_to_previous_round(
+        previous_assignments={"client_000": 0},
+        current_assignments={"client_111": 2},
+        cluster_count=3,
+    )
+
+    assert mapping == {0: 0, 1: 1, 2: 2}
+    assert overlap == 0
+
+
+def test_align_cluster_labels_to_previous_round_scales_beyond_small_permutations() -> None:
+    previous_assignments = {
+        f"client_{cluster_id:03d}": cluster_id
+        for cluster_id in range(8)
+    }
+    current_assignments = {
+        f"client_{cluster_id:03d}": (cluster_id + 3) % 8
+        for cluster_id in range(8)
+    }
+
+    mapping, overlap = _align_cluster_labels_to_previous_round(
+        previous_assignments=previous_assignments,
+        current_assignments=current_assignments,
+        cluster_count=8,
+    )
+
+    assert mapping == {
+        0: 5,
+        1: 6,
+        2: 7,
+        3: 0,
+        4: 1,
+        5: 2,
+        6: 3,
+        7: 4,
+    }
+    assert overlap == 8
+
+
+def test_align_cluster_labels_to_previous_round_breaks_ties_deterministically() -> None:
+    previous_assignments = {
+        "client_000": 0,
+        "client_001": 1,
+    }
+    current_assignments = {
+        "client_000": 1,
+        "client_001": 0,
+    }
+
+    mapping, overlap = _align_cluster_labels_to_previous_round(
+        previous_assignments=previous_assignments,
+        current_assignments=current_assignments,
+        cluster_count=3,
+    )
+
+    assert mapping == {0: 1, 1: 0, 2: 2}
+    assert overlap == 2
 
 
 def _paths(tmp_path: Path) -> ArtifactPaths:
@@ -177,6 +266,42 @@ def test_random_projection_spec_is_seeded_and_deterministic() -> None:
     assert not np.allclose(spec_a.projection_matrix, spec_c.projection_matrix)
 
 
+def test_centered_pca_projection_spec_uses_compact_svd_for_tall_parameter_space() -> None:
+    flattened_vectors = np.asarray(
+        [
+            [1.0, 0.0, 2.0, 0.0, 3.0],
+            [0.0, 1.0, 1.0, 0.0, 2.0],
+            [2.0, 1.0, 3.0, 1.0, 4.0],
+        ],
+        dtype=np.float64,
+    )
+
+    spec = build_centered_pca_projection_spec(
+        flattened_vectors=flattened_vectors,
+        requested_components=4,
+        seed=17,
+    )
+
+    assert spec.projection_matrix.shape == (5, 3)
+    assert spec.actual_components == 3
+    assert spec.fit_client_count == 3
+    assert spec.explained_variance.shape == (3,)
+    assert spec.explained_variance_ratio.shape == (3,)
+    assert np.isclose(np.sum(spec.explained_variance_ratio), 1.0)
+
+
+def test_identity_projection_spec_returns_raw_flattened_space() -> None:
+    spec = build_identity_projection_spec(input_dimension=5)
+    vector = np.asarray([1.0, -2.0, 3.0, 0.5, 4.0], dtype=np.float64)
+
+    transformed = spec.transform(vector)
+
+    assert isinstance(spec, IdentityProjectionSpec)
+    assert spec.actual_components == 5
+    assert np.allclose(transformed, vector)
+    assert spec.to_metadata()["projection_type"] == "identity_no_projection"
+
+
 @pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
 @pytest.mark.skipif(not LCC_AVAILABLE, reason="lcc-lib is required for clustered recommender tests.")
 def test_clustered_recommender_training_uses_seeded_random_projection_and_secure_cluster_aggregation(
@@ -191,9 +316,10 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
         "client_002": [np.asarray([-1.0, -2.0], dtype=np.float64), np.asarray([-0.1], dtype=np.float64)],
         "client_003": [np.asarray([3.0, 3.5], dtype=np.float64), np.asarray([0.4], dtype=np.float64)],
     }
-    projection_spec_calls: list[tuple[int, int, int]] = []
+    projection_spec_calls: list[tuple[tuple[int, int], int, int]] = []
     captured_projector_calls: list[tuple[str, int]] = []
     secure_aggregate_calls: list[tuple[int, tuple[str, ...]]] = []
+    flatten_many_calls: list[tuple[str, ...]] = []
 
     import fed_perso_xai.fl.recommender_simulation as recommender_simulation
     import fed_perso_xai.recommender.clustering as clustering_module
@@ -203,17 +329,21 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
         return fake_local_parameters[dataset.client_name], 0.01
 
     original_build = ClientSideRandomProjector.build_private_reduced_vector
-    original_projection_builder = recommender_simulation.build_random_projection_spec
-    def spy_projection_builder(*, input_dimension, requested_components, seed):
-        projection_spec_calls.append((int(input_dimension), int(requested_components), int(seed)))
+    original_projection_builder = recommender_simulation.build_centered_pca_projection_spec
+
+    def spy_projection_builder(*, flattened_vectors, requested_components, seed):
+        projection_spec_calls.append((tuple(int(value) for value in flattened_vectors.shape), int(requested_components), int(seed)))
         return original_projection_builder(
-            input_dimension=input_dimension,
+            flattened_vectors=flattened_vectors,
             requested_components=requested_components,
             seed=seed,
         )
 
-    def fail_flatten_many(self, parameter_sets):
-        raise AssertionError("flatten_many must not be used in the clustering path.")
+    original_flatten_many = clustering_module.RecommenderWeightVectorExtractor.flatten_many
+
+    def spy_flatten_many(self, parameter_sets):
+        flatten_many_calls.append(tuple(parameter_sets))
+        return original_flatten_many(self, parameter_sets)
 
     def spy_build(self, *, client_id, parameters, projection_spec, round_id):
         captured_projector_calls.append((str(client_id), int(round_id)))
@@ -228,12 +358,13 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config):
         assert clustering_config.k == 3
         assert clustering_config.pca_components == 8
-        assert isinstance(projection_spec, RandomProjectionSpec)
-        assert projection_spec.seed == 13
-        assert projection_spec.projection_matrix.shape == (3, 8)
+        assert isinstance(projection_spec, PCAProjectionSpec)
+        assert projection_spec.seed in {13, 14}
+        assert projection_spec.projection_matrix.shape == (3, 3)
+        assert projection_spec.mean_vector.shape == (3,)
         assert all(isinstance(item, SecretSharedReducedVector) for item in shared_reduced_vectors)
         assert all(not hasattr(item, "reduced_vector") for item in shared_reduced_vectors)
-        assert all(item.dimension == 8 for item in shared_reduced_vectors)
+        assert all(item.dimension == 3 for item in shared_reduced_vectors)
         labels = np.asarray([0, 0, 1, 2], dtype=np.int64)
         return SecureClusterAssignments(
             labels=labels,
@@ -261,8 +392,8 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
         return original_secure_aggregate(self, client_vectors, round_id, client_ids)
 
     monkeypatch.setattr(recommender_simulation, "_fit_local_recommender", fake_fit_local_recommender)
-    monkeypatch.setattr(recommender_simulation, "build_random_projection_spec", spy_projection_builder)
-    monkeypatch.setattr(clustering_module.RecommenderWeightVectorExtractor, "flatten_many", fail_flatten_many)
+    monkeypatch.setattr(recommender_simulation, "build_centered_pca_projection_spec", spy_projection_builder)
+    monkeypatch.setattr(clustering_module.RecommenderWeightVectorExtractor, "flatten_many", spy_flatten_many)
     monkeypatch.setattr(clustering_module.ClientSideRandomProjector, "build_private_reduced_vector", spy_build)
     monkeypatch.setattr(clustering_module.SecureKMeansClusterer, "cluster", fake_cluster)
     monkeypatch.setattr(LCCSecureAggregator, "aggregate", spy_secure_aggregate)
@@ -287,7 +418,11 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     assert metadata["clustered"] is True
     assert metadata["training_variant"] == "clustered"
     assert artifacts.run_dir.name == "clustered"
-    assert projection_spec_calls == [(3, 8, 13)]
+    assert projection_spec_calls == [((4, 3), 8, 13), ((4, 3), 8, 14)]
+    assert flatten_many_calls == [
+        ("client_000", "client_001", "client_002", "client_003"),
+        ("client_000", "client_001", "client_002", "client_003"),
+    ]
     assert len(captured_projector_calls) == 8
     assert {call[0] for call in captured_projector_calls} == {
         "client_000",
@@ -315,9 +450,12 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     }
     assert round_one["cluster_sizes"] == {"0": 2, "1": 1, "2": 1}
     assert round_one["projection"]["projection_applied"] == "client_side"
-    assert round_one["projection"]["projection_type"] == "gaussian_random"
+    assert round_one["projection"]["projection_type"] == "pca_covariance_eigh"
     assert round_one["projection"]["projection_seed"] == 13
-    assert round_one["projection"]["data_dependent_fit"] is False
+    assert round_one["projection"]["data_dependent_fit"] is True
+    assert round_one["projection"]["centering_applied"] is True
+    assert round_one["projection"]["fit_client_count"] == 4
+    assert round_one["projection"]["actual_components"] == 3
     assert round_one["secure_clustering"]["server_observes_raw_weights"] is False
     assert round_one["secure_clustering"]["server_observes_reduced_vectors"] is False
     assert round_one["secure_aggregation_per_cluster"]["0"]["mode"] == "secure"
@@ -340,6 +478,133 @@ def test_clustered_recommender_training_uses_seeded_random_projection_and_secure
     assert "dataset_index" not in evaluation["aggregate"]
     assert all("cluster_id" not in cluster["aggregate"] for cluster in evaluation["clusters"])
     assert all("dataset_index" not in cluster["aggregate"] for cluster in evaluation["clusters"])
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+@pytest.mark.skipif(not LCC_AVAILABLE, reason="lcc-lib is required for clustered recommender tests.")
+def test_clustered_recommender_training_can_skip_pca(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, run_id, selection, persona = _prepare_recommender_run(tmp_path, client_count=3)
+
+    import fed_perso_xai.fl.recommender_simulation as recommender_simulation
+    import fed_perso_xai.recommender.clustering as clustering_module
+
+    def fail_if_pca_builder_called(**kwargs):
+        raise AssertionError("PCA builder should not be called when clustering.enable_pca is False.")
+
+    def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config):
+        assert clustering_config.enable_pca is False
+        assert isinstance(projection_spec, IdentityProjectionSpec)
+        assert all(item.dimension == 3 for item in shared_reduced_vectors)
+        labels = np.asarray([0, 1, 2], dtype=np.int64)
+        return SecureClusterAssignments(
+            labels=labels,
+            centroids=np.zeros((3, shared_reduced_vectors[0].dimension), dtype=np.float64),
+            iterations=1,
+            initial_centroid_indices=tuple(),
+            secure_metadata={
+                "method": clustering_config.method,
+                "seed": int(seed),
+                "iterations": 1,
+                "n_clusters": 3,
+                "helper_count": 5,
+                "helper_ids": [0, 1, 2, 3, 4],
+                "helper_evaluation_points": [11, 12, 13, 14, 15],
+                "server_observes_raw_weights": False,
+                "server_observes_reduced_vectors": False,
+                "server_observes_reconstructed_distances": True,
+            },
+        )
+
+    monkeypatch.setattr(recommender_simulation, "build_centered_pca_projection_spec", fail_if_pca_builder_called)
+    monkeypatch.setattr(clustering_module.SecureKMeansClusterer, "cluster", fake_cluster)
+
+    artifacts, metadata = train_federated_recommender(
+        RecommenderFederatedTrainingConfig(
+            run_id=run_id,
+            selection_id=selection,
+            persona=persona,
+            paths=paths,
+            rounds=2,
+            epochs=2,
+            batch_size=2,
+            learning_rate=0.1,
+            seed=13,
+            top_k=(1, 2),
+            clustering=RecommenderClusteringConfig(enabled=True, enable_pca=False),
+        )
+    )
+
+    assert metadata["clustered"] is True
+    manifest = json.loads(artifacts.cluster_manifest_path.read_text(encoding="utf-8"))
+    assert manifest["enable_pca"] is False
+    runtime_report = json.loads(artifacts.runtime_report_path.read_text(encoding="utf-8"))
+    assert runtime_report["server_observes_raw_weights_during_clustering"] is False
+    round_one = json.loads((artifacts.cluster_rounds_dir / "round_0001.json").read_text(encoding="utf-8"))
+    assert round_one["projection"]["enable_pca"] is False
+    assert round_one["projection"]["projection_type"] == "identity_no_projection"
+    assert round_one["projection"]["data_dependent_fit"] is False
+    assert round_one["projection"]["projection_fit_round_id"] is None
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+@pytest.mark.skipif(not LCC_AVAILABLE, reason="lcc-lib is required for clustered recommender tests.")
+def test_clustered_recommender_training_reports_raw_weight_visibility_when_pca_is_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, run_id, selection, persona = _prepare_recommender_run(tmp_path, client_count=3)
+
+    import fed_perso_xai.recommender.clustering as clustering_module
+
+    def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config):
+        assert clustering_config.enable_pca is True
+        assert isinstance(projection_spec, PCAProjectionSpec)
+        labels = np.asarray([0, 1, 2], dtype=np.int64)
+        return SecureClusterAssignments(
+            labels=labels,
+            centroids=np.zeros((3, shared_reduced_vectors[0].dimension), dtype=np.float64),
+            iterations=1,
+            initial_centroid_indices=tuple(),
+            secure_metadata={
+                "method": clustering_config.method,
+                "seed": int(seed),
+                "iterations": 1,
+                "n_clusters": 3,
+                "helper_count": 5,
+                "helper_ids": [0, 1, 2, 3, 4],
+                "helper_evaluation_points": [11, 12, 13, 14, 15],
+                "server_observes_raw_weights": False,
+                "server_observes_reduced_vectors": False,
+                "server_observes_reconstructed_distances": True,
+            },
+        )
+
+    monkeypatch.setattr(clustering_module.SecureKMeansClusterer, "cluster", fake_cluster)
+
+    artifacts, metadata = train_federated_recommender(
+        RecommenderFederatedTrainingConfig(
+            run_id=run_id,
+            selection_id=selection,
+            persona=persona,
+            paths=paths,
+            rounds=2,
+            epochs=2,
+            batch_size=2,
+            learning_rate=0.1,
+            seed=13,
+            top_k=(1, 2),
+            clustering=RecommenderClusteringConfig(enabled=True, enable_pca=True),
+        )
+    )
+
+    assert metadata["clustered"] is True
+    runtime_report = json.loads(artifacts.runtime_report_path.read_text(encoding="utf-8"))
+    assert runtime_report["server_observes_raw_weights_during_clustering"] is True
+    round_one = json.loads((artifacts.cluster_rounds_dir / "round_0001.json").read_text(encoding="utf-8"))
+    assert round_one["projection"]["server_observes_raw_weights_during_projection_fit"] is True
 
 
 @pytest.mark.parametrize("recommender_type", ["svm_rank", "pairwise_logistic"])
@@ -406,6 +671,7 @@ def test_recommender_clustering_config_defaults_and_validation() -> None:
     config = RecommenderClusteringConfig(enabled=True)
     assert config.method == "secure_kmeans"
     assert config.k == 3
+    assert config.enable_pca is True
     assert config.pca_components == 8
 
     with pytest.raises(ValueError, match="Unsupported clustering.method"):

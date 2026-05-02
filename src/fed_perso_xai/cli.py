@@ -321,6 +321,8 @@ def build_parser() -> argparse.ArgumentParser:
     recommender_train_parser.add_argument("--batch-size", type=int, default=64)
     recommender_train_parser.add_argument("--learning-rate", type=float, default=0.05)
     recommender_train_parser.add_argument("--l2-regularization", type=float, default=0.0)
+    recommender_train_parser.add_argument("--svm-c", type=float, default=1.0)
+    recommender_train_parser.add_argument("--svm-intercept-scaling", type=float, default=1.0)
     recommender_train_parser.add_argument("--seed", type=int, default=42)
     recommender_train_parser.add_argument("--strategy", choices=strategy_choices, default="fedavg")
     recommender_train_parser.add_argument("--fit-fraction", type=float, default=1.0)
@@ -355,7 +357,19 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["secure_kmeans"],
     )
     recommender_train_parser.add_argument("--clustering-k", type=int, default=3)
+    recommender_train_parser.add_argument(
+        "--clustering-enable-pca",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable PCA before secure clustering. Use --no-clustering-enable-pca to cluster in the raw flattened parameter space.",
+    )
     recommender_train_parser.add_argument("--clustering-pca-components", type=int, default=8)
+    recommender_train_parser.add_argument("--clustering-warmup-rounds", type=int, default=0)
+    recommender_train_parser.add_argument(
+        "--clustering-freeze-pca-after-warmup",
+        action="store_true",
+        help="Fit PCA on the first post-warmup clustering round and reuse that basis thereafter.",
+    )
     recommender_train_parser.add_argument("--top-k", default="1,3,5")
     recommender_train_parser.add_argument("--force", action="store_true")
 
@@ -740,6 +754,8 @@ def main() -> None:
                 batch_size=args.batch_size,
                 learning_rate=args.learning_rate,
                 l2_regularization=args.l2_regularization,
+                svm_c=args.svm_c,
+                svm_intercept_scaling=args.svm_intercept_scaling,
                 seed=args.seed,
                 top_k=_parse_top_k(args.top_k),
                 context_filename=args.context_filename,
@@ -760,7 +776,10 @@ def main() -> None:
                     enabled=bool(args.clustered),
                     method=args.clustering_method,
                     k=args.clustering_k,
+                    enable_pca=bool(args.clustering_enable_pca),
                     pca_components=args.clustering_pca_components,
+                    warmup_rounds=args.clustering_warmup_rounds,
+                    freeze_pca_after_warmup=args.clustering_freeze_pca_after_warmup,
                 ),
             ),
             force=args.force,
