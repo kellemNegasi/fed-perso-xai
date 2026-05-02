@@ -498,5 +498,5 @@ def _require_probability(field_name: str, value: float) -> None:
 def _require_fraction_or_one(field_name: str, value: float) -> None:
     if not isinstance(value, (int, float)):
         raise TypeError(f"{field_name} must be numeric.")
-    if not 0.0 < float(value) <= 1.0:
-        raise ValueError(f"{field_name} must be in the interval (0, 1].")
+    if not 0.0 <= float(value) <= 1.0:
+        raise ValueError(f"{field_name} must be in the interval [0, 1].")

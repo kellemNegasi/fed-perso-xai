@@ -12,6 +12,14 @@ from sklearn.model_selection import train_test_split
 
 LOGGER = logging.getLogger(__name__)
 
+RETAINED_DATASET_CONTEXT_FEATURES = {
+    "dataset_log_feature_count_z",
+    "dataset_class_entropy_z",
+    "dataset_categorical_to_numerical_ratio_z",
+    "dataset_has_sensitive_attributes",
+    "dataset_high_stakes_domain",
+}
+
 STATISTICAL_DATASET_FEATURES = {
     "dataset_log_dataset_size_z",
     "dataset_mean_of_means_z",
@@ -39,6 +47,11 @@ LANDMARKING_DATASET_FEATURES = {
     "dataset_landmark_acc_gaussian_nb_z",
     "dataset_landmark_acc_decision_stump_z",
     "dataset_landmark_acc_logreg_z",
+}
+
+EXCLUDED_HYPERPARAMETER_FEATURES = {
+    "is_applicable_shap_l1_reg_k",
+    "hp_shap_l1_reg_k",
 }
 
 DEFAULT_EXCLUDED_FEATURE_COLUMNS = {
@@ -97,14 +110,17 @@ def infer_recommender_feature_columns(
     """Infer numeric candidate feature columns used by the recommender model."""
 
     exclusions = set(DEFAULT_EXCLUDED_FEATURE_COLUMNS)
+    exclusions.update(RETAINED_DATASET_CONTEXT_FEATURES)
     exclusions.update(STATISTICAL_DATASET_FEATURES)
     exclusions.update(LANDMARKING_DATASET_FEATURES)
+    exclusions.update(EXCLUDED_HYPERPARAMETER_FEATURES)
     exclusions.update(excluded_columns or ())
     numeric_columns = candidates.select_dtypes(include=["number", "bool"]).columns
     feature_columns = tuple(
         str(column)
         for column in numeric_columns
         if str(column) not in exclusions
+        and not str(column).startswith("dataset_id_oh_")
     )
     if not feature_columns:
         raise ValueError("No numeric recommender feature columns were found.")

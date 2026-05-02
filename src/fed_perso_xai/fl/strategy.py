@@ -310,6 +310,10 @@ if fl is not None:
                 aggregation_record.get("num_contributors", 0),
                 _format_scalar_metrics(metrics),
             )
+            if float(self.training_config.evaluate_fraction) <= 0.0:
+                round_record["evaluate_loss"] = None
+                round_record["evaluate_metrics"] = {}
+                round_record["evaluate_skipped"] = True
             return fl.common.ndarrays_to_parameters(aggregated_parameters), metrics
 
         def aggregate_evaluate(self, server_round, results, failures):  # type: ignore[override]
@@ -488,13 +492,14 @@ class FedAvgStrategyFactory:
             self.training_config.min_available_clients,
             self.training_config.num_clients,
         )
+        min_evaluate_clients = minimum_clients if self.training_config.evaluate_fraction > 0.0 else 0
         return TrackingFedAvg(
             recorder=recorder,
             training_config=self.training_config,
             fraction_fit=self.training_config.fit_fraction,
             fraction_evaluate=self.training_config.evaluate_fraction,
             min_fit_clients=minimum_clients,
-            min_evaluate_clients=minimum_clients,
+            min_evaluate_clients=min_evaluate_clients,
             min_available_clients=minimum_clients,
             initial_parameters=fl.common.ndarrays_to_parameters(initial_parameters),
             fit_metrics_aggregation_fn=_aggregate_scalar_metrics,

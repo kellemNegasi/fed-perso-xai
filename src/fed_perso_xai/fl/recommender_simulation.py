@@ -361,6 +361,9 @@ def _run_debug_sequential_recommender_runtime(
             raise RuntimeError("Debug sequential recommender runtime could not aggregate client updates.")
         parameters = fl.common.parameters_to_ndarrays(aggregated_parameters)
 
+        if float(config.evaluate_fraction) <= 0.0:
+            continue
+
         evaluate_sample_size = _sample_size(
             total_clients=len(clients),
             fraction=config.evaluate_fraction,
