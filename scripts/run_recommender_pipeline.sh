@@ -41,6 +41,7 @@ Environment variables:
   CLUSTERED=0                           Pass --clustered to training when set to 1.
   CLUSTERING_METHOD=secure_kmeans       Clustered training method.
   CLUSTERING_K=3                        Number of recommender clusters when clustering is enabled.
+  CLUSTERING_ENABLE_PCA=1              Pass --no-clustering-enable-pca when set to 0.
   CLUSTERING_PCA_COMPONENTS=8           PCA components for clustered training.
   CLUSTERING_WARMUP_ROUNDS=0            Initial global-only rounds before clustering starts.
   CLUSTERING_FREEZE_PCA_AFTER_WARMUP=0  Pass --clustering-freeze-pca-after-warmup when set to 1.
@@ -100,6 +101,7 @@ SECURE_SEED="${SECURE_SEED:-0}"
 CLUSTERED="${CLUSTERED:-0}"
 CLUSTERING_METHOD="${CLUSTERING_METHOD:-secure_kmeans}"
 CLUSTERING_K="${CLUSTERING_K:-3}"
+CLUSTERING_ENABLE_PCA="${CLUSTERING_ENABLE_PCA:-1}"
 CLUSTERING_PCA_COMPONENTS="${CLUSTERING_PCA_COMPONENTS:-8}"
 CLUSTERING_WARMUP_ROUNDS="${CLUSTERING_WARMUP_ROUNDS:-0}"
 CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-0}"
@@ -143,6 +145,11 @@ TRAIN_EXTRA+=(--secure-quantization-scale "$SECURE_QUANTIZATION_SCALE")
 TRAIN_EXTRA+=(--secure-seed "$SECURE_SEED")
 TRAIN_EXTRA+=(--clustering-method "$CLUSTERING_METHOD")
 TRAIN_EXTRA+=(--clustering-k "$CLUSTERING_K")
+if [[ "$CLUSTERING_ENABLE_PCA" == "0" ]]; then
+  TRAIN_EXTRA+=(--no-clustering-enable-pca)
+else
+  TRAIN_EXTRA+=(--clustering-enable-pca)
+fi
 TRAIN_EXTRA+=(--clustering-pca-components "$CLUSTERING_PCA_COMPONENTS")
 TRAIN_EXTRA+=(--clustering-warmup-rounds "$CLUSTERING_WARMUP_ROUNDS")
 if [[ "$CLUSTERING_FREEZE_PCA_AFTER_WARMUP" == "1" ]]; then

@@ -30,11 +30,13 @@ from fed_perso_xai.recommender import (
 )
 from fed_perso_xai.recommender.clustering import (
     ClientSideRandomProjector,
+    IdentityProjectionSpec,
     PCAProjectionSpec,
     RecommenderWeightVectorExtractor,
     SecureClusterModelAggregator,
     SecureKMeansClusterer,
     build_centered_pca_projection_spec,
+    build_identity_projection_spec,
     summarize_cluster_sizes,
     weighted_average_parameter_sets,
 )
@@ -413,7 +415,8 @@ def _run_clustered_recommender_training(
     previous_assignments: dict[str, int] = {}
     warmup_rounds = int(clustering_config.warmup_rounds)
     freeze_pca_after_warmup = bool(clustering_config.freeze_pca_after_warmup)
-    frozen_projection_spec: PCAProjectionSpec | None = None
+    use_pca = bool(clustering_config.enable_pca)
+    frozen_projection_spec: PCAProjectionSpec | IdentityProjectionSpec | None = None
     shared_global_parameters = [np.asarray(parameter, dtype=np.float64).copy() for parameter in initial_parameters]
     current_cluster_models = {
         cluster_id: [np.asarray(parameter, dtype=np.float64).copy() for parameter in shared_global_parameters]
@@ -504,13 +507,18 @@ def _run_clustered_recommender_training(
             client_name: local_parameters[client_name]
             for client_name in sorted(local_parameters)
         }
-        _, flattened_vectors = extractor.flatten_many(ordered_local_parameters)
         projection_fitted_this_round = False
-        if freeze_pca_after_warmup and frozen_projection_spec is not None:
+        if not use_pca:
+            projection_dimension = int(extractor.flatten(next(iter(ordered_local_parameters.values()))).shape[0])
+            projection_spec = build_identity_projection_spec(input_dimension=projection_dimension)
+            projection_generation_mode = "identity_no_projection"
+            projection_server_observes_raw_weights = False
+        elif freeze_pca_after_warmup and frozen_projection_spec is not None:
             projection_spec = frozen_projection_spec
             projection_generation_mode = "frozen_after_warmup_reuse"
             projection_server_observes_raw_weights = False
         else:
+            _, flattened_vectors = extractor.flatten_many(ordered_local_parameters)
             projection_spec = build_centered_pca_projection_spec(
                 flattened_vectors=flattened_vectors,
                 requested_components=clustering_config.pca_components,
@@ -613,6 +621,7 @@ def _run_clustered_recommender_training(
                     "projection_fit_round_id": int(server_round) if projection_fitted_this_round else None,
                     "warmup_rounds": warmup_rounds,
                     "freeze_pca_after_warmup": freeze_pca_after_warmup,
+                    "enable_pca": use_pca,
                 },
                 secure_clustering_metadata={
                     **assignments_result.secure_metadata,

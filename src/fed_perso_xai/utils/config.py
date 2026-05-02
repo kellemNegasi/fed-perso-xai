@@ -393,6 +393,7 @@ class RecommenderClusteringConfig:
     enabled: bool = False
     method: str = "secure_kmeans"
     k: int = 3
+    enable_pca: bool = True
     pca_components: int = 8
     warmup_rounds: int = 0
     freeze_pca_after_warmup: bool = False
@@ -404,6 +405,8 @@ class RecommenderClusteringConfig:
             raise TypeError("enabled must be a boolean.")
         _normalize_recommender_clustering_method(self.method)
         _require_integer_at_least("k", self.k, minimum=1)
+        if not isinstance(self.enable_pca, bool):
+            raise TypeError("enable_pca must be a boolean.")
         _require_integer_at_least("pca_components", self.pca_components, minimum=1)
         _require_non_negative_integer("warmup_rounds", self.warmup_rounds)
         if not isinstance(self.freeze_pca_after_warmup, bool):

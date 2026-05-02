@@ -626,6 +626,7 @@ def _persist_clustered_training_artifacts(
         "enabled": True,
         "method": config.clustering.method,
         "k": int(config.clustering.k),
+        "enable_pca": bool(config.clustering.enable_pca),
         "pca_components": int(config.clustering.pca_components),
         "warmup_rounds": int(config.clustering.warmup_rounds),
         "freeze_pca_after_warmup": bool(config.clustering.freeze_pca_after_warmup),

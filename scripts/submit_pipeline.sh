@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/submit_pipeline.sh [clustered] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K]
+  scripts/submit_pipeline.sh [clustered] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA]
 
 Behavior:
   Default: submit both plain and secure runs for every RUN_ID.
@@ -17,6 +17,7 @@ Environment variables:
   CLUSTERING_K=3
   CLUSTERING_WARMUP_ROUNDS=0
   CLUSTERING_FREEZE_PCA_AFTER_WARMUP=0
+  CLUSTERING_ENABLE_PCA=1
   TOP_K=1,3,5
 USAGE
 }
@@ -32,6 +33,7 @@ CLUSTERING_K_ARG="${2:-}"
 CLUSTERING_WARMUP_ROUNDS_ARG="${3:-}"
 CLUSTERING_FREEZE_PCA_AFTER_WARMUP_ARG="${4:-}"
 TOP_K_ARG="${5:-}"
+CLUSTERING_ENABLE_PCA_ARG="${6:-}"
 
 case "${MODE_ARG,,}" in
   "")
@@ -66,6 +68,10 @@ if [[ -n "$CLUSTERING_FREEZE_PCA_AFTER_WARMUP_ARG" && ! "$CLUSTERING_FREEZE_PCA_
   echo "ERROR: CLUSTERING_FREEZE_PCA_AFTER_WARMUP must be 0 or 1." >&2
   exit 2
 fi
+if [[ -n "$CLUSTERING_ENABLE_PCA_ARG" && ! "$CLUSTERING_ENABLE_PCA_ARG" =~ ^(0|1)$ ]]; then
+  echo "ERROR: CLUSTERING_ENABLE_PCA must be 0 or 1." >&2
+  exit 2
+fi
 
 SELECTION_ID="${SELECTION_ID:-test__max-20__seed-42}"
 PERSONA="${PERSONA:-lay}"
@@ -76,6 +82,7 @@ CLUSTERING_K="${CLUSTERING_K_ARG:-${CLUSTERING_K:-3}}"
 CLUSTERING_WARMUP_ROUNDS="${CLUSTERING_WARMUP_ROUNDS_ARG:-${CLUSTERING_WARMUP_ROUNDS:-15}}"
 CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${CLUSTERING_FREEZE_PCA_AFTER_WARMUP_ARG:-${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-1}}"
 TOP_K="${TOP_K_ARG:-${TOP_K:-1,3,5,8}}"
+CLUSTERING_ENABLE_PCA="${CLUSTERING_ENABLE_PCA_ARG:-${CLUSTERING_ENABLE_PCA:-0}}"
 if [[ ! "$CLUSTERING_K" =~ ^[0-9]+$ ]] || [[ "$CLUSTERING_K" -lt 1 ]]; then
   echo "ERROR: CLUSTERING_K must be a positive integer." >&2
   exit 2
@@ -86,6 +93,10 @@ if [[ ! "$CLUSTERING_WARMUP_ROUNDS" =~ ^[0-9]+$ ]]; then
 fi
 if [[ ! "$CLUSTERING_FREEZE_PCA_AFTER_WARMUP" =~ ^(0|1)$ ]]; then
   echo "ERROR: CLUSTERING_FREEZE_PCA_AFTER_WARMUP must be 0 or 1." >&2
+  exit 2
+fi
+if [[ ! "$CLUSTERING_ENABLE_PCA" =~ ^(0|1)$ ]]; then
+  echo "ERROR: CLUSTERING_ENABLE_PCA must be 0 or 1." >&2
   exit 2
 fi
 if [[ -z "$TOP_K" ]]; then
@@ -108,6 +119,7 @@ for run_id in "${RUN_IDS[@]}"; do
       "$CLUSTERING_K" \
       "$CLUSTERING_WARMUP_ROUNDS" \
       "$CLUSTERING_FREEZE_PCA_AFTER_WARMUP" \
-      "$TOP_K"
+      "$TOP_K" \
+      "$CLUSTERING_ENABLE_PCA"
   done
 done

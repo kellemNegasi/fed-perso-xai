@@ -355,6 +355,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["secure_kmeans"],
     )
     recommender_train_parser.add_argument("--clustering-k", type=int, default=3)
+    recommender_train_parser.add_argument(
+        "--clustering-enable-pca",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable PCA before secure clustering. Use --no-clustering-enable-pca to cluster in the raw flattened parameter space.",
+    )
     recommender_train_parser.add_argument("--clustering-pca-components", type=int, default=8)
     recommender_train_parser.add_argument("--clustering-warmup-rounds", type=int, default=0)
     recommender_train_parser.add_argument(
@@ -766,6 +772,7 @@ def main() -> None:
                     enabled=bool(args.clustered),
                     method=args.clustering_method,
                     k=args.clustering_k,
+                    enable_pca=bool(args.clustering_enable_pca),
                     pca_components=args.clustering_pca_components,
                     warmup_rounds=args.clustering_warmup_rounds,
                     freeze_pca_after_warmup=args.clustering_freeze_pca_after_warmup,
