@@ -14,6 +14,7 @@ Environment variables:
   TRAIN_ROUNDS=10
   TRAIN_EPOCHS=5
   TRAIN_BATCH_SIZE=2048
+  TRAIN_LEARNING_RATE=0.02
   TRAIN_SVM_C=0.5
   TRAIN_SVM_INTERCEPT_SCALING=1.0
   SKIP_LABELING=1
@@ -78,9 +79,10 @@ fi
 
 SELECTION_ID="${SELECTION_ID:-test__max-20__seed-42}"
 PERSONA="${PERSONA:-lay}"
-TRAIN_ROUNDS="${TRAIN_ROUNDS:-200}"
+TRAIN_ROUNDS="${TRAIN_ROUNDS:-250}"
 TRAIN_EPOCHS="${TRAIN_EPOCHS:-10}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-2048}"
+TRAIN_LEARNING_RATE="${TRAIN_LEARNING_RATE:-0.01}"
 TRAIN_SVM_C="${TRAIN_SVM_C:-0.5}"
 TRAIN_SVM_INTERCEPT_SCALING="${TRAIN_SVM_INTERCEPT_SCALING:-1.0}"
 SKIP_LABELING="${SKIP_LABELING:-1}"
@@ -109,6 +111,10 @@ if [[ ! "$SKIP_LABELING" =~ ^(0|1)$ ]]; then
   echo "ERROR: SKIP_LABELING must be 0 or 1." >&2
   exit 2
 fi
+if ! [[ "$TRAIN_LEARNING_RATE" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($TRAIN_LEARNING_RATE > 0)}")" != "1" ]]; then
+  echo "ERROR: TRAIN_LEARNING_RATE must be a positive number." >&2
+  exit 2
+fi
 if ! [[ "$TRAIN_SVM_C" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($TRAIN_SVM_C > 0)}")" != "1" ]]; then
   echo "ERROR: TRAIN_SVM_C must be a positive number." >&2
   exit 2
@@ -134,6 +140,7 @@ for run_id in "${RUN_IDS[@]}"; do
       "$TRAIN_ROUNDS" \
       "$TRAIN_EPOCHS" \
       "$TRAIN_BATCH_SIZE" \
+      "$TRAIN_LEARNING_RATE" \
       "$TRAIN_SVM_C" \
       "$TRAIN_SVM_INTERCEPT_SCALING" \
       "$SKIP_LABELING" \
