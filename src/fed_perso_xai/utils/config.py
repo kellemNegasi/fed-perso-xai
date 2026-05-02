@@ -249,6 +249,8 @@ class RecommenderFederatedTrainingConfig:
     batch_size: int = 64
     learning_rate: float = 0.05
     l2_regularization: float = 0.0
+    svm_c: float = 1.0
+    svm_intercept_scaling: float = 1.0
     seed: int = 42
     top_k: tuple[int, ...] = (1, 3, 5, 8)
     context_filename: str = "candidate_context.parquet"
@@ -284,6 +286,8 @@ class RecommenderFederatedTrainingConfig:
         _require_integer_at_least("batch_size", self.batch_size, minimum=1)
         _require_positive("learning_rate", self.learning_rate)
         _require_non_negative("l2_regularization", self.l2_regularization)
+        _require_positive("svm_c", self.svm_c)
+        _require_positive("svm_intercept_scaling", self.svm_intercept_scaling)
         _require_non_negative_integer("seed", self.seed)
         _require_non_empty_string("context_filename", self.context_filename)
         _require_non_empty_string("label_filename", self.label_filename)
@@ -365,6 +369,8 @@ class RecommenderFederatedTrainingConfig:
             batch_size=self.batch_size,
             learning_rate=self.learning_rate,
             l2_regularization=self.l2_regularization,
+            svm_c=self.svm_c,
+            svm_intercept_scaling=self.svm_intercept_scaling,
             seed=self.seed,
             top_k=tuple(self.top_k),
             context_filename=self.context_filename,

@@ -321,6 +321,8 @@ def build_parser() -> argparse.ArgumentParser:
     recommender_train_parser.add_argument("--batch-size", type=int, default=64)
     recommender_train_parser.add_argument("--learning-rate", type=float, default=0.05)
     recommender_train_parser.add_argument("--l2-regularization", type=float, default=0.0)
+    recommender_train_parser.add_argument("--svm-c", type=float, default=1.0)
+    recommender_train_parser.add_argument("--svm-intercept-scaling", type=float, default=1.0)
     recommender_train_parser.add_argument("--seed", type=int, default=42)
     recommender_train_parser.add_argument("--strategy", choices=strategy_choices, default="fedavg")
     recommender_train_parser.add_argument("--fit-fraction", type=float, default=1.0)
@@ -752,6 +754,8 @@ def main() -> None:
                 batch_size=args.batch_size,
                 learning_rate=args.learning_rate,
                 l2_regularization=args.l2_regularization,
+                svm_c=args.svm_c,
+                svm_intercept_scaling=args.svm_intercept_scaling,
                 seed=args.seed,
                 top_k=_parse_top_k(args.top_k),
                 context_filename=args.context_filename,

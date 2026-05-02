@@ -61,6 +61,8 @@ class PairwiseLogisticConfig:
     batch_size: int = 64
     learning_rate: float = 0.05
     l2_regularization: float = 0.0
+    svm_c: float = 1.0
+    svm_intercept_scaling: float = 1.0
 
     def __post_init__(self) -> None:
         if self.epochs < 1:
@@ -71,6 +73,10 @@ class PairwiseLogisticConfig:
             raise ValueError("learning_rate must be > 0.")
         if self.l2_regularization < 0:
             raise ValueError("l2_regularization must be >= 0.")
+        if self.svm_c <= 0:
+            raise ValueError("svm_c must be > 0.")
+        if self.svm_intercept_scaling <= 0:
+            raise ValueError("svm_intercept_scaling must be > 0.")
 
 
 @dataclass
@@ -224,6 +230,8 @@ class PairwiseLogisticRecommender:
             batch_size=np.asarray([self.batch_size], dtype=np.int64),
             local_epochs=np.asarray([self.local_epochs], dtype=np.int64),
             l2_regularization=np.asarray([self.l2_regularization], dtype=np.float64),
+            svm_c=np.asarray([1.0], dtype=np.float64),
+            svm_intercept_scaling=np.asarray([1.0], dtype=np.float64),
             model_type=np.asarray([recommender_artifact_model_type("pairwise_logistic")]),
         )
         return path
@@ -231,17 +239,19 @@ class PairwiseLogisticRecommender:
 
 @dataclass
 class SVMRankRecommender:
-    """Linear hinge-loss ranker over pairwise candidate difference vectors.
+    """Linear squared-hinge ranker over pairwise candidate difference vectors.
 
-    This mirrors the older Perso-XAI linear SVM ranker at the decision-function
-    level while staying compatible with the current FedAvg tensor exchange.
+    This tracks the older Perso-XAI ``LinearSVC`` objective more closely:
+    squared hinge loss with a liblinear-style ``C`` parameter and intercept
+    regularization through a synthetic-feature scaling term.
     """
 
     n_features: int
     learning_rate: float
     batch_size: int
     local_epochs: int
-    l2_regularization: float = 0.0
+    svm_c: float = 1.0
+    intercept_scaling: float = 1.0
 
     def __post_init__(self) -> None:
         self.weights = np.zeros(self.n_features, dtype=np.float64)
@@ -259,7 +269,8 @@ class SVMRankRecommender:
             learning_rate=config.learning_rate,
             batch_size=config.batch_size,
             local_epochs=config.epochs,
-            l2_regularization=config.l2_regularization,
+            svm_c=config.svm_c,
+            intercept_scaling=config.svm_intercept_scaling,
         )
 
     def get_parameters(self) -> list[np.ndarray]:
@@ -277,7 +288,16 @@ class SVMRankRecommender:
         self.bias = np.asarray(parameters[1], dtype=np.float64).reshape(1).copy()
 
     def fit(self, X: np.ndarray, y: np.ndarray, seed: int) -> float:
-        """Train locally with mini-batch SGD on the linear hinge objective."""
+        """Train locally on a LinearSVC-style squared-hinge objective.
+
+        The target objective is the liblinear primal form
+
+            0.5 * ||w_aug||^2 + C * sum_i max(0, 1 - y_i f(x_i))^2
+
+        where ``w_aug`` includes the synthetic intercept-feature weight. We
+        still optimize it with mini-batch SGD so the model remains compatible
+        with FedAvg parameter exchange.
+        """
 
         X = _as_2d_float_array(X, n_features=self.n_features)
         y = _as_binary_labels(y)
@@ -286,8 +306,13 @@ class SVMRankRecommender:
         if X.shape[0] == 0:
             raise ValueError("Cannot train recommender on an empty dataset.")
 
+        # Hinge-loss SVMs use signed class labels because the margin is defined
+        # as y * f(x). Our pairwise dataset stores winners as binary labels
+        # (1 => pair_1 preferred, 0 => pair_2 preferred), so we remap them to
+        # +1 / -1 before computing margins and gradients.
         y_signed = np.where(y > 0.5, 1.0, -1.0)
         rng = np.random.default_rng(seed)
+        sample_count = float(X.shape[0])
         batch_size = max(1, min(self.batch_size, X.shape[0]))
         for _ in range(self.local_epochs):
             indices = rng.permutation(X.shape[0])
@@ -296,13 +321,22 @@ class SVMRankRecommender:
                 X_batch = X[batch_indices]
                 y_batch = y_signed[batch_indices]
                 margins = y_batch * self.predict_pairwise_logits(X_batch)
-                active = margins < 1.0
-                batch_scale = float(X_batch.shape[0])
-                grad_w = self.l2_regularization * self.weights
-                grad_b = 0.0
+                deficits = 1.0 - margins
+                active = deficits > 0.0
+                # We optimize a sample-count-normalized form of the liblinear
+                # objective. This preserves the same minimizer as the summed
+                # objective while keeping SGD updates well-scaled across clients.
+                grad_w = self.weights / sample_count
+                grad_b = self.bias[0] / ((self.intercept_scaling**2) * sample_count)
                 if np.any(active):
-                    grad_w -= (X_batch[active].T @ y_batch[active]) / batch_scale
-                    grad_b = -float(np.sum(y_batch[active]) / batch_scale)
+                    signed_deficits = y_batch[active] * deficits[active]
+                    batch_denominator = float(X_batch.shape[0])
+                    grad_w -= 2.0 * self.svm_c * (
+                        X_batch[active].T @ signed_deficits
+                    ) / batch_denominator
+                    grad_b -= 2.0 * self.svm_c * (
+                        float(np.sum(signed_deficits)) / batch_denominator
+                    )
                 self.weights -= self.learning_rate * grad_w
                 self.bias[0] -= self.learning_rate * grad_b
         return self.loss(X, y)
@@ -323,13 +357,16 @@ class SVMRankRecommender:
         y = _as_binary_labels(y)
         y_signed = np.where(y > 0.5, 1.0, -1.0)
         margins = y_signed * self.predict_pairwise_logits(X)
-        hinge = np.maximum(0.0, 1.0 - margins)
-        regularization = 0.5 * self.l2_regularization * float(np.sum(self.weights**2))
-        return float(np.mean(hinge) + regularization)
+        squared_hinge = np.square(np.maximum(0.0, 1.0 - margins))
+        regularization = 0.5 * (
+            float(np.sum(self.weights**2))
+            + float((self.bias[0] / self.intercept_scaling) ** 2)
+        )
+        return float(regularization + self.svm_c * float(np.sum(squared_hinge)))
 
     def score_candidate_matrix(self, X: np.ndarray) -> np.ndarray:
         X = _as_2d_float_array(X, n_features=self.n_features)
-        return X @ self.weights
+        return X @ self.weights + self.bias[0]
 
     def score_candidates(
         self,
@@ -355,7 +392,8 @@ class SVMRankRecommender:
             learning_rate=np.asarray([self.learning_rate], dtype=np.float64),
             batch_size=np.asarray([self.batch_size], dtype=np.int64),
             local_epochs=np.asarray([self.local_epochs], dtype=np.int64),
-            l2_regularization=np.asarray([self.l2_regularization], dtype=np.float64),
+            svm_c=np.asarray([self.svm_c], dtype=np.float64),
+            svm_intercept_scaling=np.asarray([self.intercept_scaling], dtype=np.float64),
             model_type=np.asarray([recommender_artifact_model_type("svm_rank")]),
         )
         return path
@@ -460,5 +498,11 @@ def _config_from_bundle(bundle: np.lib.npyio.NpzFile) -> PairwiseLogisticConfig:
         epochs=int(np.asarray(bundle["local_epochs"]).reshape(-1)[0]),
         batch_size=int(np.asarray(bundle["batch_size"]).reshape(-1)[0]),
         learning_rate=float(np.asarray(bundle["learning_rate"]).reshape(-1)[0]),
-        l2_regularization=float(np.asarray(bundle["l2_regularization"]).reshape(-1)[0]),
+        l2_regularization=float(
+            np.asarray(bundle.get("l2_regularization", np.asarray([0.0]))).reshape(-1)[0]
+        ),
+        svm_c=float(np.asarray(bundle.get("svm_c", np.asarray([1.0]))).reshape(-1)[0]),
+        svm_intercept_scaling=float(
+            np.asarray(bundle.get("svm_intercept_scaling", np.asarray([1.0]))).reshape(-1)[0]
+        ),
     )

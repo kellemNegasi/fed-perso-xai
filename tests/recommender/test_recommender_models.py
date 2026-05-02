@@ -107,3 +107,34 @@ def test_recommender_scores_work_with_grouped_evaluation_pipeline(recommender_ty
     assert metrics["aggregate"]["pearson_at_1"] == pytest.approx(1.0)
     assert metrics["aggregate"]["pearson_at_8"] == pytest.approx(1.0)
     assert "dataset_index" not in metrics["aggregate"]
+
+
+def test_svm_rank_recommender_matches_linear_svc_style_loss_and_bias_scoring() -> None:
+    model = SVMRankRecommender.from_config(
+        n_features=2,
+        config=PairwiseLogisticConfig(
+            svm_c=2.0,
+            svm_intercept_scaling=2.0,
+        ),
+    )
+    model.set_parameters([np.asarray([1.0, -2.0]), np.asarray([4.0])])
+
+    X = np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float64)
+    y = np.asarray([1, 0], dtype=np.int64)
+
+    expected_regularization = 0.5 * (1.0**2 + (-2.0) ** 2 + (4.0 / 2.0) ** 2)
+    expected_loss = expected_regularization + 2.0 * (0.0 + 9.0)
+
+    assert model.loss(X, y) == pytest.approx(expected_loss)
+
+    candidates = pd.DataFrame(
+        {
+            "method_variant": ["a", "b"],
+            "x1": [1.0, 0.0],
+            "x2": [0.0, 1.0],
+        }
+    )
+    scores = model.score_candidates(candidates, ["x1", "x2"])
+
+    assert scores.loc["a"] == pytest.approx(5.0)
+    assert scores.loc["b"] == pytest.approx(2.0)

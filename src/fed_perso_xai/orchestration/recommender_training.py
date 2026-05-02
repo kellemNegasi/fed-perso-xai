@@ -124,6 +124,8 @@ def train_federated_recommender(
         batch_size=config.batch_size,
         learning_rate=config.learning_rate,
         l2_regularization=config.l2_regularization,
+        svm_c=config.svm_c,
+        svm_intercept_scaling=config.svm_intercept_scaling,
     )
     client_data = [
         RecommenderClientData(
@@ -284,6 +286,8 @@ def train_federated_recommender(
             "batch_size": config.batch_size,
             "learning_rate": config.learning_rate,
             "l2_regularization": config.l2_regularization,
+            "svm_c": config.svm_c,
+            "svm_intercept_scaling": config.svm_intercept_scaling,
         },
     }
     _write_json_atomic(artifacts.model_metadata_path, model_metadata)
