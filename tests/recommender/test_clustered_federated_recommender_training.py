@@ -540,11 +540,71 @@ def test_clustered_recommender_training_can_skip_pca(
     assert metadata["clustered"] is True
     manifest = json.loads(artifacts.cluster_manifest_path.read_text(encoding="utf-8"))
     assert manifest["enable_pca"] is False
+    runtime_report = json.loads(artifacts.runtime_report_path.read_text(encoding="utf-8"))
+    assert runtime_report["server_observes_raw_weights_during_clustering"] is False
     round_one = json.loads((artifacts.cluster_rounds_dir / "round_0001.json").read_text(encoding="utf-8"))
     assert round_one["projection"]["enable_pca"] is False
     assert round_one["projection"]["projection_type"] == "identity_no_projection"
     assert round_one["projection"]["data_dependent_fit"] is False
     assert round_one["projection"]["projection_fit_round_id"] is None
+
+
+@pytest.mark.skipif(not PYARROW_AVAILABLE, reason="pyarrow is required for Parquet artifact tests.")
+@pytest.mark.skipif(not LCC_AVAILABLE, reason="lcc-lib is required for clustered recommender tests.")
+def test_clustered_recommender_training_reports_raw_weight_visibility_when_pca_is_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, run_id, selection, persona = _prepare_recommender_run(tmp_path, client_count=3)
+
+    import fed_perso_xai.recommender.clustering as clustering_module
+
+    def fake_cluster(self, shared_reduced_vectors, *, projection_spec, seed, clustering_config):
+        assert clustering_config.enable_pca is True
+        assert isinstance(projection_spec, PCAProjectionSpec)
+        labels = np.asarray([0, 1, 2], dtype=np.int64)
+        return SecureClusterAssignments(
+            labels=labels,
+            centroids=np.zeros((3, shared_reduced_vectors[0].dimension), dtype=np.float64),
+            iterations=1,
+            initial_centroid_indices=tuple(),
+            secure_metadata={
+                "method": clustering_config.method,
+                "seed": int(seed),
+                "iterations": 1,
+                "n_clusters": 3,
+                "helper_count": 5,
+                "helper_ids": [0, 1, 2, 3, 4],
+                "helper_evaluation_points": [11, 12, 13, 14, 15],
+                "server_observes_raw_weights": False,
+                "server_observes_reduced_vectors": False,
+                "server_observes_reconstructed_distances": True,
+            },
+        )
+
+    monkeypatch.setattr(clustering_module.SecureKMeansClusterer, "cluster", fake_cluster)
+
+    artifacts, metadata = train_federated_recommender(
+        RecommenderFederatedTrainingConfig(
+            run_id=run_id,
+            selection_id=selection,
+            persona=persona,
+            paths=paths,
+            rounds=2,
+            epochs=2,
+            batch_size=2,
+            learning_rate=0.1,
+            seed=13,
+            top_k=(1, 2),
+            clustering=RecommenderClusteringConfig(enabled=True, enable_pca=True),
+        )
+    )
+
+    assert metadata["clustered"] is True
+    runtime_report = json.loads(artifacts.runtime_report_path.read_text(encoding="utf-8"))
+    assert runtime_report["server_observes_raw_weights_during_clustering"] is True
+    round_one = json.loads((artifacts.cluster_rounds_dir / "round_0001.json").read_text(encoding="utf-8"))
+    assert round_one["projection"]["server_observes_raw_weights_during_projection_fit"] is True
 
 
 @pytest.mark.parametrize("recommender_type", ["svm_rank", "pairwise_logistic"])

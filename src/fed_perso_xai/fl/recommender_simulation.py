@@ -667,6 +667,10 @@ def _run_clustered_recommender_training(
     )
 
     actual_backend = "clustered-sequential"
+    server_observes_raw_weights_during_clustering = any(
+        bool(round_result.projection_metadata.get("server_observes_raw_weights_during_projection_fit", False))
+        for round_result in clustered_rounds
+    )
     runtime_report = {
         "requested_backend": config.simulation_backend,
         "planned_backend": actual_backend,
@@ -680,7 +684,7 @@ def _run_clustered_recommender_training(
         "cluster_count": int(clustering_config.k),
         "warmup_rounds": warmup_rounds,
         "freeze_pca_after_warmup": freeze_pca_after_warmup,
-        "server_observes_raw_weights_during_clustering": False,
+        "server_observes_raw_weights_during_clustering": server_observes_raw_weights_during_clustering,
     }
     LOGGER.info(
         "Completed clustered recommender training rounds_completed=%s actual_backend=%s",

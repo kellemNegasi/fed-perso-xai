@@ -12,7 +12,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --partition=main
-#SBATCH --cpus-per-task=10
+#SBATCH --cpus-per-task=7
 #SBATCH --mem=80G
 #SBATCH --time=4:00:00
 # Environment setup ------------------------------------------------------------
@@ -74,7 +74,7 @@ CLUSTERING_WARMUP_ROUNDS="${13:-${CLUSTERING_WARMUP_ROUNDS:-0}}"
 CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${14:-${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-0}}"
 TOP_K="${15:-${TOP_K:-1,3,5}}"
 CLUSTERING_ENABLE_PCA="${16:-${CLUSTERING_ENABLE_PCA:-1}}"
-RAY_NUM_CPUS="${RAY_NUM_CPUS:-10}"
+RAY_NUM_CPUS="${RAY_NUM_CPUS:-7}"
 CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-1}"
 
 if [[ ! "$CLUSTERING_K" =~ ^[0-9]+$ ]] || [[ "$CLUSTERING_K" -lt 1 ]]; then
