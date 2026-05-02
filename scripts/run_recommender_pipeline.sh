@@ -21,6 +21,8 @@ Environment variables:
   TRAIN_BATCH_SIZE=64                   Local recommender batch size.
   TRAIN_LEARNING_RATE=0.05              Local recommender learning rate.
   TRAIN_L2_REGULARIZATION=0.0           Local recommender L2 regularization.
+  TRAIN_SVM_C=0.5                       LinearSVC-style SVM C parameter.
+  TRAIN_SVM_INTERCEPT_SCALING=1.0       LinearSVC-style intercept scaling.
   TRAIN_SEED=42                         Federated recommender training seed.
   RECOMMENDER_TYPE=svm_rank             Recommender backend: svm_rank or pairwise_logistic.
   FIT_FRACTION=1.0                      Fraction of clients sampled for fit.
@@ -81,6 +83,8 @@ TRAIN_EPOCHS="${TRAIN_EPOCHS:-5}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-64}"
 TRAIN_LEARNING_RATE="${TRAIN_LEARNING_RATE:-0.05}"
 TRAIN_L2_REGULARIZATION="${TRAIN_L2_REGULARIZATION:-0.0}"
+TRAIN_SVM_C="${TRAIN_SVM_C:-0.5}"
+TRAIN_SVM_INTERCEPT_SCALING="${TRAIN_SVM_INTERCEPT_SCALING:-1.0}"
 TRAIN_SEED="${TRAIN_SEED:-42}"
 RECOMMENDER_TYPE="${RECOMMENDER_TYPE:-svm_rank}"
 FIT_FRACTION="${FIT_FRACTION:-1.0}"
@@ -198,6 +202,8 @@ echo "==> Training federated recommender"
   --batch-size "$TRAIN_BATCH_SIZE" \
   --learning-rate "$TRAIN_LEARNING_RATE" \
   --l2-regularization "$TRAIN_L2_REGULARIZATION" \
+  --svm-c "$TRAIN_SVM_C" \
+  --svm-intercept-scaling "$TRAIN_SVM_INTERCEPT_SCALING" \
   --seed "$TRAIN_SEED" \
   --fit-fraction "$FIT_FRACTION" \
   --evaluate-fraction "$EVALUATE_FRACTION" \

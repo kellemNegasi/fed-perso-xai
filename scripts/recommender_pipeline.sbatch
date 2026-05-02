@@ -2,7 +2,7 @@
 #
 # Generic single-job Slurm script for rerunning one recommender pipeline.
 # Submit with:
-#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA]
+#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA]
 #
 
 # Job metadata -----------------------------------------------------------------
@@ -34,7 +34,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 usage() {
-  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA]" >&2
+  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA]" >&2
   echo "  RUN_ID: predictive training run id" >&2
   echo "  MODE: plain, secure, clustered, 1/0, or true/false" >&2
   echo "  SELECTION_ID defaults to test__max-20__seed-42" >&2
@@ -42,6 +42,8 @@ usage() {
   echo "  TRAIN_ROUNDS defaults to 10" >&2
   echo "  TRAIN_EPOCHS defaults to 5" >&2
   echo "  TRAIN_BATCH_SIZE defaults to 2048" >&2
+  echo "  TRAIN_SVM_C defaults to 0.5" >&2
+  echo "  TRAIN_SVM_INTERCEPT_SCALING defaults to 1.0" >&2
   echo "  SKIP_LABELING defaults to 1" >&2
   echo "  CLUSTERING_K defaults to 3" >&2
   echo "  CLUSTERING_WARMUP_ROUNDS defaults to 0" >&2
@@ -50,7 +52,7 @@ usage() {
   echo "  TOP_K defaults to 1,3,5" >&2
 }
 
-if [[ $# -lt 2 || $# -gt 13 ]]; then
+if [[ $# -lt 2 || $# -gt 15 ]]; then
   usage
   exit 2
 fi
@@ -62,12 +64,14 @@ PERSONA="${4:-${PERSONA:-lay}}"
 TRAIN_ROUNDS="${5:-${TRAIN_ROUNDS:-10}}"
 TRAIN_EPOCHS="${6:-${TRAIN_EPOCHS:-5}}"
 TRAIN_BATCH_SIZE="${7:-${TRAIN_BATCH_SIZE:-2048}}"
-SKIP_LABELING="${8:-${SKIP_LABELING:-1}}"
-CLUSTERING_K="${9:-${CLUSTERING_K:-3}}"
-CLUSTERING_WARMUP_ROUNDS="${10:-${CLUSTERING_WARMUP_ROUNDS:-0}}"
-CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${11:-${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-0}}"
-TOP_K="${12:-${TOP_K:-1,3,5}}"
-CLUSTERING_ENABLE_PCA="${13:-${CLUSTERING_ENABLE_PCA:-1}}"
+TRAIN_SVM_C="${8:-${TRAIN_SVM_C:-0.5}}"
+TRAIN_SVM_INTERCEPT_SCALING="${9:-${TRAIN_SVM_INTERCEPT_SCALING:-1.0}}"
+SKIP_LABELING="${10:-${SKIP_LABELING:-1}}"
+CLUSTERING_K="${11:-${CLUSTERING_K:-3}}"
+CLUSTERING_WARMUP_ROUNDS="${12:-${CLUSTERING_WARMUP_ROUNDS:-0}}"
+CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${13:-${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-0}}"
+TOP_K="${14:-${TOP_K:-1,3,5}}"
+CLUSTERING_ENABLE_PCA="${15:-${CLUSTERING_ENABLE_PCA:-1}}"
 RAY_NUM_CPUS="${RAY_NUM_CPUS:-4}"
 CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-1}"
 
@@ -89,6 +93,14 @@ if [[ ! "$CLUSTERING_ENABLE_PCA" =~ ^(0|1)$ ]]; then
 fi
 if [[ ! "$SKIP_LABELING" =~ ^(0|1)$ ]]; then
   echo "ERROR: SKIP_LABELING must be 0 or 1." >&2
+  exit 2
+fi
+if ! [[ "$TRAIN_SVM_C" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($TRAIN_SVM_C > 0)}")" != "1" ]]; then
+  echo "ERROR: TRAIN_SVM_C must be a positive number." >&2
+  exit 2
+fi
+if ! [[ "$TRAIN_SVM_INTERCEPT_SCALING" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($TRAIN_SVM_INTERCEPT_SCALING > 0)}")" != "1" ]]; then
+  echo "ERROR: TRAIN_SVM_INTERCEPT_SCALING must be a positive number." >&2
   exit 2
 fi
 if [[ -z "$TOP_K" ]]; then
@@ -132,6 +144,8 @@ echo "  clustered=${CLUSTERED_VALUE}"
 echo "  train_rounds=${TRAIN_ROUNDS}"
 echo "  train_epochs=${TRAIN_EPOCHS}"
 echo "  train_batch_size=${TRAIN_BATCH_SIZE}"
+echo "  train_svm_c=${TRAIN_SVM_C}"
+echo "  train_svm_intercept_scaling=${TRAIN_SVM_INTERCEPT_SCALING}"
 echo "  skip_labeling=${SKIP_LABELING}"
 echo "  clustering_k=${CLUSTERING_K}"
 echo "  clustering_warmup_rounds=${CLUSTERING_WARMUP_ROUNDS}"
@@ -150,6 +164,8 @@ TARGET_CMD=(
   TRAIN_ROUNDS=${TRAIN_ROUNDS}
   TRAIN_EPOCHS=${TRAIN_EPOCHS}
   TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE}
+  TRAIN_SVM_C=${TRAIN_SVM_C}
+  TRAIN_SVM_INTERCEPT_SCALING=${TRAIN_SVM_INTERCEPT_SCALING}
   SIMULATION_BACKEND=auto
   RAY_NUM_CPUS=${RAY_NUM_CPUS}
   CLIENT_NUM_CPUS=${CLIENT_NUM_CPUS}
