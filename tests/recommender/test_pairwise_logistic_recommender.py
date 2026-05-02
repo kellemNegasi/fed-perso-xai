@@ -47,6 +47,8 @@ def test_infer_recommender_feature_columns_excludes_identifiers() -> None:
             "candidate_index_within_instance": [0],
             "metric_quality_z": [0.5],
             "hp_alpha": [1.2],
+            "dataset_mean_of_means_z": [9.9],
+            "dataset_landmark_acc_knn1_z": [0.4],
         }
     )
 

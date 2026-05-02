@@ -622,9 +622,16 @@ def test_prepare_recommender_context_writes_client_ready_files(
         "lime__kernel-1.5__samples-50",
         "lime__kernel-2.0__samples-50",
     }
-    assert "dataset_client_train_size_z" in all_context.columns
+    assert "dataset_id_oh_0" in all_context.columns
+    assert "dataset_log_feature_count_z" in all_context.columns
+    assert "explainer_type" in all_context.columns
     assert "hp_lime_kernel_width" in all_context.columns
-    assert "metric_compactness_sparsity_z" in all_context.columns
+    assert "is_applicable_lime_kernel_width" in all_context.columns
+    assert "compactness_sparsity" in all_context.columns
+    assert "metric_compactness_sparsity_z" not in all_context.columns
+    assert "metric_compactness_sparsity_oriented" not in all_context.columns
+    assert "dataset_client_train_size_z" not in all_context.columns
+    assert "run_alpha" not in all_context.columns
     assert "is_pareto_optimal" in all_context.columns
 
 

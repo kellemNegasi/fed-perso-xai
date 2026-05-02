@@ -14,7 +14,8 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from fed_perso_xai.data.serialization import load_client_datasets
+from fed_perso_xai.data.catalog import DEFAULT_DATASET_REGISTRY
+from fed_perso_xai.data.loaders import load_supported_dataset
 from fed_perso_xai.explainers import (
     DEFAULT_EXPLAINER_REGISTRY,
     build_explainer_config_registry,
@@ -45,6 +46,54 @@ LOG_SCALED_HPARAMS = {
     "causal_shap_coalitions",
     "ig_steps",
 }
+
+# Keep the recommender context close to the older perso-xai encoding by only
+# exposing explainer hyperparameters that had direct equivalents there.
+NUMERIC_RECOMMENDER_HPARAMS = {
+    "background_sample_size",
+    "causal_shap_coalitions",
+    "ig_steps",
+    "lime_kernel_width",
+    "lime_num_samples",
+    "shap_l1_reg_k",
+    "shap_nsamples",
+}
+CATEGORICAL_RECOMMENDER_HPARAMS = {
+    "shap_explainer_type",
+    "shap_l1_reg",
+}
+
+RETAINED_DATASET_META_FIELDS = (
+    "log_feature_count_z",
+    "class_entropy_z",
+    "categorical_to_numerical_ratio_z",
+    "has_sensitive_attributes",
+    "high_stakes_domain",
+)
+
+SENSITIVE_KEYWORDS = (
+    "race",
+    "sex",
+    "gender",
+    "age",
+    "nationality",
+    "marital",
+)
+
+HIGH_STAKES_KEYWORDS = (
+    "medical",
+    "clinic",
+    "health",
+    "legal",
+    "law",
+    "justice",
+    "court",
+    "financial",
+    "finance",
+    "credit",
+    "bank",
+    "loan",
+)
 
 IDENTIFIER_COLUMNS = {
     "run_id",
@@ -113,16 +162,15 @@ def prepare_recommender_context(
     if candidate_frame.empty:
         raise ValueError("No candidate rows remain after applying client/explainer/config filters.")
 
-    client_metadata = _build_client_dataset_metadata(run_context=run_context)
-    client_metadata = _add_z_scores(client_metadata)
-    if requested_clients is not None:
-        missing_clients = sorted(set(requested_clients) - set(client_metadata["client_id"]))
-        if missing_clients:
-            raise ValueError(f"Requested clients were not found in the run metadata: {missing_clients}")
-
+    metric_names = _metric_columns(candidate_frame)
+    dataset_context = _resolve_dataset_context_features(
+        run_context=run_context,
+        paths=artifact_paths,
+    )
     encoded_frame = _encode_candidate_context(
         candidate_frame,
-        client_metadata=client_metadata,
+        metric_names=metric_names,
+        dataset_context=dataset_context,
         run_metadata=run_context.metadata,
     )
     encoded_frame = _mark_pareto_candidates(encoded_frame)
@@ -136,9 +184,11 @@ def prepare_recommender_context(
         pareto_json_path = client_dir / "pareto_front.json"
         metadata_path = client_dir / "preprocessing_metadata.json"
 
+        persisted_client_frame = _drop_internal_metric_columns(client_frame)
         pareto_frame = client_frame[client_frame["is_pareto_optimal"]].copy()
-        _write_parquet_atomic(all_path, client_frame.reset_index(drop=True))
-        _write_parquet_atomic(pareto_path, pareto_frame.reset_index(drop=True))
+        persisted_pareto_frame = _drop_internal_metric_columns(pareto_frame)
+        _write_parquet_atomic(all_path, persisted_client_frame.reset_index(drop=True))
+        _write_parquet_atomic(pareto_path, persisted_pareto_frame.reset_index(drop=True))
         pareto_payload = _build_pareto_json_payload(
             run_id=run_id,
             selection_id=selection_id,
@@ -176,11 +226,7 @@ def prepare_recommender_context(
         "candidate_count": int(len(encoded_frame)),
         "pareto_candidate_count": int(encoded_frame["is_pareto_optimal"].sum()),
         "client_count": len(client_summaries),
-        "metric_features": sorted(
-            column.removeprefix("metric_").removesuffix("_z")
-            for column in encoded_frame.columns
-            if column.startswith("metric_") and column.endswith("_z")
-        ),
+        "metric_features": sorted(name for name in metric_names if name in encoded_frame.columns),
         "sources": [
             {
                 "explainer_name": source.explainer_name,
@@ -247,72 +293,20 @@ def _load_candidate_metrics(sources: Sequence[AggregatedCandidateSource]) -> pd.
     return pd.concat(frames, ignore_index=True)
 
 
-def _build_client_dataset_metadata(*, run_context: Any) -> pd.DataFrame:
-    training_metadata = json.loads(run_context.training_metadata_path.read_text(encoding="utf-8"))
-    num_clients = int(training_metadata["num_clients"])
-    client_datasets = load_client_datasets(run_context.partition_root, num_clients)
-    rows: list[dict[str, Any]] = []
-    for client in client_datasets:
-        X_train = np.asarray(client.train.X, dtype=float)
-        X_test = np.asarray(client.test.X, dtype=float)
-        y_train = np.asarray(client.train.y)
-        y_test = np.asarray(client.test.y)
-        X_all = np.vstack([X_train, X_test]) if X_test.size else X_train
-        y_all = np.concatenate([y_train, y_test]) if y_test.size else y_train
-        feature_means = np.mean(X_train, axis=0) if X_train.size else np.asarray([], dtype=float)
-        feature_stds = np.std(X_train, axis=0) if X_train.size else np.asarray([], dtype=float)
-        rows.append(
-            {
-                "client_id": f"client_{int(client.client_id):03d}",
-                "client_numeric_id": int(client.client_id),
-                "client_train_size": int(X_train.shape[0]),
-                "client_test_size": int(X_test.shape[0]),
-                "client_total_size": int(X_all.shape[0]),
-                "client_log_train_size": math.log1p(int(X_train.shape[0])),
-                "client_log_total_size": math.log1p(int(X_all.shape[0])),
-                "client_n_features": int(X_train.shape[1]) if X_train.ndim == 2 else 0,
-                "client_class_entropy": _normalized_entropy(y_all),
-                "client_train_positive_rate": _positive_rate(y_train),
-                "client_test_positive_rate": _positive_rate(y_test),
-                "client_feature_mean_abs_mean": _safe_float(np.mean(np.abs(feature_means))),
-                "client_feature_mean_std": _safe_float(np.std(feature_means)),
-                "client_feature_std_mean": _safe_float(np.mean(feature_stds)),
-                "client_feature_std_std": _safe_float(np.std(feature_stds)),
-                "client_feature_std_max": _safe_float(np.max(feature_stds) if feature_stds.size else 0.0),
-                "client_feature_sparsity": _safe_float(np.mean(np.isclose(X_train, 0.0))) if X_train.size else 0.0,
-                "client_mean_abs_correlation": _mean_abs_correlation(X_train),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def _add_z_scores(frame: pd.DataFrame) -> pd.DataFrame:
-    result = frame.copy()
-    skip = {"client_id", "client_numeric_id"}
-    for column in frame.columns:
-        if column in skip or not pd.api.types.is_numeric_dtype(frame[column]):
-            continue
-        values = frame[column].astype(float)
-        std = float(values.std(ddof=0))
-        result[f"{column}_z"] = 0.0 if std == 0.0 else (values - float(values.mean())) / std
-    return result
-
-
 def _encode_candidate_context(
     candidates: pd.DataFrame,
     *,
-    client_metadata: pd.DataFrame,
+    metric_names: Sequence[str],
+    dataset_context: Mapping[str, Any],
     run_metadata: Mapping[str, Any],
 ) -> pd.DataFrame:
-    metric_names = _metric_columns(candidates)
     configs = _resolved_configs(candidates)
     numeric_hp_stats, categorical_hp_values = _hyperparameter_feature_space(configs)
     explainer_metadata = _explainer_metadata()
 
     encoded_rows: list[dict[str, Any]] = []
-    training_config = run_metadata.get("training_config") or {}
-    dataset_name = str(run_metadata.get("dataset_name", training_config.get("dataset_name", "")))
-    model_type = str(run_metadata.get("model_type", training_config.get("model_name", "")))
+    dataset_name = str(run_metadata.get("dataset_name", ""))
+    model_type = str(run_metadata.get("model_type", ""))
     for _, row in candidates.iterrows():
         explainer_name = str(row["explainer_name"])
         config_id = str(row["config_id"])
@@ -336,21 +330,8 @@ def _encode_candidate_context(
             "method_variant": config_id,
             "explainer_name": explainer_name,
             "config_id": config_id,
-            "run_alpha": _coerce_optional_float((run_metadata.get("partition_reference") or {}).get("alpha")) or 0.0,
-            "run_num_clients": _coerce_optional_float((run_metadata.get("partition_reference") or {}).get("num_clients")) or 0.0,
-            "run_rounds": _coerce_optional_float(training_config.get("rounds")) or 0.0,
-            "run_log_rounds": math.log1p(_coerce_optional_float(training_config.get("rounds")) or 0.0),
         }
-        client_row = client_metadata.loc[client_metadata["client_id"] == client_id]
-        if client_row.empty:
-            raise ValueError(f"Missing client metadata for {client_id}.")
-        encoded.update(
-            {
-                f"dataset_{key}": value
-                for key, value in client_row.iloc[0].to_dict().items()
-                if key != "client_id"
-            }
-        )
+        encoded.update(dataset_context)
         encoded.update(_encode_explainer(explainer_name, explainer_metadata))
         encoded.update(
             _encode_hyperparameters(
@@ -395,11 +376,12 @@ def _hyperparameter_feature_space(
     categorical_values: dict[str, set[str]] = {}
     for config in configs.values():
         for key, value in config.items():
-            numeric = _coerce_optional_float(value)
-            if numeric is not None:
-                transformed = math.log1p(numeric) if key in LOG_SCALED_HPARAMS and numeric >= 0 else numeric
-                numeric_values.setdefault(key, []).append(float(transformed))
-            elif isinstance(value, str):
+            if key in NUMERIC_RECOMMENDER_HPARAMS:
+                numeric = _coerce_optional_float(value)
+                if numeric is not None:
+                    transformed = math.log1p(numeric) if key in LOG_SCALED_HPARAMS and numeric >= 0 else numeric
+                    numeric_values.setdefault(key, []).append(float(transformed))
+            elif key in CATEGORICAL_RECOMMENDER_HPARAMS and isinstance(value, str):
                 categorical_values.setdefault(key, set()).add(value)
     numeric_stats: dict[str, dict[str, float]] = {}
     for key, values in numeric_values.items():
@@ -434,10 +416,8 @@ def _encode_explainer(
     if explainer_name not in metadata:
         raise KeyError(f"Unknown explainer metadata for {explainer_name!r}.")
     row: dict[str, Any] = {}
-    explainer_id = int(metadata[explainer_name]["explainer_id"])
     for name, item in metadata.items():
         row[f"explainer_id_oh_{int(item['explainer_id'])}"] = 1 if name == explainer_name else 0
-    row["explainer_id"] = explainer_id
     for key, value in metadata[explainer_name].items():
         if key == "explainer_type":
             row["explainer_type"] = value
@@ -454,7 +434,7 @@ def _encode_hyperparameters(
 ) -> dict[str, Any]:
     row: dict[str, Any] = {}
     for key, stats in sorted(numeric_hp_stats.items()):
-        row[f"hp_is_applicable_{key}"] = 1 if key in config else 0
+        row[f"is_applicable_{key}"] = 1 if key in config else 0
         numeric = _coerce_optional_float(config.get(key))
         if numeric is None:
             row[f"hp_{key}"] = 0.0
@@ -463,7 +443,7 @@ def _encode_hyperparameters(
         std = float(stats.get("std", 0.0))
         row[f"hp_{key}"] = 0.0 if std == 0.0 else (float(value) - float(stats.get("mean", 0.0))) / std
     for key, values in sorted(categorical_hp_values.items()):
-        row[f"hp_is_applicable_{key}"] = 1 if key in config else 0
+        row[f"is_applicable_{key}"] = 1 if key in config else 0
         current = str(config.get(key)) if key in config else ""
         for value in values:
             row[f"hp_{key}__{_slug(value)}"] = 1 if current == value else 0
@@ -489,15 +469,26 @@ def _add_metric_z_scores(frame: pd.DataFrame, metric_names: Sequence[str]) -> pd
     group_cols = ["client_id", "dataset_index"]
     for metric_name in metric_names:
         oriented_col = f"metric_{metric_name}_oriented"
-        z_col = f"metric_{metric_name}_z"
         if oriented_col not in result.columns:
             continue
-        result[z_col] = 0.0
+        result[metric_name] = 0.0
         for _, indices in result.groupby(group_cols, dropna=False).groups.items():
             values = result.loc[indices, oriented_col].astype(float)
             std = float(values.std(ddof=0))
-            result.loc[indices, z_col] = 0.0 if std == 0.0 else (values - float(values.mean())) / std
+            result.loc[indices, metric_name] = 0.0 if std == 0.0 else (values - float(values.mean())) / std
     return result.drop(columns=["_oriented_metrics"], errors="ignore")
+
+
+def _drop_internal_metric_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Persist only one normalized metric encoding, mirroring the older repo."""
+
+    result = frame.copy()
+    drop_columns = [
+        column
+        for column in result.columns
+        if column.startswith("metric_") and column.endswith("_oriented")
+    ]
+    return result.drop(columns=drop_columns, errors="ignore")
 
 
 def _mark_pareto_candidates(frame: pd.DataFrame) -> pd.DataFrame:
@@ -619,40 +610,6 @@ def _dominates(left: Mapping[str, float], right: Mapping[str, float]) -> bool:
     return better_or_equal and strictly_better
 
 
-def _normalized_entropy(values: np.ndarray) -> float:
-    if values.size == 0:
-        return 0.0
-    _, counts = np.unique(values, return_counts=True)
-    probabilities = counts / counts.sum()
-    entropy = float(-np.sum(probabilities * np.log(probabilities + 1e-12)))
-    if counts.size <= 1:
-        return 0.0
-    return entropy / math.log(counts.size)
-
-
-def _positive_rate(values: np.ndarray) -> float:
-    if values.size == 0:
-        return 0.0
-    return float(np.mean(values.astype(float)))
-
-
-def _mean_abs_correlation(X: np.ndarray) -> float:
-    if X.ndim != 2 or X.shape[0] < 2 or X.shape[1] < 2:
-        return 0.0
-    variances = np.var(X, axis=0)
-    active = variances > 1e-12
-    if int(np.sum(active)) < 2:
-        return 0.0
-    corr = np.corrcoef(X[:, active], rowvar=False)
-    if corr.ndim != 2:
-        return 0.0
-    upper = corr[np.triu_indices_from(corr, k=1)]
-    finite = upper[np.isfinite(upper)]
-    if finite.size == 0:
-        return 0.0
-    return float(np.mean(np.abs(finite)))
-
-
 def _explainer_family_flags(name: str, family_token: str) -> dict[str, int]:
     text = f"{name} {family_token}".lower()
     return {
@@ -701,6 +658,339 @@ def _safe_float(value: Any) -> float:
         return 0.0
     return numeric
 
+
+
+
+
+def _resolve_dataset_context_features(
+    *,
+    run_context: Any,
+    paths: ArtifactPaths,
+) -> dict[str, Any]:
+    dataset_name = str(run_context.metadata.get("dataset_name", "")).strip()
+    if not dataset_name:
+        return _encode_dataset_context_features(
+            dataset_name="",
+            dataset_records={"": {"dataset_id": 0}},
+        )
+
+    legacy_records = _load_legacy_dataset_metadata_records(run_context)
+    if dataset_name in legacy_records:
+        return _encode_dataset_context_features(
+            dataset_name=dataset_name,
+            dataset_records=legacy_records,
+        )
+
+    dataset_records: dict[str, dict[str, Any]] = {}
+    registry_names = DEFAULT_DATASET_REGISTRY.list_keys()
+    for dataset_id, name in enumerate(registry_names):
+        try:
+            dataset_records[name] = _build_registry_dataset_record(
+                dataset_name=name,
+                dataset_id=dataset_id,
+                cache_dir=paths.cache_dir,
+            )
+        except Exception:
+            continue
+
+    if dataset_name not in dataset_records:
+        dataset_records[dataset_name] = _build_run_fallback_dataset_record(
+            run_context=run_context,
+            dataset_name=dataset_name,
+            dataset_id=len(dataset_records),
+        )
+
+    return _encode_dataset_context_features(
+        dataset_name=dataset_name,
+        dataset_records=dataset_records,
+    )
+
+
+def _load_legacy_dataset_metadata_records(run_context: Any) -> dict[str, dict[str, Any]]:
+    candidates: list[Path] = [run_context.run_artifact_dir / "dataset_metadata.json"]
+    prepared_root = (run_context.metadata.get("partition_reference") or {}).get("prepared_root")
+    if prepared_root:
+        candidates.append(Path(str(prepared_root)) / "dataset_metadata.json")
+
+    for path in candidates:
+        if not path.exists():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        datasets = payload.get("datasets")
+        if not isinstance(datasets, Mapping):
+            continue
+        records: dict[str, dict[str, Any]] = {}
+        for name, value in datasets.items():
+            if not isinstance(name, str) or not isinstance(value, Mapping):
+                continue
+            record = dict(value)
+            if "dataset_id" not in record:
+                continue
+            if not all(field in record for field in RETAINED_DATASET_META_FIELDS):
+                continue
+            records[name] = record
+        if records:
+            return records
+    return {}
+
+
+def _build_registry_dataset_record(
+    *,
+    dataset_name: str,
+    dataset_id: int,
+    cache_dir: Path,
+) -> dict[str, Any]:
+    dataset = load_supported_dataset(dataset_name, cache_dir=cache_dir)
+    feature_count = int(len(dataset.feature_names))
+    cat_count, numeric_count = _infer_feature_type_counts(
+        feature_names=dataset.feature_names,
+        dtypes={column: str(dtype) for column, dtype in dataset.X.dtypes.items()},
+        overrides=dataset.spec.feature_type_overrides,
+    )
+    return {
+        "dataset_id": dataset_id,
+        "log_feature_count": math.log1p(max(feature_count, 0)),
+        "class_entropy": _normalized_entropy_from_values(dataset.y),
+        "categorical_to_numerical_ratio": _categorical_ratio(cat_count, numeric_count),
+        "has_sensitive_attributes": _detect_sensitive_attributes(dataset.feature_names),
+        "high_stakes_domain": _detect_high_stakes_domain(
+            dataset_name=dataset_name,
+            description=dataset.spec.description,
+        ),
+    }
+
+
+def _build_run_fallback_dataset_record(
+    *,
+    run_context: Any,
+    dataset_name: str,
+    dataset_id: int,
+) -> dict[str, Any]:
+    dataset_metadata = _load_run_dataset_metadata(run_context)
+    partition_metadata = _load_partition_metadata(run_context)
+    feature_metadata = _load_feature_metadata(run_context)
+    schema = dataset_metadata.get("schema") if isinstance(dataset_metadata.get("schema"), Mapping) else {}
+
+    raw_feature_names = tuple(
+        str(name)
+        for name in (schema.get("raw_feature_names") or [])
+        if isinstance(name, str)
+    )
+    dtypes = {
+        str(column): str(dtype)
+        for column, dtype in (schema.get("dtypes") or {}).items()
+    }
+    overrides = {
+        str(column): str(kind)
+        for column, kind in (schema.get("feature_type_overrides") or {}).items()
+    }
+    feature_count = _resolve_feature_count(schema=schema, feature_metadata=feature_metadata)
+    cat_count, numeric_count = _infer_feature_type_counts(
+        feature_names=raw_feature_names,
+        dtypes=dtypes,
+        overrides=overrides,
+        fallback_total=feature_count,
+    )
+    return {
+        "dataset_id": dataset_id,
+        "log_feature_count": math.log1p(max(feature_count, 0)),
+        "class_entropy": _class_entropy_from_partition_metadata(partition_metadata),
+        "categorical_to_numerical_ratio": _categorical_ratio(cat_count, numeric_count),
+        "has_sensitive_attributes": _detect_sensitive_attributes(raw_feature_names),
+        "high_stakes_domain": _detect_high_stakes_domain(
+            dataset_name=dataset_name,
+            description=str(dataset_metadata.get("description", "")),
+        ),
+    }
+
+
+def _load_run_dataset_metadata(run_context: Any) -> dict[str, Any]:
+    candidates: list[Path] = [run_context.run_artifact_dir / "dataset_metadata.json"]
+    prepared_root = (run_context.metadata.get("partition_reference") or {}).get("prepared_root")
+    if prepared_root:
+        candidates.append(Path(str(prepared_root)) / "dataset_metadata.json")
+    for path in candidates:
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, Mapping):
+                return dict(payload)
+    return {}
+
+
+def _load_partition_metadata(run_context: Any) -> dict[str, Any]:
+    metadata_ref = (run_context.metadata.get("partition_reference") or {}).get("partition_metadata_path")
+    candidates: list[Path] = [run_context.run_artifact_dir / "partition_metadata.json"]
+    if metadata_ref:
+        candidates.append(Path(str(metadata_ref)))
+    for path in candidates:
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, Mapping):
+                return dict(payload)
+    return {}
+
+
+def _load_feature_metadata(run_context: Any) -> dict[str, Any]:
+    try:
+        payload = json.loads(run_context.feature_metadata_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _encode_dataset_context_features(
+    *,
+    dataset_name: str,
+    dataset_records: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    encoded: dict[str, Any] = {}
+    current = dataset_records.get(dataset_name) or {"dataset_id": 0}
+    dataset_ids = sorted(
+        {
+            int(record["dataset_id"])
+            for record in dataset_records.values()
+            if "dataset_id" in record
+        }
+        or {0}
+    )
+    current_dataset_id = int(current.get("dataset_id", 0))
+    for dataset_id in dataset_ids:
+        encoded[f"dataset_id_oh_{dataset_id}"] = 1 if dataset_id == current_dataset_id else 0
+
+    raw_log_feature_count = {
+        name: _safe_float(record.get("log_feature_count"))
+        for name, record in dataset_records.items()
+    }
+    raw_class_entropy = {
+        name: _safe_float(record.get("class_entropy"))
+        for name, record in dataset_records.items()
+    }
+    raw_ratio = {
+        name: _safe_float(record.get("categorical_to_numerical_ratio"))
+        for name, record in dataset_records.items()
+    }
+    _, log_feature_count_z = _compute_z_scores(raw_log_feature_count)
+    _, class_entropy_z = _compute_z_scores(raw_class_entropy)
+    _, ratio_z = _compute_z_scores(raw_ratio)
+
+    encoded["dataset_log_feature_count_z"] = float(log_feature_count_z.get(dataset_name, 0.0))
+    encoded["dataset_class_entropy_z"] = float(class_entropy_z.get(dataset_name, 0.0))
+    encoded["dataset_categorical_to_numerical_ratio_z"] = float(ratio_z.get(dataset_name, 0.0))
+    encoded["dataset_has_sensitive_attributes"] = bool(current.get("has_sensitive_attributes", False))
+    encoded["dataset_high_stakes_domain"] = bool(current.get("high_stakes_domain", False))
+    return encoded
+
+
+def _resolve_feature_count(
+    *,
+    schema: Mapping[str, Any],
+    feature_metadata: Mapping[str, Any],
+) -> int:
+    count = _coerce_optional_int(schema.get("feature_count"))
+    if count is not None and count >= 0:
+        return count
+    stable_order = feature_metadata.get("stable_transformed_feature_order")
+    if isinstance(stable_order, Sequence) and not isinstance(stable_order, (str, bytes)):
+        return int(len(stable_order))
+    return 0
+
+
+def _infer_feature_type_counts(
+    *,
+    feature_names: Sequence[str],
+    dtypes: Mapping[str, str],
+    overrides: Mapping[str, str],
+    fallback_total: int | None = None,
+) -> tuple[int, int]:
+    names = list(feature_names) if feature_names else list(dtypes.keys())
+    categorical = 0
+    numeric = 0
+    for name in names:
+        override = str(overrides.get(name, "")).strip().lower()
+        if override == "categorical":
+            categorical += 1
+            continue
+        if override == "numeric":
+            numeric += 1
+            continue
+        dtype = str(dtypes.get(name, "")).lower()
+        if any(token in dtype for token in ("object", "category", "bool", "string")):
+            categorical += 1
+        else:
+            numeric += 1
+    if fallback_total is not None and categorical + numeric == 0:
+        return 0, int(max(fallback_total, 0))
+    return categorical, numeric
+
+
+def _categorical_ratio(cat_count: int, numeric_count: int) -> float:
+    if numeric_count <= 0:
+        return float(cat_count)
+    return float(cat_count) / float(numeric_count)
+
+
+def _normalized_entropy_from_values(values: np.ndarray) -> float:
+    if values.size == 0:
+        return 0.0
+    _, counts = np.unique(values, return_counts=True)
+    probabilities = counts / counts.sum()
+    entropy = float(-np.sum(probabilities * np.log(probabilities + 1e-12)))
+    if counts.size <= 1:
+        return 0.0
+    return entropy / math.log(counts.size)
+
+
+def _class_entropy_from_partition_metadata(partition_metadata: Mapping[str, Any]) -> float:
+    counts: dict[int, int] = {}
+    for client in partition_metadata.get("clients", []):
+        if not isinstance(client, Mapping):
+            continue
+        for field in ("train_class_distribution", "test_class_distribution"):
+            distribution = client.get(field)
+            if not isinstance(distribution, Mapping):
+                continue
+            for label, count in distribution.items():
+                label_int = _coerce_optional_int(label)
+                count_int = _coerce_optional_int(count)
+                if label_int is None or count_int is None:
+                    continue
+                counts[label_int] = counts.get(label_int, 0) + count_int
+    if not counts:
+        return 0.0
+    labels = np.concatenate(
+        [
+            np.full(shape=(count,), fill_value=label, dtype=int)
+            for label, count in sorted(counts.items())
+            if count > 0
+        ]
+    )
+    return _normalized_entropy_from_values(labels)
+
+
+def _detect_sensitive_attributes(feature_names: Sequence[str]) -> bool:
+    for name in feature_names:
+        normalized = str(name).strip().lower()
+        if any(keyword in normalized for keyword in SENSITIVE_KEYWORDS):
+            return True
+    return False
+
+
+def _detect_high_stakes_domain(*, dataset_name: str, description: str) -> bool:
+    text = f"{dataset_name} {description}".lower()
+    return any(keyword in text for keyword in HIGH_STAKES_KEYWORDS)
+
+
+def _compute_z_scores(values: Mapping[str, float]) -> tuple[dict[str, float], dict[str, float]]:
+    if not values:
+        return {"mean": 0.0, "std": 0.0}, {}
+    arr = np.asarray(list(values.values()), dtype=float)
+    mean = float(np.mean(arr)) if arr.size else 0.0
+    std = float(np.std(arr)) if arr.size else 0.0
+    normalized = {
+        key: 0.0 if std == 0.0 else (float(value) - mean) / std
+        for key, value in values.items()
+    }
+    return {"mean": mean, "std": std}, normalized
 
 def _slug(value: Any) -> str:
     cleaned = []

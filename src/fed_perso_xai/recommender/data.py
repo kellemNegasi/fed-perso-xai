@@ -12,6 +12,35 @@ from sklearn.model_selection import train_test_split
 
 LOGGER = logging.getLogger(__name__)
 
+STATISTICAL_DATASET_FEATURES = {
+    "dataset_log_dataset_size_z",
+    "dataset_mean_of_means_z",
+    "dataset_std_of_means_z",
+    "dataset_mean_variance_z",
+    "dataset_max_variance_z",
+    "dataset_mean_skewness_z",
+    "dataset_std_skewness_z",
+    "dataset_max_kurtosis_z",
+    "dataset_mean_std_z",
+    "dataset_std_std_z",
+    "dataset_max_std_z",
+    "dataset_mean_range_z",
+    "dataset_max_range_z",
+    "dataset_mean_cardinality_z",
+    "dataset_max_cardinality_z",
+    "dataset_mean_cat_entropy_z",
+    "dataset_std_cat_entropy_z",
+    "dataset_mean_top_freq_z",
+    "dataset_max_top_freq_z",
+}
+
+LANDMARKING_DATASET_FEATURES = {
+    "dataset_landmark_acc_knn1_z",
+    "dataset_landmark_acc_gaussian_nb_z",
+    "dataset_landmark_acc_decision_stump_z",
+    "dataset_landmark_acc_logreg_z",
+}
+
 DEFAULT_EXCLUDED_FEATURE_COLUMNS = {
     "run_id",
     "dataset",
@@ -68,6 +97,8 @@ def infer_recommender_feature_columns(
     """Infer numeric candidate feature columns used by the recommender model."""
 
     exclusions = set(DEFAULT_EXCLUDED_FEATURE_COLUMNS)
+    exclusions.update(STATISTICAL_DATASET_FEATURES)
+    exclusions.update(LANDMARKING_DATASET_FEATURES)
     exclusions.update(excluded_columns or ())
     numeric_columns = candidates.select_dtypes(include=["number", "bool"]).columns
     feature_columns = tuple(
