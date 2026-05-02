@@ -508,11 +508,34 @@ This step simulates a persona per client, splits dataset indices into train/test
 python3 -m fed_perso_xai label-recommender-context --run-id <run_id> --selection <selection_id> --persona lay --clients all --context-filename candidate_context.parquet
 ```
 
+Client-level heterogeneous persona assignment is also available:
+
+```bash
+python3 -m fed_perso_xai label-recommender-context --run-id <run_id> --selection <selection_id> --persona-assignment-policy dirichlet_sampled --persona-assignment-alpha 1.0 --clients all
+```
+
+In `dirichlet_sampled` mode, the pipeline samples a single global persona mixture over the bundled personas (`lay`, `clinician`, `regulator`) from a symmetric Dirichlet distribution, then samples exactly one persona per client from that mixture. All labels for a given client are generated with that client's sampled persona. The `alpha` parameter controls how balanced the client-level persona allocation is:
+
+- larger `alpha` keeps the sampled mixture closer to uniform, so client counts tend to be more balanced across personas
+- smaller `alpha` makes the sampled mixture more concentrated, so more clients tend to share the same persona and fewer clients get the others
+
+For example, with `15` clients, a larger `alpha` is more likely to produce something closer to `5 lay / 5 clinician / 5 regulator`, while a smaller `alpha` is more likely to produce a more imbalanced split.
+
 Per-client outputs are written under:
 
 ```text
 federated/runs/<run_id>/clients/<client>/recommender_labels/<selection_id>/<persona>/
 ```
+
+For `dirichlet_sampled`, the default output namespace is:
+
+```text
+federated/runs/<run_id>/clients/<client>/recommender_labels/<selection_id>/dirichlet_sampled/
+```
+
+and the root label directory also includes:
+
+- `persona_assignment.json`: sampled global persona probabilities and per-client sampled personas
 
 Important artifacts:
 

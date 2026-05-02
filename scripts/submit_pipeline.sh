@@ -11,6 +11,10 @@ Behavior:
   clustered: submit one clustered run for every RUN_ID.
 
 Environment variables:
+  PERSONA=dirichlet_sampled
+                                    Shared label namespace used by label/train/eval.
+  PERSONA_ASSIGNMENT_POLICY=dirichlet_sampled
+  PERSONA_ASSIGNMENT_ALPHA=
   TRAIN_ROUNDS=10
   TRAIN_EPOCHS=5
   TRAIN_BATCH_SIZE=2048
@@ -78,14 +82,16 @@ if [[ -n "$CLUSTERING_ENABLE_PCA_ARG" && ! "$CLUSTERING_ENABLE_PCA_ARG" =~ ^(0|1
 fi
 
 SELECTION_ID="${SELECTION_ID:-test__max-20__seed-42}"
-PERSONA="${PERSONA:-lay}"
-TRAIN_ROUNDS="${TRAIN_ROUNDS:-250}"
+PERSONA="${PERSONA:-dirichlet_sampled}"
+PERSONA_ASSIGNMENT_POLICY="${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}"
+PERSONA_ASSIGNMENT_ALPHA="${PERSONA_ASSIGNMENT_ALPHA:-10.0}"
+TRAIN_ROUNDS="${TRAIN_ROUNDS:-200}"
 TRAIN_EPOCHS="${TRAIN_EPOCHS:-10}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-2048}"
-TRAIN_LEARNING_RATE="${TRAIN_LEARNING_RATE:-0.01}"
+TRAIN_LEARNING_RATE="${TRAIN_LEARNING_RATE:-0.02}"
 TRAIN_SVM_C="${TRAIN_SVM_C:-0.5}"
 TRAIN_SVM_INTERCEPT_SCALING="${TRAIN_SVM_INTERCEPT_SCALING:-1.0}"
-SKIP_LABELING="${SKIP_LABELING:-1}"
+SKIP_LABELING="${SKIP_LABELING:-0}"
 CLUSTERING_K="${CLUSTERING_K_ARG:-${CLUSTERING_K:-3}}"
 CLUSTERING_WARMUP_ROUNDS="${CLUSTERING_WARMUP_ROUNDS_ARG:-${CLUSTERING_WARMUP_ROUNDS:-15}}"
 CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${CLUSTERING_FREEZE_PCA_AFTER_WARMUP_ARG:-${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-1}}"
@@ -109,6 +115,14 @@ if [[ ! "$CLUSTERING_ENABLE_PCA" =~ ^(0|1)$ ]]; then
 fi
 if [[ ! "$SKIP_LABELING" =~ ^(0|1)$ ]]; then
   echo "ERROR: SKIP_LABELING must be 0 or 1." >&2
+  exit 2
+fi
+if [[ ! "$PERSONA_ASSIGNMENT_POLICY" =~ ^(fixed|dirichlet_sampled)$ ]]; then
+  echo "ERROR: PERSONA_ASSIGNMENT_POLICY must be fixed or dirichlet_sampled." >&2
+  exit 2
+fi
+if [[ -n "$PERSONA_ASSIGNMENT_ALPHA" ]] && { ! [[ "$PERSONA_ASSIGNMENT_ALPHA" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($PERSONA_ASSIGNMENT_ALPHA > 0)}")" != "1" ]]; }; then
+  echo "ERROR: PERSONA_ASSIGNMENT_ALPHA must be a positive number when provided." >&2
   exit 2
 fi
 if ! [[ "$TRAIN_LEARNING_RATE" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($TRAIN_LEARNING_RATE > 0)}")" != "1" ]]; then
@@ -148,6 +162,8 @@ for run_id in "${RUN_IDS[@]}"; do
       "$CLUSTERING_WARMUP_ROUNDS" \
       "$CLUSTERING_FREEZE_PCA_AFTER_WARMUP" \
       "$TOP_K" \
-      "$CLUSTERING_ENABLE_PCA"
+      "$CLUSTERING_ENABLE_PCA" \
+      "$PERSONA_ASSIGNMENT_POLICY" \
+      "$PERSONA_ASSIGNMENT_ALPHA"
   done
 done

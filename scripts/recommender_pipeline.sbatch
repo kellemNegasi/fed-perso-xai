@@ -2,7 +2,7 @@
 #
 # Generic single-job Slurm script for rerunning one recommender pipeline.
 # Submit with:
-#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA]
+#   sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA] [PERSONA_ASSIGNMENT_POLICY] [PERSONA_ASSIGNMENT_ALPHA]
 #
 
 # Job metadata -----------------------------------------------------------------
@@ -34,11 +34,11 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 usage() {
-  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA]" >&2
+  echo "Usage: sbatch scripts/recommender_pipeline.sbatch RUN_ID MODE [SELECTION_ID] [PERSONA] [TRAIN_ROUNDS] [TRAIN_EPOCHS] [TRAIN_BATCH_SIZE] [TRAIN_LEARNING_RATE] [TRAIN_SVM_C] [TRAIN_SVM_INTERCEPT_SCALING] [SKIP_LABELING] [CLUSTERING_K] [CLUSTERING_WARMUP_ROUNDS] [CLUSTERING_FREEZE_PCA_AFTER_WARMUP] [TOP_K] [CLUSTERING_ENABLE_PCA] [PERSONA_ASSIGNMENT_POLICY] [PERSONA_ASSIGNMENT_ALPHA]" >&2
   echo "  RUN_ID: predictive training run id" >&2
   echo "  MODE: plain, secure, clustered, 1/0, or true/false" >&2
   echo "  SELECTION_ID defaults to test__max-20__seed-42" >&2
-  echo "  PERSONA defaults to lay" >&2
+  echo "  PERSONA defaults to dirichlet_sampled and is used as the shared label namespace" >&2
   echo "  TRAIN_ROUNDS defaults to 10" >&2
   echo "  TRAIN_EPOCHS defaults to 5" >&2
   echo "  TRAIN_BATCH_SIZE defaults to 2048" >&2
@@ -51,9 +51,11 @@ usage() {
   echo "  CLUSTERING_FREEZE_PCA_AFTER_WARMUP defaults to 0" >&2
   echo "  CLUSTERING_ENABLE_PCA defaults to 1" >&2
   echo "  TOP_K defaults to 1,3,5" >&2
+  echo "  PERSONA_ASSIGNMENT_POLICY defaults to dirichlet_sampled" >&2
+  echo "  PERSONA_ASSIGNMENT_ALPHA defaults to CLI default when omitted" >&2
 }
 
-if [[ $# -lt 2 || $# -gt 16 ]]; then
+if [[ $# -lt 2 || $# -gt 18 ]]; then
   usage
   exit 2
 fi
@@ -61,7 +63,7 @@ fi
 RUN_ID="$1"
 MODE_RAW="$2"
 SELECTION_ID="${3:-${SELECTION_ID:-test__max-20__seed-42}}"
-PERSONA="${4:-${PERSONA:-lay}}"
+PERSONA="${4:-${PERSONA:-dirichlet_sampled}}"
 TRAIN_ROUNDS="${5:-${TRAIN_ROUNDS:-10}}"
 TRAIN_EPOCHS="${6:-${TRAIN_EPOCHS:-5}}"
 TRAIN_BATCH_SIZE="${7:-${TRAIN_BATCH_SIZE:-2048}}"
@@ -74,6 +76,8 @@ CLUSTERING_WARMUP_ROUNDS="${13:-${CLUSTERING_WARMUP_ROUNDS:-0}}"
 CLUSTERING_FREEZE_PCA_AFTER_WARMUP="${14:-${CLUSTERING_FREEZE_PCA_AFTER_WARMUP:-0}}"
 TOP_K="${15:-${TOP_K:-1,3,5}}"
 CLUSTERING_ENABLE_PCA="${16:-${CLUSTERING_ENABLE_PCA:-1}}"
+PERSONA_ASSIGNMENT_POLICY="${17:-${PERSONA_ASSIGNMENT_POLICY:-dirichlet_sampled}}"
+PERSONA_ASSIGNMENT_ALPHA="${18:-${PERSONA_ASSIGNMENT_ALPHA:-}}"
 RAY_NUM_CPUS="${RAY_NUM_CPUS:-7}"
 CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-1}"
 
@@ -95,6 +99,14 @@ if [[ ! "$CLUSTERING_ENABLE_PCA" =~ ^(0|1)$ ]]; then
 fi
 if [[ ! "$SKIP_LABELING" =~ ^(0|1)$ ]]; then
   echo "ERROR: SKIP_LABELING must be 0 or 1." >&2
+  exit 2
+fi
+if [[ ! "$PERSONA_ASSIGNMENT_POLICY" =~ ^(fixed|dirichlet_sampled)$ ]]; then
+  echo "ERROR: PERSONA_ASSIGNMENT_POLICY must be fixed or dirichlet_sampled." >&2
+  exit 2
+fi
+if [[ -n "$PERSONA_ASSIGNMENT_ALPHA" ]] && { ! [[ "$PERSONA_ASSIGNMENT_ALPHA" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($PERSONA_ASSIGNMENT_ALPHA > 0)}")" != "1" ]]; }; then
+  echo "ERROR: PERSONA_ASSIGNMENT_ALPHA must be a positive number when provided." >&2
   exit 2
 fi
 if ! [[ "$TRAIN_LEARNING_RATE" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$(awk "BEGIN {print ($TRAIN_LEARNING_RATE > 0)}")" != "1" ]]; then
@@ -143,7 +155,9 @@ echo "  host=${HOSTNAME}"
 echo "  pwd=$(pwd)"
 echo "  run_id=${RUN_ID}"
 echo "  selection_id=${SELECTION_ID}"
-echo "  persona=${PERSONA}"
+echo "  label_namespace=${PERSONA}"
+echo "  persona_assignment_policy=${PERSONA_ASSIGNMENT_POLICY}"
+echo "  persona_assignment_alpha=${PERSONA_ASSIGNMENT_ALPHA:-<cli-default>}"
 echo "  mode=${MODE_VALUE}"
 echo "  secure_aggregation=${SECURE_AGGREGATION_VALUE}"
 echo "  clustered=${CLUSTERED_VALUE}"
@@ -177,6 +191,8 @@ TARGET_CMD=(
   SIMULATION_BACKEND=auto
   RAY_NUM_CPUS=${RAY_NUM_CPUS}
   CLIENT_NUM_CPUS=${CLIENT_NUM_CPUS}
+  PERSONA_ASSIGNMENT_POLICY=${PERSONA_ASSIGNMENT_POLICY}
+  PERSONA_ASSIGNMENT_ALPHA=${PERSONA_ASSIGNMENT_ALPHA}
   SECURE_AGGREGATION=${SECURE_AGGREGATION_VALUE}
   CLUSTERED=${CLUSTERED_VALUE}
   CLUSTERING_K=${CLUSTERING_K}

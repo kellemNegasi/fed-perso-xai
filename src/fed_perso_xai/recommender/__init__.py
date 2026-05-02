@@ -33,6 +33,7 @@ from fed_perso_xai.recommender.user_simulation import (
     PairwiseLabelConfig,
     PersonaConfig,
     UserSimulator,
+    assign_dirichlet_personas_to_clients,
     label_recommender_context,
     load_persona_config,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "SUPPORTED_RECOMMENDER_TYPES",
     "SVMRankRecommender",
     "UserSimulator",
+    "assign_dirichlet_personas_to_clients",
     "build_pairwise_recommender_data",
     "build_ground_truth_order",
     "create_recommender",
